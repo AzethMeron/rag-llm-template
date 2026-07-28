@@ -48,25 +48,43 @@ fi
 
 note "building the manuals memory from Wikipedia (CC BY-SA)"
 "$python" - "$data_dir" <<'PY' || die "building the manuals corpus failed (see above)"
-import json, sys, urllib.parse, urllib.request
+import json, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 data_dir = Path(sys.argv[1])
 titles = ["Turbofan", "Exhaust gas temperature", "Compressor stall", "Foreign object damage",
           "Turbine blade", "Jet engine", "Bearing (mechanical)", "Vibration",
           "Gas turbine", "Aircraft engine controls", "Turbine engine failure"]
-api = ("https://en.wikipedia.org/w/api.php?format=json&action=query&prop=extracts"
-       "&explaintext=1&redirects=1&titles=" + urllib.parse.quote("|".join(titles)))
-req = urllib.request.Request(api, headers={"User-Agent": "ragkit-predictive-maintenance/1.0"})
-with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 -- fixed https host
-    pages = json.load(resp)["query"]["pages"]
+
+def extract_for(title):
+    # One request per title: the extracts API returns only one page's extract per call and
+    # paginates the rest, so a multi-title query silently drops all but the first. Retry politely
+    # on rate-limiting (429) and transient server errors rather than aborting the whole corpus.
+    api = ("https://en.wikipedia.org/w/api.php?format=json&action=query&prop=extracts"
+           "&explaintext=1&redirects=1&titles=" + urllib.parse.quote(title))
+    # A descriptive User-Agent with contact is what Wikimedia's API etiquette asks for.
+    req = urllib.request.Request(api, headers={
+        "User-Agent": "ragkit-predictive-maintenance/1.0 (https://github.com/; recipe fetcher)"})
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 -- fixed https host
+                pages = json.load(resp)["query"]["pages"]
+            return next(iter(pages.values())).get("extract", "")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (429, 500, 502, 503) or attempt == 5:
+                raise
+            # Honour Retry-After when the server sends it, else exponential backoff.
+            retry_after = exc.headers.get("Retry-After")
+            wait = float(retry_after) if retry_after and retry_after.isdigit() else 5 * 2 ** attempt
+            time.sleep(min(wait, 120))
+    return ""
 
 entries = []
-for page in pages.values():
-    title, extract = page.get("title", "?"), page.get("extract", "")
-    for i, para in enumerate(p.strip() for p in extract.split("\n")):
+for title in titles:
+    for i, para in enumerate(p.strip() for p in extract_for(title).split("\n")):
         if len(para) >= 200:  # skip headings and stubs; keep substantial paragraphs
             entries.append({"id": f"{title}-{i}", "title": title, "text": para})
+    time.sleep(2)  # be a polite API citizen between page requests
 if len(entries) < 20:
     raise SystemExit(f"only {len(entries)} manual paragraphs fetched; Wikipedia may be unreachable")
 with (data_dir / "manuals.jsonl").open("w", encoding="utf-8") as f:
