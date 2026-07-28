@@ -8,7 +8,9 @@ registry.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from ragkit.core.ports import OutputSchema
@@ -50,3 +52,82 @@ class JsonFieldSchema:
 
 
 OUTPUT_SCHEMAS.register("json_field", JsonFieldSchema)
+
+
+_JSON_TYPES = frozenset({"string", "integer", "number", "boolean"})
+
+
+@dataclass(frozen=True, slots=True)
+class FormField:
+    """One field of a form to fill: its name, JSON type, an optional prompt description, and
+    whether the model must supply it."""
+
+    name: str
+    type: str = "string"
+    description: str = ""
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("a form field needs a non-empty name")
+        if self.type not in _JSON_TYPES:
+            raise ValueError(
+                f"form field {self.name!r}: type must be one of {sorted(_JSON_TYPES)}, got "
+                f"{self.type!r}")
+
+
+class FormSchema:
+    """A multi-field form output: ``{field1: ..., field2: ...}``. Each field is declared with a
+    name and JSON type, so the producer is asked (or grammar-constrained) to fill exactly those
+    fields. :meth:`extract` returns the filled form as a **canonical JSON string** (sorted keys),
+    which is what becomes the record's single ``output`` — it round-trips through the journal and
+    can be scored field by field by a validator or the fill-accuracy eval. Field *value* checks
+    (type conformance, enum membership, ranges) are a validator's job, layered on top."""
+
+    CONFIG_KEYS = frozenset({"name", "fields"})
+
+    def __init__(self, fields: Sequence[FormField], name: str = "form") -> None:
+        if not fields:
+            raise ValueError("FormSchema needs at least one field")
+        seen: set[str] = set()
+        for field in fields:
+            if field.name in seen:
+                raise ValueError(f"FormSchema has a duplicate field {field.name!r}")
+            seen.add(field.name)
+        self.name = name
+        self._fields = tuple(fields)
+
+    @classmethod
+    def from_config(cls, options: Mapping[str, Any]) -> FormSchema:
+        raw = options.get("fields")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("FormSchema needs a non-empty 'fields' array")
+        fields = []
+        for entry in raw:
+            if not isinstance(entry, Mapping) or "name" not in entry:
+                raise ValueError("each form field needs at least a 'name'")
+            fields.append(FormField(
+                name=str(entry["name"]), type=str(entry.get("type", "string")),
+                description=str(entry.get("description", "")),
+                required=bool(entry.get("required", True))))
+        return cls(fields, name=str(options.get("name", "form")))
+
+    def json_schema(self) -> dict[str, Any]:
+        properties: dict[str, Any] = {}
+        for field in self._fields:
+            prop: dict[str, Any] = {"type": field.type}
+            if field.description:
+                prop["description"] = field.description
+            properties[field.name] = prop
+        required = [f.name for f in self._fields if f.required]
+        return {"type": "object", "additionalProperties": False,
+                "required": required, "properties": properties}
+
+    def extract(self, reply: Mapping[str, Any]) -> str:
+        # Only the declared fields, in a stable order, so the stored output is canonical and two
+        # equal forms serialise identically (the eval compares these strings' parsed fields).
+        form = {f.name: reply.get(f.name) for f in self._fields}
+        return json.dumps(form, sort_keys=True, ensure_ascii=False)
+
+
+OUTPUT_SCHEMAS.register("form", FormSchema)

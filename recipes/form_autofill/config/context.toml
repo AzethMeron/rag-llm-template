@@ -1,0 +1,13 @@
+# The prompt: an instruction, then the historical records retrieved from the external database --
+# the other tracks on this track's album, with their genre and price. The track being filled is
+# excluded from the query (param track_id), so the answer is never leaked into its own context.
+[[context.block]]
+kind = "literal"
+text = "Fill the form using the sibling tracks below. Other tracks from the same album almost always share a genre and unit price. Return only the requested fields."
+
+[[context.block]]
+kind = "sql_rows"
+heading = "Other tracks on the same album (genre and unit price):"
+query = "SELECT t.Name AS track, g.Name AS genre, t.UnitPrice AS unit_price FROM Track t JOIN Genre g ON g.GenreId = t.GenreId WHERE t.AlbumId = ? AND t.TrackId != ? ORDER BY t.TrackId"
+param_keys = ["album_id", "track_id"]
+limit = 25

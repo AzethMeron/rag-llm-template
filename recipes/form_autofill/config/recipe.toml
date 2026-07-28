@@ -1,0 +1,27 @@
+# The form-autofill task: fill a two-field form (genre, unit_price) for a track, checked by the
+# FieldTypesValidator. The external Chinook database is a READ-ONLY binding (storage.toml).
+[task]
+output_schema = "form"
+input_label = "Track to fill:"
+
+[[task.output_schema_options.fields]]
+name = "genre"
+description = "the track's musical genre (e.g. Rock, Jazz, Metal), taken from the sibling tracks"
+
+[[task.output_schema_options.fields]]
+name = "unit_price"
+type = "number"
+description = "the track's unit price in dollars (e.g. 0.99), taken from the sibling tracks"
+
+[[validator]]
+kind = "recipes.form_autofill.plugins.validators:FieldTypesValidator"
+
+[[validator.field]]
+name = "genre"
+type = "string"
+nonempty = true
+
+[[validator.field]]
+name = "unit_price"
+type = "number"
+min_exclusive = 0

@@ -22,7 +22,7 @@ from .runner import (
     pending_records,
     run_batch,
 )
-from .schemas import OUTPUT_SCHEMAS, JsonFieldSchema
+from .schemas import OUTPUT_SCHEMAS, FormField, FormSchema, JsonFieldSchema
 from .validators import VALIDATORS, ValidatorPipeline, blocking, check_mechanical
 
 __all__ = [
@@ -35,7 +35,7 @@ __all__ = [
     # context
     "ContextAssembler", "load_context",
     # output schema
-    "OUTPUT_SCHEMAS", "JsonFieldSchema",
+    "OUTPUT_SCHEMAS", "JsonFieldSchema", "FormSchema", "FormField",
     # memory
     "OutputMemory",
     # runner

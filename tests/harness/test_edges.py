@@ -1,6 +1,7 @@
 """Edge and branch coverage: repair paths, from_rules review, block config, config errors."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ from ragkit.harness.context.blocks import (
     RetrievedBlock,
     SqlRowsBlock,
 )
-from ragkit.harness.schemas import OUTPUT_SCHEMAS, JsonFieldSchema as JFS
+from ragkit.harness.schemas import OUTPUT_SCHEMAS, FormField, FormSchema, JsonFieldSchema as JFS
 from ragkit.harness.roles import load_panel
 
 from .conftest import ACCEPT, build_harness, build_pool, ok, raw
@@ -88,6 +89,58 @@ class TestSchemas:
     def test_registered_and_buildable(self) -> None:
         schema = OUTPUT_SCHEMAS.create("json_field", {"field": "translation"})
         assert schema.name == "translation"
+
+
+class TestFormSchema:
+    def _schema(self) -> FormSchema:
+        return FormSchema([FormField(name="genre", description="the musical genre"),
+                           FormField(name="unit_price", type="number", required=False)])
+
+    def test_json_schema_lists_fields_and_only_required(self) -> None:
+        schema = self._schema().json_schema()
+        assert set(schema["properties"]) == {"genre", "unit_price"}
+        assert schema["properties"]["unit_price"]["type"] == "number"
+        assert schema["required"] == ["genre"]  # unit_price is optional
+        assert schema["properties"]["genre"]["description"] == "the musical genre"
+
+    def test_extract_is_canonical_json_of_declared_fields_only(self) -> None:
+        out = self._schema().extract({"genre": "Rock", "unit_price": 0.99, "extra": "ignored"})
+        assert json.loads(out) == {"genre": "Rock", "unit_price": 0.99}
+        assert out == '{"genre": "Rock", "unit_price": 0.99}'  # sorted keys, stable
+
+    def test_missing_field_becomes_null_not_a_crash(self) -> None:
+        out = self._schema().extract({"genre": "Jazz"})
+        assert json.loads(out) == {"genre": "Jazz", "unit_price": None}
+
+    def test_empty_fields_refused(self) -> None:
+        with pytest.raises(ValueError, match="at least one field"):
+            FormSchema([])
+
+    def test_duplicate_field_refused(self) -> None:
+        with pytest.raises(ValueError, match="duplicate field"):
+            FormSchema([FormField(name="a"), FormField(name="a")])
+
+    def test_bad_field_type_refused(self) -> None:
+        with pytest.raises(ValueError, match="type must be one of"):
+            FormField(name="x", type="date")
+
+    def test_empty_field_name_refused(self) -> None:
+        with pytest.raises(ValueError, match="non-empty name"):
+            FormField(name="  ")
+
+    def test_from_config_builds_fields(self) -> None:
+        schema = OUTPUT_SCHEMAS.create("form", {"fields": [
+            {"name": "genre"}, {"name": "unit_price", "type": "number", "required": False}]})
+        assert schema.name == "form"
+        assert schema.json_schema()["required"] == ["genre"]
+
+    def test_from_config_needs_fields(self) -> None:
+        with pytest.raises(ConfigError, match="non-empty 'fields'"):
+            OUTPUT_SCHEMAS.create("form", {})
+
+    def test_from_config_field_needs_a_name(self) -> None:
+        with pytest.raises(ConfigError, match="needs at least a 'name'"):
+            OUTPUT_SCHEMAS.create("form", {"fields": [{"type": "string"}]})
 
 
 class TestBlockConfig:
