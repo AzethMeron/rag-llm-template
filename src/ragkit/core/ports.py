@@ -153,8 +153,7 @@ class Embedder(Protocol):
 @runtime_checkable
 class VectorIndex(Protocol):
     """A dense-vector store. ``search`` returns ``(chunk_id, score)`` best-first, score
-    higher-is-better. ``reconcile`` reconciles the index against the authoritative chunk set
-    (a no-op for a driver that co-locates vectors with the rows)."""
+    higher-is-better toward ``[0, 1]``."""
 
     def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
                metas: Sequence[Mapping[str, Any]]) -> None: ...
@@ -166,7 +165,14 @@ class VectorIndex(Protocol):
 
     def count(self) -> int: ...
 
-    def reconcile(self, chunk_ids: Iterable[str]) -> None: ...
+    def reconcile(self, chunk_ids: Iterable[str]) -> set[str]:
+        """Reconcile the index against the authoritative set of chunk ids: **drop orphan
+        vectors** (indexed ids no longer in ``chunk_ids``) and **return the ids that are missing
+        a vector** (in ``chunk_ids`` but not indexed), for the caller to re-embed or refuse. The
+        index cannot re-embed itself — it has neither the text nor the embedder — so it reports
+        the gap rather than hiding it. A driver that co-locates vectors with the rows (so drift
+        is impossible) returns an empty set without doing anything."""
+        ...
 
 
 @runtime_checkable

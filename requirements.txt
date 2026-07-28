@@ -25,6 +25,28 @@ httpcore==1.0.9
 idna==3.18
 typing_extensions==4.16.0
 
+# --- default vector database (LanceDB) + dense-vector math --------------------
+# The default VectorIndex driver is LanceDB: a real, embedded vector database with true ANN
+# indexing, no server or daemon. It is imported lazily inside store/vector/lancedb.py alone, so
+# the core import path never pulls it, and tests/test_boundaries.py confines the allowance to
+# that module. numpy is the dense-vector math used by the retrieval layer. Both are only needed
+# for dense/vector retrieval; a pure-lexical (FTS5) run touches neither.
+lancedb==0.34.0
+numpy==2.5.1
+# transitive
+annotated-types==0.8.0
+deprecation==2.1.0
+lance-namespace==0.9.0
+lance-namespace-urllib3-client==0.9.0
+pyarrow==25.0.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-dateutil==2.9.0.post0
+six==1.17.0
+tqdm==4.70.0
+typing-inspection==0.4.2
+urllib3==2.7.0
+
 # --- development and tests ----------------------------------------------------
 # The suite never reaches a server, so this is all it needs.
 pytest==9.1.1

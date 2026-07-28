@@ -99,23 +99,32 @@ class TestTheDependencyDirectionHolds:
             assert not above, f"{relative} (layer {layer!r}) imports layer(s) above it: {above}"
 
 
-# A driver is a module under a store/retrieve/llm subpackage that carries a third-party
-# dependency. Framework code must reach it through a registry, never import it by name. No such
-# drivers exist yet, so this asserts the invariant holds as they are added.
-DRIVER_MARKERS = frozenset(
-    {"lancedb", "usearch", "qdrant_client", "psycopg", "sqlite_vec", "chromadb"})
+# A driver dependency is a third-party package that a single driver module owns. Framework code
+# must reach the driver through a registry, so its dependency may appear in exactly its own
+# module (a leaf path substring) and nowhere else. That confinement is what keeps the core import
+# path clean and lets a run without that feature omit the dependency entirely.
+DRIVER_DEP_LOCATIONS = {
+    "lancedb": ("store/vector/lancedb.py",),
+    "pyarrow": ("store/vector/lancedb.py",),
+    "numpy": ("store/vector/", "retrieve/", "ingest/"),  # dense-vector math
+    "usearch": ("store/vector/",),
+    "qdrant_client": ("store/vector/",),
+    "sqlite_vec": ("store/vector/",),
+    "psycopg": ("store/",),
+    "chromadb": ("store/vector/",),
+}
 
 
-class TestNoFrameworkModuleNamesAConcreteDriver:
-    def test_no_module_imports_a_known_driver_dependency_outside_its_own_module(self) -> None:
+class TestDriverDependenciesAreConfinedToTheirModules:
+    def test_a_driver_dependency_appears_only_in_its_own_module(self) -> None:
         for path, relative in _modules():
+            posix = relative.as_posix()
             third_party, _ = _third_party_and_layers(path)
-            leaked = third_party & DRIVER_MARKERS
-            # A driver module is allowed to import its own dependency; the rule is that no
-            # OTHER module does. When a driver module exists it will live at a leaf path named
-            # for its backend, and this test will be tightened to that path. For now, no module
-            # imports any driver dependency at all.
-            assert not leaked, f"{relative} imports driver dependency {leaked} directly"
+            for dep in third_party & DRIVER_DEP_LOCATIONS.keys():
+                allowed = DRIVER_DEP_LOCATIONS[dep]
+                assert any(location in posix for location in allowed), (
+                    f"{relative} imports driver dependency {dep!r}, which is confined to "
+                    f"{allowed}")
 
 
 class TestTheContractRunsWithTheOptionalDepsUnimportable:
