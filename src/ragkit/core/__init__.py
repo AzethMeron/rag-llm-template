@@ -46,6 +46,7 @@ from .ports import (
     Sink,
     Source,
     SqlStore,
+    StructuredRequest,
     Validator,
     VectorIndex,
 )
@@ -84,7 +85,8 @@ __all__ = [
     # width / placeholders
     "display_columns", "PLACEHOLDER", "placeholder_indices",
     # value types
-    "Message", "Document", "Chunk", "Retrieved", "Filter", "FilterOp", "Predicate",
+    "Message", "StructuredRequest", "Document", "Chunk", "Retrieved",
+    "Filter", "FilterOp", "Predicate",
     # ports
     "Source", "Sink", "Extractor", "Chunker", "Embedder",
     "VectorIndex", "LexicalIndex", "SqlStore", "SchemaIntrospector",

@@ -41,6 +41,17 @@ class Message:
 
 
 @dataclass(frozen=True, slots=True)
+class StructuredRequest:
+    """How to ask a specific model for schema-conforming JSON: the (possibly rewritten)
+    messages and the ``response_format`` fragment to put in the request body. A backend that
+    must describe the schema in the prompt returns rewritten messages; one that constrains
+    decoding returns the messages unchanged."""
+
+    messages: tuple[Message, ...]
+    response_format: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class Document:
     """A source document after extraction, before chunking."""
 
@@ -256,8 +267,8 @@ class Backend(Protocol):
 
     name: str
 
-    def structured_request(self, messages: Sequence[Message], schema: Mapping[str, Any]
-                           ) -> tuple[tuple[Message, ...], dict[str, Any]]: ...
+    def structured_request(self, messages: Sequence[Message],
+                           schema: Mapping[str, Any]) -> StructuredRequest: ...
 
 
 @runtime_checkable
