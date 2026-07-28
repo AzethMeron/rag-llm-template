@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from ragkit.core.ports import Message
+from ragkit.core.ports import Message, SamplingParams
 from ragkit.llm import LlmClient, ServerConfig
 from ragkit.llm.backends import resolve_backend
 from ragkit.llm.errors import (
@@ -50,6 +50,39 @@ class TestHappyPath:
         assert client.stats.prompt_tokens == 10
         assert client.stats.completion_tokens == 4
         assert client.stats.peak_prompt_tokens == 10
+
+
+class TestSampling:
+    def _sent(self, **kwargs: object) -> dict:
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(request_body(request))
+            return chat_reply('{"translation": "x"}')
+
+        _json_call(client_returning(handler), **kwargs)
+        return seen
+
+    def test_default_sends_only_temperature_no_llamacpp_only_knobs(self) -> None:
+        # A strict-OpenAI endpoint must never be handed top_k/min_p/repeat_penalty it would reject.
+        sent = self._sent()
+        assert sent["temperature"] == 0.2
+        assert not ({"top_p", "top_k", "min_p", "seed", "repeat_penalty", "presence_penalty",
+                     "frequency_penalty", "stop"} & sent.keys())
+
+    def test_persona_sampling_knobs_are_forwarded(self) -> None:
+        sampling = SamplingParams(temperature=0.7, top_p=0.9, top_k=40, min_p=0.05, seed=123,
+                                  presence_penalty=0.5, frequency_penalty=-0.5, repeat_penalty=1.1,
+                                  stop=("</end>",))
+        sent = self._sent(sampling=sampling)
+        assert sent["temperature"] == 0.7 and sent["top_p"] == 0.9 and sent["top_k"] == 40
+        assert sent["min_p"] == 0.05 and sent["seed"] == 123 and sent["repeat_penalty"] == 1.1
+        assert sent["presence_penalty"] == 0.5 and sent["frequency_penalty"] == -0.5
+        assert sent["stop"] == ["</end>"]
+
+    def test_max_tokens_is_separate_from_sampling(self) -> None:
+        sent = self._sent(sampling=SamplingParams(temperature=0.0), max_tokens=321)
+        assert sent["max_tokens"] == 321 and sent["temperature"] == 0.0
 
 
 class TestRetryPolicy:

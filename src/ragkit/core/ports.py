@@ -40,6 +40,66 @@ class Message:
     content: str
 
 
+def _in_range(value: float | None, low: float, high: float, *, what: str) -> None:
+    if value is not None and not (low <= value <= high):
+        raise ValueError(f"{what} must be in [{low}, {high}], got {value}")
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingParams:
+    """Per-request decode settings for one chat completion — the knobs an OpenAI-compatible server
+    accepts *per call* (temperature, nucleus/top-k/min-p truncation, penalties, seed, stop).
+
+    These are owned by the **persona** that issues the request, because the right setting is a
+    property of the role, not the model: a producer may want a little warmth, a reviewer wants
+    determinism. Settings that a server can only apply at *launch* (context size, GPU offload,
+    KV-cache type) are not here — they live in ``models.toml`` and drive the serve script.
+
+    ``max_tokens`` is deliberately *not* a field: it is a computed budget (scaled to the input for
+    the producer, a ceiling for a reviewer) passed separately, so the size budget and the decode
+    style stay separate concerns. Only fields that are set are sent, so the default request carries
+    just a temperature and a strict-OpenAI endpoint is never handed a llama.cpp-only knob it would
+    reject.
+    """
+
+    temperature: float = 0.2
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    seed: int | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repeat_penalty: float | None = None
+    stop: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.temperature < 0:
+            raise ValueError(f"temperature must be >= 0, got {self.temperature}")
+        _in_range(self.top_p, 0.0, 1.0, what="top_p")
+        _in_range(self.min_p, 0.0, 1.0, what="min_p")
+        _in_range(self.presence_penalty, -2.0, 2.0, what="presence_penalty")
+        _in_range(self.frequency_penalty, -2.0, 2.0, what="frequency_penalty")
+        if self.top_k is not None and self.top_k < 0:
+            raise ValueError(f"top_k must be >= 0 (0 disables it), got {self.top_k}")
+        if self.repeat_penalty is not None and self.repeat_penalty <= 0:
+            raise ValueError(f"repeat_penalty must be > 0 (1.0 is no penalty), got "
+                             f"{self.repeat_penalty}")
+
+    def payload(self) -> dict[str, Any]:
+        """The request-body fragment: temperature always, plus every optional knob that is set.
+        An unset knob is omitted rather than sent as a default, so a server never has to interpret
+        a value the persona did not choose."""
+        body: dict[str, Any] = {"temperature": self.temperature}
+        for key in ("top_p", "top_k", "min_p", "seed", "presence_penalty", "frequency_penalty",
+                    "repeat_penalty"):
+            value = getattr(self, key)
+            if value is not None:
+                body[key] = value
+        if self.stop:
+            body["stop"] = list(self.stop)
+        return body
+
+
 @dataclass(frozen=True, slots=True)
 class StructuredRequest:
     """How to ask a specific model for schema-conforming JSON: the (possibly rewritten)

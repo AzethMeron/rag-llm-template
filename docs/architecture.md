@@ -56,10 +56,33 @@ dir); `read_journal` tolerates a torn *final* record (a process killed mid-write
 malformed one anywhere else, because skipping that would discard a completed result while
 reporting success. See `src/ragkit/core/records.py`.
 
+## Where each LLM setting lives
+
+A decode setting is configured where it takes effect, so there is one obvious home for each:
+
+- **Per-request settings → the persona.** Temperature and the other sampling knobs (`top_p`,
+  `top_k`, `min_p`, `seed`, `presence_penalty`, `frequency_penalty`, `repeat_penalty`, `stop`) are
+  applied per call, and the right value is a property of the *role* — a producer may want a little
+  warmth, a reviewer wants determinism — so each `[[persona]]` carries its own optional
+  `[persona.sampling]` sub-table. The default temperature depends on the role (producer `0.3`,
+  reviewer `0.0`); every other knob is unset unless named, so only chosen settings reach the
+  server and a strict-OpenAI endpoint is never handed a llama.cpp-only knob. These become a
+  `SamplingParams` (a frozen value type in `core/ports.py`) threaded to the client. `max_tokens` is
+  deliberately *not* a sampling knob: it is a computed output budget (scaled to the input for the
+  producer, a ceiling for a reviewer), kept separate from decode *style*.
+- **Launch-time settings → `models.toml`.** Anything a server can only apply when it starts (GPU
+  offload, context size, KV-cache type, flash attention, rope scaling) is not per-request, so it
+  lives on the endpoint that hosts the model: `[endpoint.<name>].server_args` is a verbatim flag
+  list. `tools/serve_models.sh --config models.toml --endpoint <name>` reads the same
+  `EndpointSpec` the pool uses (via `python -m ragkit.llm.serveargs`), so `models.toml` is the
+  single source of truth for both routing and serving rather than a config file and a hand-written
+  command line that can drift.
+
 ## Still to come (built milestone by milestone)
 
-The storage layer (a real vector database — LanceDB by default — plus SQLite/FTS5 and a
-separate read-only external data source), the ingestion and retrieval stack (RRF fusion,
-reranking, MMR), the local model layer (llama.cpp router mode, a model pool with a load-time
-thrash guard), the persona/panel/validator harness, and three fully-worked task recipes each
-with a script that fetches real data on demand. This document will grow with each.
+The generalised evaluation harnesses (retrieval `Recall@k`/`MRR`/`NDCG` and blinded output
+judging, with the "a metric must be independent of what it ranks" guard) and a cross-cutting
+documentation pass with a per-file config-option reference. The storage, ingest/retrieve, model,
+and harness layers and the worked recipes (translation, NL→SQL, form autofill, and an industrial
+predictive-maintenance decision recipe) are in place, each with a script that fetches real data on
+demand.

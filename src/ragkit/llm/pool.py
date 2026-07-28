@@ -29,6 +29,7 @@ from ragkit.core.config import (
     read_float,
     read_int,
     read_string,
+    read_string_list,
     reject_unknown,
 )
 from ragkit.core.errors import RagkitError
@@ -62,6 +63,12 @@ class EndpointSpec:
     max_retries: int = 4
     retry_backoff_seconds: float = 2.0
     enable_reasoning: bool = False
+    server_args: tuple[str, ...] = ()
+    """Launch-time flags for the server that hosts this endpoint — the settings that are *not*
+    per-request (GPU offload, KV-cache type, rope scaling, flash attention). Per-request decode
+    settings live on the persona instead. ``serve_models.sh`` reads these so ``models.toml`` is the
+    single source of truth for both routing and serving; the pool itself never launches a server,
+    so it only carries them."""
 
     def __post_init__(self) -> None:
         if self.provider not in _PROVIDERS:
@@ -214,6 +221,13 @@ class ModelPool:
             raise ModelPoolError(f"unknown model {model_name!r}; defined: {sorted(self._models)}")
         return spec
 
+    def endpoint(self, name: str) -> EndpointSpec:
+        spec = self._endpoints.get(name)
+        if spec is None:
+            raise ModelPoolError(
+                f"unknown endpoint {name!r}; defined: {sorted(self._endpoints)}")
+        return spec
+
     def models_of_kind(self, kind: str) -> dict[str, ModelSpec]:
         """Every model of a given kind, for the retrieval layer to find its embedding/rerank
         models."""
@@ -256,7 +270,8 @@ def load_models(path: Path, *, client_factory: ClientFactory | None = None) -> M
 
 
 _ENDPOINT_KEYS = {"provider", "base_url", "resident_max", "parallel", "vram_budget_mb",
-                  "timeout_seconds", "max_retries", "retry_backoff_seconds", "enable_reasoning"}
+                  "timeout_seconds", "max_retries", "retry_backoff_seconds", "enable_reasoning",
+                  "server_args"}
 _MODEL_KEYS = {"endpoint", "model_id", "backend", "kind", "context_window", "approx_vram_mb"}
 
 
@@ -284,7 +299,9 @@ def _load_endpoints(section: object, *, path: Path) -> dict[str, EndpointSpec]:
                 retry_backoff_seconds=read_float(body, "retry_backoff_seconds", 2.0,
                                                  label=f"[endpoint.{name}]", path=path),
                 enable_reasoning=read_bool(body, "enable_reasoning", False,
-                                           label=f"[endpoint.{name}]", path=path))
+                                           label=f"[endpoint.{name}]", path=path),
+                server_args=read_string_list(body, "server_args",
+                                             label=f"[endpoint.{name}]", path=path))
         except ModelPoolError as exc:
             raise ConfigError(str(exc), path=path) from exc
     return endpoints

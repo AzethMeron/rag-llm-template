@@ -132,6 +132,41 @@ class TestLoad:
         assert panel.reviewers[0].leniency == Leniency(window=5, max_bad=1)
 
 
+class TestSampling:
+    _P = '[[persona]]\nid="p"\nkind="producer"\nmodel="m"\ninstructions="x"\n'
+    _R = '[[persona]]\nid="r"\nkind="reviewer"\nmodel="m"\ninstructions="y"\n'
+
+    def test_default_temperature_depends_on_role(self, tmp_path: Path) -> None:
+        # A producer gets a little warmth by default; a reviewer is deterministic.
+        panel = load_panel(_write(tmp_path, self._P + self._R))
+        assert panel.producer.sampling.temperature == 0.3
+        assert panel.reviewers[0].sampling.temperature == 0.0
+
+    def test_sampling_subtable_overrides_knobs(self, tmp_path: Path) -> None:
+        text = (self._P + "[persona.sampling]\ntemperature = 0.9\ntop_p = 0.8\ntop_k = 40\n"
+                "min_p = 0.05\nseed = 7\npresence_penalty = 0.5\nrepeat_penalty = 1.1\n"
+                'stop = ["<end>"]\n' + self._R)
+        producer = load_panel(_write(tmp_path, text)).producer.sampling
+        assert producer.temperature == 0.9 and producer.top_p == 0.8 and producer.top_k == 40
+        assert producer.min_p == 0.05 and producer.seed == 7 and producer.repeat_penalty == 1.1
+        assert producer.presence_penalty == 0.5 and producer.stop == ("<end>",)
+
+    def test_unknown_sampling_key_refused(self, tmp_path: Path) -> None:
+        text = self._P + "[persona.sampling]\nwarmth = 0.5\n" + self._R
+        with pytest.raises(ConfigError, match="unknown key"):
+            load_panel(_write(tmp_path, text))
+
+    def test_out_of_range_value_refused_with_location(self, tmp_path: Path) -> None:
+        text = self._P + "[persona.sampling]\ntop_p = 2.0\n" + self._R
+        with pytest.raises(ConfigError, match=r"sampling: top_p must be in"):
+            load_panel(_write(tmp_path, text))
+
+    def test_mistyped_value_refused(self, tmp_path: Path) -> None:
+        text = self._P + '[persona.sampling]\ntemperature = "hot"\n' + self._R
+        with pytest.raises(ConfigError, match="must be a number"):
+            load_panel(_write(tmp_path, text))
+
+
 class TestBudgets:
     def test_produce_budget_is_bounded(self) -> None:
         limits = Limits(produce_tokens_per_source_char=8, produce_tokens_floor=100,

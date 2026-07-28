@@ -22,7 +22,7 @@ from typing import Any, cast
 
 import httpx
 
-from ragkit.core.ports import Message
+from ragkit.core.ports import Message, SamplingParams
 
 from .backends import DEFAULT_BACKEND, BaseBackend, SchemaBackend, get_backend, suggest_backend
 from .errors import (
@@ -34,6 +34,10 @@ from .errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_SAMPLING = SamplingParams()
+"""The decode settings a request uses when a caller passes none — a low temperature, every other
+knob left to the server's default. Personas normally supply their own."""
 
 CONTEXT_WARN_FRACTION = 0.8
 """How full the context window may get before a proactive warning: prompt plus output budget
@@ -157,11 +161,14 @@ class LlmClient:
         return response.status_code == 200
 
     def complete(self, messages: Sequence[Message], *, role: str = "<none>",
-                 temperature: float = 0.2, max_tokens: int = 1024,
+                 sampling: SamplingParams | None = None, max_tokens: int = 1024,
                  schema: dict[str, Any] | None = None, model: str | None = None) -> str:
         """Run one chat completion, retrying transient failures. When ``schema`` is given, the
         backend decides how the request asks for conforming JSON. ``model`` overrides the config's
-        model id (the model pool passes a per-persona model over one shared client)."""
+        model id (the model pool passes a per-persona model over one shared client). ``sampling``
+        carries the per-request decode settings (the persona's); ``max_tokens`` is the separate
+        computed output budget."""
+        params = sampling or _DEFAULT_SAMPLING
         if schema is not None:
             request = self.backend.structured_request(messages, schema)
             sent = [{"role": m.role, "content": m.content} for m in request.messages]
@@ -173,8 +180,8 @@ class LlmClient:
         payload: dict[str, Any] = {
             "model": model or self.config.model,
             "messages": sent,
-            "temperature": temperature,
             "max_tokens": max_tokens,
+            **params.payload(),
         }
         if response_format is not None:
             payload["response_format"] = response_format
@@ -273,8 +280,8 @@ class LlmClient:
         return base
 
     def complete_json(self, messages: Sequence[Message], schema: dict[str, Any], *,
-                      role: str = "<none>", temperature: float = 0.0, max_tokens: int = 1024,
-                      model: str | None = None) -> dict[str, Any]:
+                      role: str = "<none>", sampling: SamplingParams | None = None,
+                      max_tokens: int = 1024, model: str | None = None) -> dict[str, Any]:
         """Chat completion that must yield a JSON object matching ``schema``'s top-level shape.
 
         A ``json_object`` backend (whose server does not constrain decoding) is held to the same
@@ -283,7 +290,7 @@ class LlmClient:
         truncated is recovered and raised as :class:`LlmIncompleteJsonError` for the caller to
         treat as an unverified candidate.
         """
-        text = self.complete(messages, role=role, temperature=temperature,
+        text = self.complete(messages, role=role, sampling=sampling,
                              max_tokens=max_tokens, schema=schema, model=model)
         stripped = _strip_code_fence(text)
         try:

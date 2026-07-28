@@ -191,7 +191,7 @@ class Harness:
             [Message("system", self._system_prompt(persona.instructions,
                                                    placeholders=has_placeholders)),
              Message("user", self._user_prompt(record, previous))],
-            self.output_schema.json_schema(), role=persona.id, temperature=0.3,
+            self.output_schema.json_schema(), role=persona.id, sampling=persona.sampling,
             max_tokens=self.panel.limits.produce_budget(len(record.source)), model=model_id)
         return self.sanitize(self.output_schema.extract(reply))
 
@@ -208,7 +208,7 @@ class Harness:
         reply = client.complete_json(
             [Message("system", self._system_prompt(instructions, placeholders=has_placeholders)),
              Message("user", user)],
-            REVIEW_SCHEMA, role=reviewer.id, temperature=0.0,
+            REVIEW_SCHEMA, role=reviewer.id, sampling=reviewer.sampling,
             max_tokens=self.panel.limits.review_budget(reviewer), model=model_id)
         improved = reply.get("improved_output") or None
         acceptable = bool(reply["acceptable"])

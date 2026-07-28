@@ -14,22 +14,33 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ragkit.core.config import (
     ConfigError,
     read_bool,
+    read_float,
     read_int,
+    read_string_list,
     reject_unknown,
     tables,
 )
+from ragkit.core.ports import SamplingParams
 
 _TOKEN = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 """A substitution placeholder in an instruction. Deliberately narrow — lowercase identifiers
 only — so prose containing braces is not mistaken for one."""
 
 _PERSONA_KINDS = frozenset({"producer", "reviewer"})
+
+_PRODUCER_DEFAULT_TEMPERATURE = 0.3
+"""A little warmth for generation, unless the persona overrides it."""
+_REVIEWER_DEFAULT_TEMPERATURE = 0.0
+"""Determinism for judging: a reviewer's verdict should not wander between runs."""
+
+_SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "seed", "presence_penalty",
+                            "frequency_penalty", "repeat_penalty", "stop"})
 
 
 def _at_least(value: int, minimum: int, *, what: str) -> None:
@@ -102,6 +113,10 @@ class Persona:
     its own, keeping project policy in one file."""
     max_tokens: int | None = None
     leniency: Leniency = Leniency()
+    sampling: SamplingParams = field(default_factory=SamplingParams)
+    """The persona's per-request decode settings (temperature and the other sampling knobs). The
+    loader fills a kind-appropriate default temperature; a directly-constructed persona gets the
+    low neutral default."""
 
     def __post_init__(self) -> None:
         if self.kind not in _PERSONA_KINDS:
@@ -216,7 +231,7 @@ def _personas(data: dict, fill, *, default_leniency: Leniency,
             raise ConfigError(f"duplicate persona id {identifier!r}", path=path)
         seen.add(identifier)
         reject_unknown(entry, {"id", "kind", "model", "instructions", "from_rules", "max_tokens",
-                               "leniency"}, label=f"persona {identifier!r}", path=path)
+                               "leniency", "sampling"}, label=f"persona {identifier!r}", path=path)
         persona = _one_persona(entry, identifier, fill, default_leniency=default_leniency,
                                path=path)
         (reviewers if persona.is_reviewer else producers).append(persona)
@@ -263,8 +278,37 @@ def _one_persona(entry: dict, identifier: str, fill, *, default_leniency: Lenien
                 if "leniency" in entry else default_leniency)
     max_tokens = (read_int(entry, "max_tokens", 1, label=f"persona {identifier!r}", path=path)
                   if "max_tokens" in entry else None)
+    sampling = _sampling(entry.get("sampling", {}), kind, identifier=identifier, path=path)
     try:
         return Persona(id=identifier, kind=kind, model=model, instructions=text.strip(),
-                       from_rules=from_rules, max_tokens=max_tokens, leniency=leniency)
+                       from_rules=from_rules, max_tokens=max_tokens, leniency=leniency,
+                       sampling=sampling)
     except ValueError as exc:
         raise ConfigError(f"persona {identifier!r}: {exc}", path=path) from exc
+
+
+def _sampling(section: object, kind: str, *, identifier: str, path: Path) -> SamplingParams:
+    """Build a persona's decode settings from an optional ``[persona.sampling]`` sub-table. The
+    default temperature depends on the role (a producer gets a little warmth, a reviewer none);
+    every other knob is unset unless named, so only chosen settings ever reach the server."""
+    label = f"persona {identifier!r} sampling"
+    table = reject_unknown(section, _SAMPLING_KEYS, label=label, path=path)
+    default_temp = (_PRODUCER_DEFAULT_TEMPERATURE if kind == "producer"
+                    else _REVIEWER_DEFAULT_TEMPERATURE)
+
+    def opt_float(key: str) -> float | None:
+        return read_float(table, key, 0.0, label=label, path=path) if key in table else None
+
+    def opt_int(key: str) -> int | None:
+        return read_int(table, key, 0, label=label, path=path) if key in table else None
+
+    try:
+        return SamplingParams(
+            temperature=read_float(table, "temperature", default_temp, label=label, path=path),
+            top_p=opt_float("top_p"), top_k=opt_int("top_k"), min_p=opt_float("min_p"),
+            seed=opt_int("seed"), presence_penalty=opt_float("presence_penalty"),
+            frequency_penalty=opt_float("frequency_penalty"),
+            repeat_penalty=opt_float("repeat_penalty"),
+            stop=read_string_list(table, "stop", label=label, path=path))
+    except ValueError as exc:
+        raise ConfigError(f"{label}: {exc}", path=path) from exc
