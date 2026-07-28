@@ -22,7 +22,21 @@ from ragkit.core.errors import RagkitError
 
 
 class SqlStoreError(RagkitError):
-    """A SQL store operation failed, or a write was attempted on a read-only binding."""
+    """A SQL store operation failed, or a write was attempted on a read-only binding.
+
+    The two read-only refusals below live here as constructors so every :class:`~ragkit.core.ports.
+    SqlStore` driver (SQLite, DuckDB, ...) raises the identical message from one home, rather than
+    each re-typing it."""
+
+    @classmethod
+    def write_on_read_only(cls, sql: str) -> SqlStoreError:
+        return cls(
+            "write refused: this SqlStore binding is read_only. An external data source is never "
+            "written by the framework; only the framework's own store is writable.", sql=sql)
+
+    @classmethod
+    def schema_on_read_only(cls) -> SqlStoreError:
+        return cls("a read_only store cannot run schema_sql")
 
 
 class SqliteStore:
@@ -45,7 +59,7 @@ class SqliteStore:
         self._conn.row_factory = sqlite3.Row
         if schema_sql:
             if read_only:
-                raise SqlStoreError("a read_only store cannot run schema_sql")
+                raise SqlStoreError.schema_on_read_only()
             with self._lock:
                 self._conn.executescript(schema_sql)
                 self._conn.commit()
@@ -66,10 +80,7 @@ class SqliteStore:
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         if self.read_only:
-            raise SqlStoreError(
-                "write refused: this SqlStore binding is read_only. An external data source is "
-                "never written by the framework; only the framework's own store is writable.",
-                sql=sql)
+            raise SqlStoreError.write_on_read_only(sql)
         with self._lock:
             try:
                 self._conn.execute(sql, tuple(params))

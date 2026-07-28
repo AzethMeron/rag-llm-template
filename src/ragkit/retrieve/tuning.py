@@ -66,6 +66,11 @@ class RetrievalSettings:
         return self.kind in ("dense", "hybrid")
 
 
+_DEFAULTS = RetrievalSettings()
+"""One home for the retrieval defaults: the loader reads them from here rather than re-typing each
+literal, so a field default and its loader default cannot drift (the Leniency loader pattern)."""
+
+
 def load_retrieval(path: Path) -> RetrievalSettings:
     """Parse and validate ``retrieval.toml``. Unknown keys and mistyped values are refused, per the
     framework's config rules; range checks live on :class:`RetrievalSettings`."""
@@ -82,16 +87,20 @@ def load_retrieval(path: Path) -> RetrievalSettings:
                             label="[retrieval.rerank]", path=path)
     try:
         return RetrievalSettings(
-            kind=read_string(section, "kind", "lexical", label="[retrieval]", path=path),
-            candidate_pool=read_int(section, "candidate_pool", 40, label="[retrieval]", path=path),
-            mmr_lambda=read_float(section, "mmr_lambda", 0.7, label="[retrieval]", path=path),
-            lexical_min_score=read_float(lexical, "min_score", 0.30,
+            kind=read_string(section, "kind", _DEFAULTS.kind, label="[retrieval]", path=path),
+            candidate_pool=read_int(section, "candidate_pool", _DEFAULTS.candidate_pool,
+                                    label="[retrieval]", path=path),
+            mmr_lambda=read_float(section, "mmr_lambda", _DEFAULTS.mmr_lambda,
+                                  label="[retrieval]", path=path),
+            lexical_min_score=read_float(lexical, "min_score", _DEFAULTS.lexical_min_score,
                                          label="[retrieval.lexical]", path=path),
-            dense_min_score=read_float(dense, "min_score", 0.55,
+            dense_min_score=read_float(dense, "min_score", _DEFAULTS.dense_min_score,
                                        label="[retrieval.dense]", path=path),
-            embedding_model=read_string(dense, "model", "", label="[retrieval.dense]", path=path),
-            rerank_enabled=read_bool(rerank, "enabled", False,
+            embedding_model=read_string(dense, "model", _DEFAULTS.embedding_model,
+                                        label="[retrieval.dense]", path=path),
+            rerank_enabled=read_bool(rerank, "enabled", _DEFAULTS.rerank_enabled,
                                      label="[retrieval.rerank]", path=path),
-            rerank_model=read_string(rerank, "model", "", label="[retrieval.rerank]", path=path))
+            rerank_model=read_string(rerank, "model", _DEFAULTS.rerank_model,
+                                     label="[retrieval.rerank]", path=path))
     except ValueError as exc:
         raise ConfigError(f"[retrieval]: {exc}", path=path) from exc

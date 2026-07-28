@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import httpx
 
+from ragkit.core.jsonshape import json_type_matches
 from ragkit.core.ports import Message, SamplingParams
 
 from .backends import DEFAULT_BACKEND, BaseBackend, SchemaBackend, get_backend, suggest_backend
@@ -326,27 +327,6 @@ def _token_count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-_JSON_TYPE_CHECKS = {
-    "string": lambda v: isinstance(v, str),
-    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
-    "boolean": lambda v: isinstance(v, bool),
-    "array": lambda v: isinstance(v, list),
-    "object": lambda v: isinstance(v, dict),
-    "null": lambda v: v is None,
-}
-
-
-def _json_type_matches(value: Any, declared: Any) -> bool:
-    """Whether ``value`` has the JSON type ``declared`` names (a single name, or a union list).
-    A type name this does not recognise is accepted, so the check tightens the common flat case
-    without reimplementing JSON Schema."""
-    if isinstance(declared, list):
-        return any(_json_type_matches(value, item) for item in declared)
-    check = _JSON_TYPE_CHECKS.get(declared) if isinstance(declared, str) else None
-    return check is None or check(value)
-
-
 def _check_schema_shape(parsed: Any, schema: dict[str, Any], *, role: str, body: str) -> None:
     """Raise :class:`LlmContentError` unless ``parsed`` is an object matching ``schema``'s
     top-level shape. Shared by the ordinary parse path and the truncated-envelope recovery path,
@@ -361,7 +341,7 @@ def _check_schema_shape(parsed: Any, schema: dict[str, Any], *, role: str, body:
     mistyped = [
         f"{name!r} should be {spec['type']}, got {type(parsed[name]).__name__}"
         for name, spec in schema.get("properties", {}).items()
-        if name in parsed and "type" in spec and not _json_type_matches(parsed[name], spec["type"])
+        if name in parsed and "type" in spec and not json_type_matches(parsed[name], spec["type"])
     ]
     if mistyped:
         raise LlmContentError(f"response fields have the wrong type: {'; '.join(mistyped)}",

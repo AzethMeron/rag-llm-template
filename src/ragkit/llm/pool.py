@@ -110,6 +110,13 @@ class ModelSpec:
                 f"model {self.name!r}: approx_vram_mb must be >= 0, got {self.approx_vram_mb}")
 
 
+# One home for each spec's field defaults: the loaders read them from these instances rather than
+# re-typing every literal, so a default and its loader cannot drift (the Leniency loader pattern).
+# The required id fields are placeholders -- only the defaulted fields are read.
+_ENDPOINT_DEFAULTS = EndpointSpec(name="")
+_MODEL_DEFAULTS = ModelSpec(name="", endpoint="", model_id="")
+
+
 # Builds the httpx.Client for an endpoint, given its base_url and timeout. Injected so a test
 # drives an in-memory transport with no server; a real caller lets each endpoint own a real one.
 ClientFactory = Callable[[str, float], httpx.Client]
@@ -280,28 +287,24 @@ def _load_endpoints(section: object, *, path: Path) -> dict[str, EndpointSpec]:
     endpoints: dict[str, EndpointSpec] = {}
     for name, raw in table.items():
         body = reject_unknown(raw, _ENDPOINT_KEYS, label=f"[endpoint.{name}]", path=path)
+        d, label = _ENDPOINT_DEFAULTS, f"[endpoint.{name}]"
         try:
             endpoints[name] = EndpointSpec(
                 name=name,
-                provider=read_string(body, "provider", "llamacpp-router",
-                                     label=f"[endpoint.{name}]", path=path),
-                base_url=read_string(body, "base_url", "http://127.0.0.1:8080/v1",
-                                     label=f"[endpoint.{name}]", path=path),
-                resident_max=read_int(body, "resident_max", 4,
-                                      label=f"[endpoint.{name}]", path=path),
-                parallel=read_int(body, "parallel", 2, label=f"[endpoint.{name}]", path=path),
-                vram_budget_mb=read_int(body, "vram_budget_mb", 0,
-                                        label=f"[endpoint.{name}]", path=path),
-                timeout_seconds=read_float(body, "timeout_seconds", 300.0,
-                                           label=f"[endpoint.{name}]", path=path),
-                max_retries=read_int(body, "max_retries", 4,
-                                     label=f"[endpoint.{name}]", path=path),
-                retry_backoff_seconds=read_float(body, "retry_backoff_seconds", 2.0,
-                                                 label=f"[endpoint.{name}]", path=path),
-                enable_reasoning=read_bool(body, "enable_reasoning", False,
-                                           label=f"[endpoint.{name}]", path=path),
-                server_args=read_string_list(body, "server_args",
-                                             label=f"[endpoint.{name}]", path=path))
+                provider=read_string(body, "provider", d.provider, label=label, path=path),
+                base_url=read_string(body, "base_url", d.base_url, label=label, path=path),
+                resident_max=read_int(body, "resident_max", d.resident_max, label=label, path=path),
+                parallel=read_int(body, "parallel", d.parallel, label=label, path=path),
+                vram_budget_mb=read_int(body, "vram_budget_mb", d.vram_budget_mb,
+                                        label=label, path=path),
+                timeout_seconds=read_float(body, "timeout_seconds", d.timeout_seconds,
+                                           label=label, path=path),
+                max_retries=read_int(body, "max_retries", d.max_retries, label=label, path=path),
+                retry_backoff_seconds=read_float(body, "retry_backoff_seconds",
+                                                 d.retry_backoff_seconds, label=label, path=path),
+                enable_reasoning=read_bool(body, "enable_reasoning", d.enable_reasoning,
+                                           label=label, path=path),
+                server_args=read_string_list(body, "server_args", label=label, path=path))
         except ModelPoolError as exc:
             raise ConfigError(str(exc), path=path) from exc
     return endpoints
@@ -318,15 +321,16 @@ def _load_model_specs(section: object, *, path: Path) -> dict[str, ModelSpec]:
         endpoint = read_string(body, "endpoint", "", label=f"[model.{name}]", path=path)
         if not endpoint:
             raise ConfigError(f"[model.{name}] needs an endpoint", path=path)
+        d, label = _MODEL_DEFAULTS, f"[model.{name}]"
         try:
             models[name] = ModelSpec(
                 name=name, endpoint=endpoint, model_id=model_id,
-                backend=read_string(body, "backend", "auto", label=f"[model.{name}]", path=path),
-                kind=read_string(body, "kind", "chat", label=f"[model.{name}]", path=path),
-                context_window=read_int(body, "context_window", 0,
-                                        label=f"[model.{name}]", path=path),
-                approx_vram_mb=read_int(body, "approx_vram_mb", 0,
-                                        label=f"[model.{name}]", path=path))
+                backend=read_string(body, "backend", d.backend, label=label, path=path),
+                kind=read_string(body, "kind", d.kind, label=label, path=path),
+                context_window=read_int(body, "context_window", d.context_window,
+                                        label=label, path=path),
+                approx_vram_mb=read_int(body, "approx_vram_mb", d.approx_vram_mb,
+                                        label=label, path=path))
         except ModelPoolError as exc:
             raise ConfigError(str(exc), path=path) from exc
     return models

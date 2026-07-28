@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from ragkit.core.config import (
@@ -39,8 +39,16 @@ _PRODUCER_DEFAULT_TEMPERATURE = 0.3
 _REVIEWER_DEFAULT_TEMPERATURE = 0.0
 """Determinism for judging: a reviewer's verdict should not wander between runs."""
 
-_SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "seed", "presence_penalty",
-                            "frequency_penalty", "repeat_penalty", "stop"})
+# Revision-budget defaults, defined once so the Panel field default and the load_panel loader
+# reference the same value rather than each re-typing the literal (the SSOT rule the config
+# loaders already follow for Leniency).
+_DEFAULT_MAX_REVISIONS = 2
+_DEFAULT_MAX_REPAIRS = 2
+_DEFAULT_REPAIR_TRUNCATED_JSON = True
+
+# Derived from the dataclass, not re-typed: the allowed [persona.sampling] keys are exactly the
+# SamplingParams fields, so adding a knob there cannot drift out of sync with what config accepts.
+_SAMPLING_KEYS = frozenset(f.name for f in fields(SamplingParams))
 
 
 def _at_least(value: int, minimum: int, *, what: str) -> None:
@@ -100,6 +108,11 @@ class Limits:
         return persona.max_tokens if persona.max_tokens is not None else self.review_tokens
 
 
+_LIMITS_DEFAULTS = Limits()
+"""One home for the token-budget defaults: the loader reads them from here rather than re-typing
+each literal (matching the Leniency loader's ``default.window`` pattern)."""
+
+
 @dataclass(frozen=True, slots=True)
 class Persona:
     """One member of the run: the producer, or a reviewer."""
@@ -135,11 +148,11 @@ class Panel:
 
     producer: Persona
     reviewers: tuple[Persona, ...]
-    limits: Limits = Limits()
-    leniency: Leniency = Leniency()
-    max_revisions: int = 2
-    max_repairs: int = 2
-    repair_truncated_json: bool = True
+    limits: Limits = field(default_factory=Limits)
+    leniency: Leniency = field(default_factory=Leniency)
+    max_revisions: int = _DEFAULT_MAX_REVISIONS
+    max_repairs: int = _DEFAULT_MAX_REPAIRS
+    repair_truncated_json: bool = _DEFAULT_REPAIR_TRUNCATED_JSON
 
     def __post_init__(self) -> None:
         _at_least(self.max_revisions, 0, what="max_revisions")
@@ -184,9 +197,12 @@ def load_panel(path: Path, substitutions: dict[str, str] | None = None) -> Panel
     try:
         return Panel(
             producer=producer, reviewers=reviewers, limits=limits, leniency=default_leniency,
-            max_revisions=read_int(revision, "max_revisions", 2, label="[revision]", path=path),
-            max_repairs=read_int(revision, "max_repairs", 2, label="[revision]", path=path),
-            repair_truncated_json=read_bool(revision, "repair_truncated_json", True,
+            max_revisions=read_int(revision, "max_revisions", _DEFAULT_MAX_REVISIONS,
+                                   label="[revision]", path=path),
+            max_repairs=read_int(revision, "max_repairs", _DEFAULT_MAX_REPAIRS,
+                                 label="[revision]", path=path),
+            repair_truncated_json=read_bool(revision, "repair_truncated_json",
+                                            _DEFAULT_REPAIR_TRUNCATED_JSON,
                                             label="[revision]", path=path))
     except ValueError as exc:
         raise ConfigError(f"[revision]: {exc}", path=path) from exc
@@ -205,15 +221,18 @@ def _limits(section: object, *, path: Path) -> Limits:
     table = reject_unknown(section, {"produce_tokens_per_source_char", "produce_tokens_floor",
                                      "produce_tokens_ceiling", "review_tokens"},
                            label="[limits]", path=path)
+    d = _LIMITS_DEFAULTS
     try:
         return Limits(
             produce_tokens_per_source_char=read_int(
-                table, "produce_tokens_per_source_char", 8, label="[limits]", path=path),
-            produce_tokens_floor=read_int(table, "produce_tokens_floor", 256,
+                table, "produce_tokens_per_source_char", d.produce_tokens_per_source_char,
+                label="[limits]", path=path),
+            produce_tokens_floor=read_int(table, "produce_tokens_floor", d.produce_tokens_floor,
                                           label="[limits]", path=path),
-            produce_tokens_ceiling=read_int(table, "produce_tokens_ceiling", 1024,
-                                            label="[limits]", path=path),
-            review_tokens=read_int(table, "review_tokens", 1024, label="[limits]", path=path))
+            produce_tokens_ceiling=read_int(table, "produce_tokens_ceiling",
+                                            d.produce_tokens_ceiling, label="[limits]", path=path),
+            review_tokens=read_int(table, "review_tokens", d.review_tokens,
+                                   label="[limits]", path=path))
     except ValueError as exc:
         raise ConfigError(f"[limits]: {exc}", path=path) from exc
 

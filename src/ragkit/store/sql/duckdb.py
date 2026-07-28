@@ -45,7 +45,7 @@ class DuckDBStore:
         # A read-only store creating schema is a contradiction -- caught before opening the
         # connection, so the error names the real mistake rather than a downstream open failure.
         if schema_sql and read_only:
-            raise SqlStoreError("a read_only store cannot run schema_sql")
+            raise SqlStoreError.schema_on_read_only()
         self.read_only = read_only
         self._lock = threading.Lock()
         duckdb = _require_duckdb()
@@ -77,10 +77,7 @@ class DuckDBStore:
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         if self.read_only:
-            raise SqlStoreError(
-                "write refused: this SqlStore binding is read_only. An external data source is "
-                "never written by the framework; only the framework's own store is writable.",
-                sql=sql)
+            raise SqlStoreError.write_on_read_only(sql)
         with self._lock:
             try:
                 self._conn.execute(sql, list(params))

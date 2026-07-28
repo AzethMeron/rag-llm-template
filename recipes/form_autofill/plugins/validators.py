@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ragkit.core.jsonshape import json_type_matches
 from ragkit.core.records import Record
 from ragkit.core.rules import Severity, Violation
 
@@ -51,7 +52,7 @@ class FieldRule:
     def check(self, value: Any) -> list[Violation]:
         if value is None:
             return [_error(f"field {self.name!r} was not filled (null)")]
-        if not _type_matches(value, self.type):
+        if not json_type_matches(value, self.type):
             return [_error(f"field {self.name!r} should be {self.type}, got "
                            f"{type(value).__name__} {value!r}")]
         violations: list[Violation] = []
@@ -75,16 +76,6 @@ class FieldRule:
              f"field {self.name!r} value {value} must be greater than {self.min_exclusive}"),
         )
         return [_error(message) for failed, message in checks if failed]
-
-
-def _type_matches(value: Any, declared: str) -> bool:
-    if declared == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if declared == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if declared == "boolean":
-        return isinstance(value, bool)
-    return isinstance(value, str)  # declared == "string"
 
 
 def _in_enum(value: Any, allowed: Sequence[str]) -> bool:
