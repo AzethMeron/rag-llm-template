@@ -1,11 +1,12 @@
 # docs/
 
-Design notes and wiring guides.
+Design notes and guides.
 
 | Document | Read it when |
 |---|---|
-| `architecture.md` | you want the shape of the whole thing: the enforced layer boundaries, the one extension mechanism, the `Record` and its durability, and what each layer adds |
+| [`tutorial.md`](tutorial.md) | you want to **build something**: a new pipeline from scratch, and how to extend every seam (a validator, a context block, an output schema, a retriever, a database driver, a model backend) with runnable examples |
+| [`architecture.md`](architecture.md) | you want the shape of the whole thing: the enforced layer boundaries, the one extension mechanism, the `Record` and its durability, where each LLM setting lives, and the evaluation layer |
+| [`config.md`](config.md) | you need the exact configuration reference: every file, every key, its type, default, and meaning (wrong types and unknown keys are errors, not silent defaults) |
 
-More guides land with the layers they document: writing a component (any port), choosing a
-storage backend, adding a model backend, configuring the persona panel and rules, and building
-context blocks. For runnable specifics, the package READMEs are closer to the code.
+For runnable specifics, each recipe's `README.md` and its `config/` are closer to the code, and
+`.audit/` holds the design investigations kept across sessions.

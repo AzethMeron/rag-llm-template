@@ -8,23 +8,33 @@ records what each is and under what license, so the noncommercial/commercial spl
 
 ## Runtime Python dependencies
 
+Always installed (the LLM transport; the core contract itself needs none of these):
+
 | Package | Role | License |
 |---|---|---|
 | `httpx` (+ `anyio`, `certifi`, `h11`, `httpcore`, `idna`) | HTTP client for the local inference server | BSD-3-Clause / MIT / MPL-2.0 (certifi: MPL-2.0) |
 | `typing_extensions` | typing back-ports | PSF |
 
-Optional feature dependencies, installed only when their feature is used and each imported
-lazily inside a single driver module (added by the milestone that introduces the feature):
+**Shipped driver dependencies** — pinned in `requirements.txt`, but each imported *lazily inside a
+single driver module* so a run that does not use the feature never loads it (and the boundary test
+confines each to its module):
 
 | Package | Feature | License |
 |---|---|---|
-| `numpy` | dense-vector math | BSD-3-Clause |
-| `lancedb` (+ `pyarrow`) | default vector database | Apache-2.0 |
-| `sqlite-vec` | alternative in-SQLite vector driver | Apache-2.0 OR MIT |
-| `qdrant-client` | alternative vector driver | Apache-2.0 |
-| `psycopg` / `pgvector` | Postgres record + vector driver (production tier) | LGPL-3.0 / PostgreSQL |
+| `numpy` | dense-vector math (the embedding/dense-retrieval path) | BSD-3-Clause |
+| `lancedb` (+ `pyarrow` and transitives) | default vector database (`vector` driver `lancedb`) | Apache-2.0 |
+| `qdrant-client` (+ `grpcio`, `protobuf`, `portalocker`, `h2`/`hpack`/`hyperframe`) | second real vector database (`vector` driver `qdrant`) | Apache-2.0 (+ Apache/BSD/MIT transitives) |
+| `duckdb` | second real SQL store (`sql` driver `duckdb`) | MIT |
+
+**Documented plugin options** — *not* shipped or pinned; you add them yourself and select them by
+dotted path (no framework change). Listed here so their licenses are on record if you do:
+
+| Package | Feature | License |
+|---|---|---|
+| `sqlite-vec` | in-SQLite vector driver | Apache-2.0 OR MIT |
+| `pgvector` / `psycopg` | Postgres record + vector driver (production tier) | PostgreSQL / LGPL-3.0 |
 | `bm25s` | alternative lexical index | MIT |
-| `SQLAlchemy` | optional schema introspector | MIT |
+| `SQLAlchemy` | alternative schema introspector | MIT |
 
 ## Development dependencies
 
@@ -57,3 +67,4 @@ Each dataset's license governs your use of *that data*, independent of this soft
 | translation | Tatoeba bilingual pairs; OPUS (optional) | CC-BY 2.0 FR |
 | nl_to_sql | Spider; BIRD (optional) | CC BY-SA 4.0 |
 | form_autofill | Chinook; MovieLens 25M (optional) | Chinook: permissive (MIT-style); MovieLens: research-use |
+| predictive_maintenance | NASA C-MAPSS turbofan (sensor requests); Wikipedia articles (manuals memory) | C-MAPSS: US-Gov public domain; Wikipedia: CC BY-SA 4.0 |

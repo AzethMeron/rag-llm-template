@@ -92,8 +92,20 @@ what it ranks.**
   injected deterministic order (no hidden RNG), never the system names, and A/B-ing a system against
   itself is refused.
 
+## Storage: two roles, two real drivers per port
+
+Two database *roles* are kept apart: the framework's own writable store (records/chunks/metadata),
+and an **external, read-only** task data source (the DB that NL→SQL queries or form-autofill reads
+— a write through it is refused at the port, before the database). Each storage port ships **two
+real, interchangeable drivers** — `SqlStore` = `sqlite` | `duckdb`, `VectorIndex` = `lancedb` |
+`qdrant`, `LexicalIndex` = `fts5` — so swapping a database is a one-line `storage.toml` edit,
+proven by a conformance suite that runs every implementation through identical operations. A third
+party's own driver is selected the same way, by dotted path.
+
 ## Where to look next
 
+- **`docs/tutorial.md`** — build a pipeline from scratch and extend every seam, with runnable
+  examples. Start here to *do* something.
 - **`docs/config.md`** — the per-file configuration reference (every key, its type, default, and
   meaning). Wrong types and unknown keys are errors, not silent defaults.
 - **`recipes/<task>/README.md`** — each of the four worked recipes (translation, NL→SQL, form

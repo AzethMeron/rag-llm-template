@@ -1,24 +1,27 @@
 # tests
 
-The framework's own test suite. It needs **no inference server, no GPU, and no network**:
-every model call (once the model layer lands) is served by a scripted fake or an in-memory
-HTTP transport, and storage drivers are tested against `tmp_path`.
+The framework's own test suite. It needs **no inference server, no GPU, and no network**: every
+model/embedding/rerank call is served by a scripted fake or an in-memory `httpx.MockTransport`, and
+every database (sqlite, duckdb, lancedb, qdrant) runs embedded/in-process against `tmp_path`.
 
 ```bash
 tools/run_tests.sh              # or: PYTHONPATH=src python -m pytest
-tools/run_tests.sh --coverage   # statement AND branch coverage
+tools/run_tests.sh --coverage   # statement AND branch coverage, gated at 100% on src/
 ```
 
 ## Layout
 
 | Path | What it covers |
 |---|---|
-| `core/` | the contract: records & durability, the config loaders, the component registry (all three discovery paths, unknown-key rejection, conformance, collisions), the lexicon, display width (property tests), placeholders, rule violations, and the structured error base |
-| `test_boundaries.py` | the layer directions by AST walk; `core` is stdlib-only; no module imports a concrete driver; plus a subprocess that imports `core` with the optional deps unimportable |
-
-As more layers land, their suites join here: durability under injected failures, error-mode
-exit behaviour, concurrency under real contention, and each recipe's own suite (against tiny
-committed fixtures, never the fetched datasets).
+| `core/` | the contract: records & durability, the config loaders, the component registry (all three discovery paths, unknown-key rejection incl. third-party components, protocol conformance, collisions), the lexicon, display width (property tests), placeholders, rule violations, sampling params, and the structured error base |
+| `store/` | each driver's behaviour + failure modes, and a **conformance suite** that runs every implementation of each port (sqlite+duckdb; lancedb+qdrant+in-memory; fts5+in-memory) through identical operations, plus a config dotted-path custom driver |
+| `llm/` | the transport client (retry, error taxonomy, JSON-envelope recovery, RAII, a `UsageStats` concurrency-contention test), the backends, and the model pool + thrash guard |
+| `harness/` | personas/panel/rules loading, validators, the context blocks + budgeter, memory, output schemas, and the produce→check→panel→revise runner |
+| `retrieve/` | fusion (RRF/MMR property tests), rerank, embedding, the retrievers, and `retrieval.toml` parsing |
+| `eval/` | the retrieval metrics (hand-verified) + circularity guard, and the blinded A/B judge |
+| `cli/` | config-driven assembly, the pre-server checks, and the retrieval/injection seams |
+| `test_boundaries.py` | the layer directions by AST walk; `core` is stdlib-only; each driver's third-party dep is confined to its own module; plus a subprocess that imports `core` with the optional deps unimportable |
+| `recipes/*/tests/` | each recipe's own suite (against tiny committed fixtures, never the fetched datasets), including adversarial safety/grounding tests and end-to-end runs against **both** real DB drivers of each port |
 
 ## Conventions
 
