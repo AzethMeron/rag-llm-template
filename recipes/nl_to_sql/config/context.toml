@@ -1,0 +1,7 @@
+# The prompt: a grounding instruction, then the database schema (so the model uses real tables).
+[[context.block]]
+kind = "literal"
+text = "Write one read-only SQL SELECT that answers the question, using only the schema below."
+
+[[context.block]]
+kind = "schema"

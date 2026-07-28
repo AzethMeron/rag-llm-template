@@ -53,22 +53,26 @@ class Storage:
     introspector: SchemaIntrospector | None = None
 
 
-def load_storage(path: Path) -> Storage:
+def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
     """Build the configured stores from a ``storage.toml``. Each ``[<port>]`` table names a
     ``driver`` and passes the rest of its keys as that driver's options (unknown keys refused by
-    the driver's own schema)."""
+    the driver's own schema). A relative ``path`` option is resolved against ``base_dir`` (the
+    config directory), so a config is portable rather than tied to the caller's working directory;
+    a ``:memory:`` path is left as-is."""
     data = load_toml(path, what="storage file")
     reject_unknown(data, {"sql", "vector", "lexical", "introspector"},
                    label="the storage file", path=path)
+    base = base_dir or path.parent
     return Storage(
-        sql=_build(SQL_STORES, data.get("sql"), label="[sql]", path=path),
-        vector=_build(VECTOR_INDEXES, data.get("vector"), label="[vector]", path=path),
-        lexical=_build(LEXICAL_INDEXES, data.get("lexical"), label="[lexical]", path=path),
+        sql=_build(SQL_STORES, data.get("sql"), label="[sql]", path=path, base=base),
+        vector=_build(VECTOR_INDEXES, data.get("vector"), label="[vector]", path=path, base=base),
+        lexical=_build(LEXICAL_INDEXES, data.get("lexical"), label="[lexical]", path=path,
+                       base=base),
         introspector=_build(SCHEMA_INTROSPECTORS, data.get("introspector"),
-                            label="[introspector]", path=path))
+                            label="[introspector]", path=path, base=base))
 
 
-def _build(registry: Registry[Any], section: object, *, label: str, path: Path) -> Any:
+def _build(registry: Registry[Any], section: object, *, label: str, path: Path, base: Path) -> Any:
     if section is None:
         return None
     if not isinstance(section, dict):
@@ -77,6 +81,10 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path) 
     if not isinstance(driver, str) or not driver.strip():
         raise ConfigError(f"{label} needs a 'driver'", path=path)
     options = {k: v for k, v in section.items() if k != "driver"}
+    raw_path = options.get("path")
+    if isinstance(raw_path, str) and raw_path and raw_path != ":memory:" \
+            and not Path(raw_path).is_absolute():
+        options["path"] = str((base / raw_path).resolve())
     return registry.create(driver, options, path=path)
 
 

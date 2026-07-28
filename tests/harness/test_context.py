@@ -18,6 +18,7 @@ from ragkit.harness.context import (
     NeighboursBlock,
     PreviousAttemptBlock,
     RetrievedBlock,
+    SchemaBlock,
     SqlRowsBlock,
     load_context,
 )
@@ -48,6 +49,14 @@ class _StubStore:
 
     def execute(self, sql: str, params: object = ()) -> None:  # pragma: no cover - unused
         raise AssertionError("read-only")
+
+
+class _StubIntrospector:
+    def __init__(self, schema: dict[str, list[tuple[str, str]]]) -> None:
+        self._schema = schema
+
+    def schema(self) -> dict[str, list[tuple[str, str]]]:
+        return self._schema
 
 
 class TestBlocks:
@@ -117,6 +126,22 @@ class TestBlocks:
     def test_sql_rows_needs_a_query(self) -> None:
         with pytest.raises(ContextBlockError, match="non-empty 'query'"):
             SqlRowsBlock(query="  ")
+
+    def test_schema_renders_tables_and_columns(self) -> None:
+        introspector = _StubIntrospector({"singer": [("id", "INTEGER"), ("name", "TEXT")]})
+        out = SchemaBlock().render(_rec(), {"introspector": introspector})
+        assert out is not None and "singer(id INTEGER, name TEXT)" in out
+
+    def test_schema_without_introspector_raises(self) -> None:
+        with pytest.raises(ContextBlockError, match="no introspector was wired"):
+            SchemaBlock().render(_rec(), {})
+
+    def test_schema_with_wrong_type_raises(self) -> None:
+        with pytest.raises(ContextBlockError, match="does not satisfy the port"):
+            SchemaBlock().render(_rec(), {"introspector": object()})
+
+    def test_schema_empty_when_no_tables(self) -> None:
+        assert SchemaBlock().render(_rec(), {"introspector": _StubIntrospector({})}) is None
 
 
 class TestAssembler:

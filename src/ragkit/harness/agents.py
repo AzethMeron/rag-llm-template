@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ragkit.core.placeholders import placeholder_indices
-from ragkit.core.ports import Message, OutputSchema, Retriever, SqlStore
+from ragkit.core.ports import Message, OutputSchema, Retriever, SchemaIntrospector, SqlStore
 from ragkit.core.records import Record, Status
 from ragkit.core.rules import Violation
 from ragkit.llm.errors import (
@@ -133,6 +133,7 @@ class Harness:
                  output_schema: OutputSchema, validators: ValidatorPipeline,
                  context: ContextAssembler, *, memory: OutputMemory | None = None,
                  retriever: Retriever | None = None, sql_store: SqlStore | None = None,
+                 introspector: SchemaIntrospector | None = None,
                  sanitize: Callable[[str], str] = lambda text: text,
                  input_label: str = "Input to act on:",
                  stand_in: str = "they") -> None:
@@ -145,6 +146,7 @@ class Harness:
         self.memory = memory
         self.retriever = retriever
         self.sql_store = sql_store
+        self.introspector = introspector
         self.sanitize = sanitize
         self.input_label = input_label
         self.stand_in = stand_in
@@ -160,7 +162,8 @@ class Harness:
     def _shared_context(self, previous: Attempt | None) -> dict[str, Any]:
         return {"lexicon": self.validators.lexicon, "memory": self.memory,
                 "retriever": self.retriever, "sql_store": self.sql_store,
-                "previous_attempt": previous, "stand_in": self.stand_in}
+                "introspector": self.introspector, "previous_attempt": previous,
+                "stand_in": self.stand_in}
 
     def _system_prompt(self, instructions: str, *, placeholders: bool) -> str:
         sections = [instructions]

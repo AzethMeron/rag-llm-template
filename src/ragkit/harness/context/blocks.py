@@ -26,7 +26,7 @@ from typing import Any
 
 from ragkit.core.errors import RagkitError
 from ragkit.core.lexicon import Entry, relevant_entries
-from ragkit.core.ports import ContextBlock, Retriever, SqlStore
+from ragkit.core.ports import ContextBlock, Retriever, SchemaIntrospector, SqlStore
 from ragkit.core.records import Record
 from ragkit.core.registry import Registry
 
@@ -278,13 +278,45 @@ class SqlRowsBlock:
         return _section(self._heading, body)
 
 
+class SchemaBlock:
+    """The introspected schema of the external database, rendered as ``CREATE TABLE``-like text — so
+    the NL->SQL producer sees what tables and columns exist. Requires a ``introspector`` in the
+    context."""
+
+    CONFIG_KEYS = frozenset({"heading"})
+
+    def __init__(self, heading: str = "Database schema (tables and their columns):") -> None:
+        self._heading = heading
+
+    @classmethod
+    def from_config(cls, options: Mapping[str, Any]) -> SchemaBlock:
+        return cls(heading=str(options.get("heading",
+                                           "Database schema (tables and their columns):")))
+
+    def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
+               context: Mapping[str, Any]) -> str | None:
+        introspector = context.get("introspector")
+        if introspector is None:
+            raise ContextBlockError(
+                "a 'schema' context block is configured but no introspector was wired into the run")
+        if not isinstance(introspector, SchemaIntrospector):
+            raise ContextBlockError("the wired 'introspector' does not satisfy the port")
+        schema = introspector.schema()
+        if not schema:
+            return None
+        lines = [f"  {table}(" + ", ".join(f"{name} {ctype}".strip() for name, ctype in columns)
+                 + ")" for table, columns in schema.items()]
+        return _section(self._heading, "\n".join(lines))
+
+
 def register_builtins() -> None:
     """Register the built-in blocks. Idempotent, so importing this module more than once is
     harmless; the registry refuses a genuine name collision."""
     for name, block in (("literal", LiteralBlock), ("lexicon", LexiconBlock),
                         ("neighbours", NeighboursBlock), ("established", EstablishedBlock),
                         ("retrieved", RetrievedBlock),
-                        ("previous_attempt", PreviousAttemptBlock), ("sql_rows", SqlRowsBlock)):
+                        ("previous_attempt", PreviousAttemptBlock), ("sql_rows", SqlRowsBlock),
+                        ("schema", SchemaBlock)):
         CONTEXT_BLOCKS.register(name, block)
 
 

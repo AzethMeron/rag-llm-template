@@ -13,11 +13,12 @@ from .blocks import (
     NeighboursBlock,
     PreviousAttemptBlock,
     RetrievedBlock,
+    SchemaBlock,
     SqlRowsBlock,
 )
 
 __all__ = [
     "ContextAssembler", "load_context", "CONTEXT_BLOCKS", "ContextBlockError",
     "LiteralBlock", "LexiconBlock", "NeighboursBlock", "EstablishedBlock",
-    "RetrievedBlock", "PreviousAttemptBlock", "SqlRowsBlock",
+    "RetrievedBlock", "PreviousAttemptBlock", "SqlRowsBlock", "SchemaBlock",
 ]

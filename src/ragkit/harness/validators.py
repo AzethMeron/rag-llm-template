@@ -16,7 +16,8 @@ evaluated is skipped, never reported as passed**.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ragkit.core.lexicon import Entry, relevant_entries
 from ragkit.core.placeholders import placeholder_indices
@@ -134,11 +135,16 @@ class ValidatorPipeline:
     """
 
     def __init__(self, ruleset: RuleSet, lexicon: list[Entry] | None = None, *,
-                 extra: Sequence[Validator] = (), lexicon_limit: int = 12) -> None:
+                 extra: Sequence[Validator] = (), lexicon_limit: int = 12,
+                 shared: Mapping[str, Any] | None = None) -> None:
         self.ruleset = ruleset
         self.lexicon = lexicon or []
         self.extra = tuple(extra)
         self.lexicon_limit = lexicon_limit
+        # Run-wide services a pluggable validator may need but cannot get from TOML options -- the
+        # external read-only SqlStore and SchemaIntrospector for the SQL-safety check, say. Merged
+        # into every validator's context; a validator ignores what it does not use.
+        self.shared = dict(shared or {})
 
     def check(self, record: Record, output: str) -> list[Violation]:
         required = tuple(entry.rendering for entry in
@@ -147,7 +153,8 @@ class ValidatorPipeline:
         max_columns = raw_budget if isinstance(raw_budget, int) and raw_budget > 0 else None
         violations = check_mechanical(record, output, self.ruleset,
                                       required_terms=required, max_columns=max_columns)
-        context = {"ruleset": self.ruleset, "required_terms": required, "max_columns": max_columns}
+        context = {**self.shared, "ruleset": self.ruleset, "required_terms": required,
+                   "max_columns": max_columns}
         for validator in self.extra:
             violations.extend(validator.validate(record, output, context))
         return violations
