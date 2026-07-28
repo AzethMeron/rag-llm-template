@@ -1,11 +1,20 @@
 """Driver conformance: the same operations run against every implementation of each port, so
 "interchangeable" is a tested claim rather than an assertion. As more drivers land (usearch,
 pgvector, sqlite-vec, bm25s), they are added to the factory lists here and must pass unchanged.
+
+The suite runs against the shipped driver AND a small independent in-memory implementation of each
+port. Two implementations passing the identical operations is what makes "the port is a real,
+independently-implementable seam" a tested fact rather than an assertion — and it is exactly the
+shape a third party's own driver takes. The in-memory implementations are pure-Python (no numpy, no
+brute-force *shipped* driver — they live here in the test suite, not in ``src/``), so they add no
+dependency and are not a production default.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,12 +22,80 @@ from ragkit.core.ports import LexicalIndex, VectorIndex
 from ragkit.store.lexical.fts5 import Fts5Index
 from ragkit.store.vector.lancedb import LanceVectorIndex
 
-# Each factory builds a fresh, empty driver in the given tmp directory.
+
+class InMemoryVectorIndex:
+    """A minimal, dependency-free VectorIndex — a second implementation of the port, purely to
+    prove the port is independently implementable and interchangeable with the shipped driver."""
+
+    def __init__(self) -> None:
+        self._vectors: dict[str, list[float]] = {}
+        self._meta: dict[str, Mapping[str, Any]] = {}
+
+    def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
+               metas: Sequence[Mapping[str, Any]]) -> None:
+        for id_, vector, meta in zip(ids, vectors, metas, strict=True):
+            self._vectors[id_] = list(vector)
+            self._meta[id_] = meta
+
+    def search(self, vector: Sequence[float], *, k: int,
+               where: object = ()) -> list[tuple[str, float]]:
+        scored = [(id_, _cosine(vector, vec)) for id_, vec in self._vectors.items()]
+        scored.sort(key=lambda pair: pair[1], reverse=True)  # best-first, higher-is-better
+        return scored[:k]
+
+    def delete(self, ids: Sequence[str]) -> None:
+        for id_ in ids:
+            self._vectors.pop(id_, None)
+            self._meta.pop(id_, None)
+
+    def count(self) -> int:
+        return len(self._vectors)
+
+    def reconcile(self, chunk_ids: Iterable[str]) -> set[str]:
+        wanted = set(chunk_ids)
+        for orphan in set(self._vectors) - wanted:
+            self.delete([orphan])
+        return wanted - set(self._vectors)
+
+
+class InMemoryLexicalIndex:
+    """A minimal, dependency-free LexicalIndex — the second implementation of that port."""
+
+    def __init__(self) -> None:
+        self._docs: dict[str, set[str]] = {}
+
+    def index(self, chunk_id: str, text: str) -> None:
+        self._docs[chunk_id] = set(text.lower().split())
+
+    def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
+        terms = set(query.lower().split())
+        if not terms:
+            return []
+        scored = [(id_, float(len(terms & words))) for id_, words in self._docs.items()]
+        hits = [(id_, score) for id_, score in scored if score > 0]
+        hits.sort(key=lambda pair: pair[1], reverse=True)
+        return hits[:k]
+
+    def delete(self, chunk_id: str) -> None:
+        self._docs.pop(chunk_id, None)
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+# Each factory builds a fresh, empty driver in the given tmp directory. Both a shipped driver and an
+# independent in-memory implementation must pass the identical conformance operations.
 VECTOR_FACTORIES: list[Callable[[Path], VectorIndex]] = [
     lambda tmp: LanceVectorIndex(str(tmp / "v.lance"), dim=3),
+    lambda tmp: InMemoryVectorIndex(),
 ]
 LEXICAL_FACTORIES: list[Callable[[Path], LexicalIndex]] = [
     lambda tmp: Fts5Index(),
+    lambda tmp: InMemoryLexicalIndex(),
 ]
 
 
