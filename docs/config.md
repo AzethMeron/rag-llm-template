@@ -43,7 +43,7 @@ routes each model over it; personas naming the same model share it.
 |---|---|---|---|
 | `endpoint` | string | required | Which `[endpoint.<name>]` serves it. |
 | `model_id` | string | required | The id the server exposes (pin by repo + quantisation + revision). |
-| `backend` | `"auto" \| "json_schema" \| "json_object"` | `"auto"` | How a structured request is shaped for this model. |
+| `backend` | `"auto" \| "generic" \| "bielik" \| "eurollm" \| "gemma"` (or a dotted path) | `"auto"` | Model-family profile that shapes a structured request. `generic` (aliases `openai`/`json_schema`) constrains decoding with a JSON-Schema grammar (Qwen and most llama.cpp/vLLM builds); `bielik`/`eurollm`/`gemma` describe the shape in the prompt with a `json_object` response for builds that cannot compile a grammar. `auto` picks by the model id. |
 | `kind` | `"chat" \| "embedding" \| "rerank"` | `"chat"` | Role; personas use chat models, retrieval uses the others. |
 | `context_window` | int ≥ 0 | `0` | Tokens, for the proactive budget warning; `0` disables it. |
 | `approx_vram_mb` | int ≥ 0 | `0` | Resident weight size for the VRAM guard; `0` means undeclared (guard counts models only). |

@@ -103,6 +103,15 @@ class TestGroundingAcceptance:
         quote = "REQUIRES   inspection\nof the HOT section"
         assert _validator().validate(_rec(), _decision(evidence=[quote]), _ctx([MANUAL])) == []
 
+    def test_a_citation_wrapped_in_quotation_marks_is_still_grounded(self) -> None:
+        # Regression (found by running a live model): a model routinely wraps its citation in
+        # quotes even when the text inside is verbatim from a manual; the surrounding quote
+        # characters must not make it read as a hallucination. Straight and curly quotes both.
+        for quote in ['"requires inspection of the hot section"',
+                      "“requires inspection of the hot section”",
+                      "'requires inspection of the hot section'"]:
+            assert _validator().validate(_rec(), _decision(evidence=[quote]), _ctx([MANUAL])) == []
+
     def test_multiple_quotes_all_grounded(self) -> None:
         out = _decision(evidence=["indicates turbine wear", "inspection of the hot section"])
         assert _validator().validate(_rec(), out, _ctx([MANUAL])) == []

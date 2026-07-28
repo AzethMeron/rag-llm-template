@@ -261,3 +261,60 @@ class TestRetrievalMemoryOnEachVectorDB:
                   install_signal_handlers=False)
         [result] = list(read_journal(journal))
         assert result.status is Status.VERIFIED and result.output == "Kot śpi."
+
+
+from recipes.translation import eval as tr_eval  # noqa: E402
+
+
+class TestQualityEval:
+    def test_exact_and_similarity(self) -> None:
+        report = tr_eval.evaluate([
+            ("a", "Kot śpi.", "Kot śpi."),              # exact
+            ("b", "Zgasły wszystkie światła.", "Wszystkie światła zgasły."),  # valid, reordered
+            ("c", None, "cokolwiek")])                  # not produced -> miss
+        assert report.total == 3 and report.produced == 2
+        assert report.exact_match == pytest.approx(1 / 3)
+        assert 0.0 < report.mean_similarity < 1.0      # 'b' is close but not identical
+
+    def test_empty_report(self) -> None:
+        assert tr_eval.Report(()).exact_match == 0.0 and tr_eval.Report(()).mean_similarity == 0.0
+
+
+class TestEvalGoldAndMain:
+    def _gold(self, tmp_path: Path, text: str) -> Path:
+        path = tmp_path / "gold.jsonl"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_load_gold(self, tmp_path: Path) -> None:
+        p = self._gold(tmp_path, '{"record_id":"a","source":"x","target":"Kot śpi."}\n\n')
+        assert tr_eval.load_gold(p) == {"a": "Kot śpi."}
+
+    def test_load_gold_missing_file(self, tmp_path: Path) -> None:
+        with pytest.raises(tr_eval.EvalError, match="not found"):
+            tr_eval.load_gold(tmp_path / "no.jsonl")
+
+    def test_load_gold_invalid_json(self, tmp_path: Path) -> None:
+        with pytest.raises(tr_eval.EvalError, match="invalid JSON"):
+            tr_eval.load_gold(self._gold(tmp_path, "{bad\n"))
+
+    def test_load_gold_missing_field(self, tmp_path: Path) -> None:
+        with pytest.raises(tr_eval.EvalError, match="needs 'record_id'"):
+            tr_eval.load_gold(self._gold(tmp_path, '{"record_id":"a"}\n'))
+
+    def test_load_gold_empty(self, tmp_path: Path) -> None:
+        with pytest.raises(tr_eval.EvalError, match="empty"):
+            tr_eval.load_gold(self._gold(tmp_path, "\n"))
+
+    def test_main_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        journal = tmp_path / "j.jsonl"
+        rec = Record(record_id="a", source="x", output="Kot śpi.", status=Status.VERIFIED)
+        journal.write_text(rec.to_json() + "\n", encoding="utf-8")
+        gold = self._gold(tmp_path, '{"record_id":"a","source":"x","target":"Kot śpi."}\n')
+        code = tr_eval.main(["--journal", str(journal), "--gold", str(gold)])
+        assert code == 0 and "exact match 1.000" in capsys.readouterr().out
+
+    def test_main_missing_gold(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        code = tr_eval.main(["--journal", str(tmp_path / "j.jsonl"),
+                             "--gold", str(tmp_path / "no.jsonl")])
+        assert code == 1 and "error:" in capsys.readouterr().err

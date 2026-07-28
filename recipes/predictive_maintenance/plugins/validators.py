@@ -31,10 +31,16 @@ from ragkit.core.records import Record
 from ragkit.core.rules import Severity, Violation
 
 _WHITESPACE = re.compile(r"\s+")
+# Quotation marks (straight and curly, single and double) are stripped before the grounding
+# substring check: a real model routinely wraps its citation in quotes ("...") even when the text
+# inside is verbatim from a manual, and the manual passage itself is unquoted. Matching would then
+# fail on the surrounding quote characters alone -- rejecting a correctly-grounded citation. Found
+# by running a live model; a mock returning clean quotes never exercised it.
+_QUOTES = re.compile(r"[\"'“”‘’«»`]")
 
 
 def _normalise(text: str) -> str:
-    return _WHITESPACE.sub(" ", text).strip().lower()
+    return _WHITESPACE.sub(" ", _QUOTES.sub("", text)).strip().lower()
 
 
 def _error(message: str) -> Violation:

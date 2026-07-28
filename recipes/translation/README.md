@@ -60,6 +60,13 @@ For a **different-script** pair (Japanese/Chinese/Russian → English), swap the
 
 ## Evaluation
 
-`recipes/eval_output.py` (shared across recipes) scores the produced translations against
-`gold.jsonl` — trigram consistency and rejection rate — and needs the servers, so it is not part of
-`tools/run_tests.sh`.
+`recipes/translation/eval.py` scores the produced translations against `gold.jsonl` two ways: an
+**exact match** rate (a strict lower bound — one gold reference rarely equals an equally-valid
+alternative) and a **trigram consistency** to the reference (which credits correct but
+differently-phrased output). Read them together: high consistency with low exact means valid, varied
+wording. It reads only the journal and gold.
+
+```bash
+PYTHONPATH=src:. python -m recipes.translation.eval \
+    --journal work/out.jsonl --gold recipes/translation/data/gold.jsonl
+```
