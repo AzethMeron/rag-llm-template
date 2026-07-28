@@ -4,6 +4,10 @@
 # for lines that cannot be executed in a test or are meaningless to: a defensive assertion that
 # fires only if an invariant is already broken, the module-run entry guard, and the bodies of
 # typing-only Protocol methods (which are `...` and never executed).
+[run]
+# `python -m <pkg>` entry shims are exercised by an integration invocation, not the unit suite.
+omit = */__main__.py
+
 [report]
 exclude_also =
     raise AssertionError
