@@ -108,6 +108,13 @@ class TestOptionValidation:
         with pytest.raises(ConfigError, match=r"unknown key\(s\) \['bogus'\]"):
             reg.create("hello", {"bogus": 1})
 
+    def test_unknown_option_on_a_dotted_path_component_is_refused(self) -> None:
+        # The "third-party component's own options" case: unknown-key rejection must apply to a
+        # component reached by DOTTED PATH (a user's own class), not only a built-in name.
+        reg = _registry()
+        with pytest.raises(ConfigError, match=r"unknown key\(s\) \['bogus'\]"):
+            reg.create(f"{__name__}:Hello", {"name": "z", "bogus": 1})
+
     def test_a_component_with_no_from_config_takes_no_options(self) -> None:
         reg = _registry()
         reg.register("plain", NoOptions)

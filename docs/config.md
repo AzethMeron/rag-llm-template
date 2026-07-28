@@ -207,6 +207,15 @@ What the task produces, its extra validators, and an optional reference corpus.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `file` | string | `""` | JSONL corpus (relative to the config dir) to retrieve from. |
-| `retriever` | `"lexical"` | `"lexical"` | How to retrieve (lexical is buildable from config alone). |
+| `retriever` | string | `"lexical"` | `"lexical"` builds over the corpus; a **dotted path / entry-point name** selects a corpus-free custom retriever resolved through the `RETRIEVERS` registry. |
 | `index_field` | string | `"source"` | The JSON field matched on. |
 | `display_field` | string | `""` | The field a hit shows (falls back to a sensible default). |
+| `options` | table | `{}` | Options passed to a custom (dotted-path) retriever's `from_config`. |
+
+**Replacing the retriever without editing our code** — two seams, matching how the components are
+stateful:
+- A **corpus-free** retriever (its own search backend) is named by dotted path in `retriever` and
+  built from `options` through the registry.
+- A **corpus-stateful** retriever (one that must hold our reference corpus) is injected:
+  `assemble(config_dir, retriever=my_retriever)`, exactly as `client_factory` and
+  `extra_validators` are injected.

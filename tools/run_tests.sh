@@ -30,7 +30,12 @@ if [[ "$coverage" == 1 ]]; then
     # two of which were real defects (recorded in the reference project's audit history).
     "$python" -m coverage run --branch --source="${REPO_ROOT}/src" -m pytest "${pytest_args[@]}"
     status=$?
+    # `coverage report` exits non-zero when below .coveragerc's fail_under (100%). Honour that
+    # exit code, not only pytest's, so a coverage regression fails the run instead of printing a
+    # warning the caller ignores. A test failure still takes precedence in the reported status.
     "$python" -m coverage report --skip-covered
+    report_status=$?
+    [[ "$status" -eq 0 ]] && status="$report_status"
     exit "$status"
 fi
 

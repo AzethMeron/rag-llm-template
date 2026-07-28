@@ -72,3 +72,47 @@ is reusable by any recipe, which is the test that the abstraction was drawn in t
   *re-retrieved* passages (deterministic retriever, depth ≥ the block's), not by chunk id, to avoid
   coupling the recipe to how a block renders ids. Noted as a deliberate trade-off: robust to
   rendering, slightly fuzzier than id-equality.
+
+## Adversarial re-audit (same day) — claims cross-checked against the code
+
+Three independent read-only sweeps checked the implementation against the original prompt and
+CLAUDE.md, told to be skeptical and cite file:line. They found real gaps that earlier prose had
+over-claimed. Also: the data-fetch scripts had been asserted un-runnable ("no network"); network
+in fact works, and running them for real surfaced a silent-shortfall bug (below). Lesson reinforced:
+verify by running, don't assert.
+
+**Fixed as a result:**
+- **The `RETRIEVERS` registry was dead** — defined but never populated; retriever selection was a
+  hardcoded `if == "lexical"`, so a user could not swap the retriever (the prompt's own example)
+  without editing our code. Now: a corpus-free custom retriever is selected by dotted path /
+  entry point through `RETRIEVERS` (with `[reference].options`), and a corpus-stateful one is
+  injected via `assemble(retriever=...)`, matching the `client_factory`/`extra_validators` seams.
+- **`httpx` was imported across the llm and retrieve layer boundaries but the boundary test did not
+  confine it.** Added `httpx` to `DRIVER_DEP_LOCATIONS` (the four HTTP-client modules that wrap it),
+  so a stray import into core/harness/store/ingest now fails the boundary suite.
+- **"No empty prompt sections, ever" was violable:** `PreviousAttemptBlock` emitted a dangling
+  "Your previous attempt:" heading when a first-round content error carried an empty target. Guarded
+  + regression test.
+- **100% coverage was claimed but not gated.** Added `fail_under = 100` and `branch = true` to
+  `.coveragerc` (so a bare `coverage run` also branch-measures), and the missing rationale for the
+  `if TYPE_CHECKING:` exclusion.
+- **Missing tests filled:** unknown-key rejection on a *dotted-path* (third-party) component's
+  options; a real concurrency-contention test driving the lock-guarded `UsageStats`.
+- **predictive_maintenance `fetch.sh`:** the multi-title Wikipedia extracts query silently returned
+  one article (~18 paragraphs) because the API paginates; now one request per title with
+  Retry-After/backoff. Verified end-to-end: 538 paragraphs across all 11 titles.
+
+**Known limitations, recorded rather than hidden:**
+- **One driver per port.** `sqlite`, `lancedb`, `fts5` are the only shipped drivers, so
+  interchangeability is proven by *contract* (each satisfies its port; the conformance suite runs
+  against it) but not *demonstrated* by swapping to a second real driver. A second `VectorIndex`
+  (e.g. qdrant/in-memory) would make the conformance suite bite and enable the executable swap test.
+- **`Provider` is not registry-resolved** — the endpoint provider is dispatched from a hardcoded
+  `_PROVIDERS` frozenset (`llm/pool.py`), so a genuinely new provider needs a code change (the
+  OpenAI-compatible client covers the three shipped ones). `Backend` likewise uses a small separate
+  registry (`llm/backends.py`) holding stateless singletons rather than the general one.
+- **No `retrieval.toml` / config-assembled hybrid retrieval.** The retrieved-block `min_score` is
+  TOML, but the hybrid/rerank/embedding calibration floors are hardcoded defaults; no shipped recipe
+  builds a `HybridRetriever` from config, so those floors are latent rather than exposed.
+- **`nl_to_sql` `fetch.sh` is verified statically only** — Spider needs a large gated download URL
+  not available here; the other three fetchers were run end-to-end against live sources.

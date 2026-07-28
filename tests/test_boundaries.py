@@ -99,10 +99,12 @@ class TestTheDependencyDirectionHolds:
             assert not above, f"{relative} (layer {layer!r}) imports layer(s) above it: {above}"
 
 
-# A driver dependency is a third-party package that a single driver module owns. Framework code
-# must reach the driver through a registry, so its dependency may appear in exactly its own
-# module (a leaf path substring) and nowhere else. That confinement is what keeps the core import
-# path clean and lets a run without that feature omit the dependency entirely.
+# A driver dependency is a third-party package that specific driver/transport modules own.
+# Framework code must reach it through an interface (a registry-resolved driver, or an HTTP client),
+# so the dependency may appear only in the listed module(s) (a leaf path substring) and nowhere
+# else. That confinement keeps the core/harness import path clean and lets a run without that
+# feature omit the dependency entirely. httpx is the OpenAI-compatible transport: it is confined to
+# the four HTTP-client modules that wrap it, so it cannot leak into core, harness, store, or ingest.
 DRIVER_DEP_LOCATIONS = {
     "lancedb": ("store/vector/lancedb.py",),
     "pyarrow": ("store/vector/lancedb.py",),
@@ -112,6 +114,7 @@ DRIVER_DEP_LOCATIONS = {
     "sqlite_vec": ("store/vector/",),
     "psycopg": ("store/",),
     "chromadb": ("store/vector/",),
+    "httpx": ("llm/client.py", "llm/pool.py", "retrieve/embedding.py", "retrieve/rerank.py"),
 }
 
 

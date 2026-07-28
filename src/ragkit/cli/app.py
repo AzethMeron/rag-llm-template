@@ -32,6 +32,7 @@ from ragkit.harness import (
 from ragkit.harness.memory import OutputMemory
 from ragkit.ingest.corpus import Corpus, CorpusItem
 from ragkit.llm.pool import ClientFactory, ModelPool, load_models
+from ragkit.retrieve import RETRIEVERS
 from ragkit.store import Storage, load_storage
 from ragkit.store.lexical.fts5 import Fts5Index
 
@@ -52,12 +53,21 @@ class Assembled:
 
 def assemble(config_dir: Path, *, substitutions: dict[str, str] | None = None,
              client_factory: ClientFactory | None = None,
-             extra_validators: list[Any] | None = None) -> Assembled:
+             extra_validators: list[Any] | None = None,
+             retriever: Retriever | None = None) -> Assembled:
     """Build a :class:`Assembled` run from the config files in ``config_dir``.
 
     ``substitutions`` fill the ``{placeholder}`` tokens in persona instructions (the language pair
     for translation, say). ``extra_validators`` are task-specific validator instances a recipe
     passes in directly (in addition to any named in ``recipe.toml``).
+
+    ``retriever`` injects a pre-built :class:`~ragkit.core.ports.Retriever`, overriding whatever
+    ``[reference]`` would build. This is the replace-without-editing-our-code seam for a
+    *corpus-stateful* retriever (one that must hold our reference corpus): a recipe or host
+    constructs it and passes it here, exactly as ``client_factory`` and ``extra_validators`` are
+    injected. A *corpus-free* custom retriever (one with its own backend) needs no injection — name
+    it by dotted path in ``[reference].retriever`` and it is resolved through the ``RETRIEVERS``
+    registry.
     """
     config_dir = Path(config_dir)
     pool = load_models(config_dir / "models.toml", client_factory=client_factory)
@@ -80,7 +90,8 @@ def assemble(config_dir: Path, *, substitutions: dict[str, str] | None = None,
     # available to any pluggable validator (the generated-SQL safety check reads the schema; the
     # grounded-decision check re-retrieves the memory to verify a citation).
     external = _external_sql(storage)
-    retriever = _build_reference(recipe, config_dir, storage)
+    if retriever is None:
+        retriever = _build_reference(recipe, config_dir, storage)
     shared = {"sql_store": external, "introspector": storage.introspector,
               "retriever": retriever}
     pipeline = ValidatorPipeline(ruleset, lexicon, extra=validators, shared=shared)
@@ -116,6 +127,7 @@ class _Recipe:
     reference_retriever: str
     reference_index_field: str
     reference_display_field: str
+    reference_options: dict[str, Any]
 
 
 def _load_recipe(path: Path) -> _Recipe:
@@ -129,7 +141,7 @@ def _load_recipe(path: Path) -> _Recipe:
         for entry in tables(data, "validator", path=path)
         if "kind" in entry or _missing_kind(path))
     reference = reject_unknown(data.get("reference", {}),
-                               {"file", "retriever", "index_field", "display_field"},
+                               {"file", "retriever", "index_field", "display_field", "options"},
                                label="[reference]", path=path)
     return _Recipe(
         output_schema=str(task.get("output_schema", "json_field")),
@@ -141,7 +153,8 @@ def _load_recipe(path: Path) -> _Recipe:
         reference_file=str(reference.get("file", "")),
         reference_retriever=str(reference.get("retriever", "lexical")),
         reference_index_field=str(reference.get("index_field", "source")),
-        reference_display_field=str(reference.get("display_field", "")))
+        reference_display_field=str(reference.get("display_field", "")),
+        reference_options=dict(reference.get("options", {})))
 
 
 def _missing_kind(path: Path) -> bool:
@@ -149,20 +162,27 @@ def _missing_kind(path: Path) -> bool:
 
 
 def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Retriever | None:
-    """Build a reference retriever from a JSONL corpus, if the recipe configures one. Each line is a
-    JSON object; ``index_field`` is what matching happens on, ``display_field`` (or the whole line)
-    is what a hit shows."""
+    """Build a reference retriever from config. A ``[reference].retriever`` that is a dotted path or
+    an entry-point name is a **custom retriever with its own backend**, resolved through the
+    ``RETRIEVERS`` registry and built without our corpus. The built-in ``"lexical"`` is built over a
+    JSONL corpus (``index_field`` is what matching happens on, ``display_field`` what a hit shows).
+    A custom retriever that must read *our* corpus is corpus-stateful — inject it via
+    ``assemble(retriever=...)`` instead."""
+    spec = recipe.reference_retriever
+    if ":" in spec or spec in RETRIEVERS.available():
+        return RETRIEVERS.create(spec, recipe.reference_options)
     if not recipe.reference_file:
         return None
     path = (config_dir / recipe.reference_file).resolve()
     if not path.is_file():
         raise CliError("reference corpus not found", path=path)
     corpus = _load_corpus(path, recipe, storage)
-    if recipe.reference_retriever == "lexical":
+    if spec == "lexical":
         return corpus.lexical_retriever()
     raise CliError(
-        f"reference.retriever={recipe.reference_retriever!r} needs an embedding endpoint wired in; "
-        f"only 'lexical' is buildable from config alone in this build", path=path)
+        f"reference.retriever={spec!r} is not built-in. Use 'lexical', a dotted path / entry point "
+        f"to a corpus-free retriever, or inject a corpus-backed one via assemble(retriever=...). "
+        f"('dense' needs an embedding endpoint wired by a recipe.)", path=path)
 
 
 def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:

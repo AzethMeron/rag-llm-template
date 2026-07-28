@@ -114,6 +114,20 @@ class TestBlocks:
         out = PreviousAttemptBlock().render(_rec(), {"previous_attempt": attempt})
         assert out is not None and "draft" in out and "too long" in out and "shorten" in out
 
+    def test_previous_attempt_empty_target_omits_the_heading(self) -> None:
+        # Regression: a first-round content/truncation error carries an Attempt with target="".
+        # The "Your previous attempt:" heading must not appear with an empty body (no dangling
+        # header — the no-empty-section rule).
+        attempt = Attempt(target="", issues=("invalid JSON",), suggestions=())
+        out = PreviousAttemptBlock().render(_rec(), {"previous_attempt": attempt})
+        assert out is not None
+        assert "Your previous attempt:" not in out and "invalid JSON" in out
+
+    def test_previous_attempt_all_empty_renders_nothing(self) -> None:
+        attempt = Attempt(target="   ", issues=(), suggestions=())
+        out = PreviousAttemptBlock().render(_rec(), {"previous_attempt": attempt})
+        assert (out or "").strip() == ""  # dropped by the assembler as empty
+
     def test_sql_rows_renders_rows(self) -> None:
         store = _StubStore([{"name": "Ann", "total": 5}])
         block = SqlRowsBlock(query="select ...", param_keys=("customer_id",))

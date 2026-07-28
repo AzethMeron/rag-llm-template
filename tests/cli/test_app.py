@@ -14,6 +14,24 @@ from ragkit.cli.app import assemble
 from .conftest import scripted_factory, write_config
 
 
+class StandaloneRetriever:
+    """A corpus-free custom Retriever with its own 'backend' — selectable by dotted path through
+    the RETRIEVERS registry, built from config alone (no reference corpus of ours)."""
+
+    CONFIG_KEYS = frozenset({"tag"})
+
+    def __init__(self, tag: str = "") -> None:
+        self._tag = tag
+
+    @classmethod
+    def from_config(cls, options: dict) -> StandaloneRetriever:
+        return cls(tag=str(options.get("tag", "")))
+
+    def retrieve(self, query: str, *, k: int, min_score: float = 0.0) -> tuple:
+        from ragkit.core.ports import Retrieved
+        return (Retrieved("s", f"{self._tag}:{query}", 1.0),)[:k]
+
+
 class TestAssembleAndRun:
     def test_end_to_end_run(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg")
@@ -36,6 +54,34 @@ class TestAssembleAndRun:
         assert isinstance(assembled.retriever, LexicalRetriever)
         hits = assembled.retriever.retrieve("cat", k=1)
         assert hits and hits[0].text == "the cat -> kot"
+
+    def test_injected_retriever_overrides_the_config(self, tmp_path: Path) -> None:
+        # The replace-without-editing-our-code seam for a corpus-stateful Retriever: a caller
+        # passes one to assemble(), and it is used instead of whatever [reference] would build.
+        from ragkit.core.ports import Retrieved
+
+        class MyRetriever:
+            def retrieve(self, query: str, *, k: int, min_score: float = 0.0) -> tuple:
+                return (Retrieved("x", f"custom:{query}", 1.0),)
+
+        recipe = '[task]\noutput_schema = "json_field"\n[reference]\nfile = "ref.jsonl"\n'
+        config = write_config(tmp_path / "cfg", recipe=recipe,
+                              reference=[{"source": "the cat", "target": "kot"}])
+        mine = MyRetriever()
+        assembled = assemble(config, client_factory=scripted_factory(), retriever=mine)
+        assert assembled.retriever is mine  # injection wins over the config-built lexical one
+
+    def test_custom_retriever_by_dotted_path_is_resolved_through_the_registry(
+            self, tmp_path: Path) -> None:
+        # A corpus-free custom Retriever (its own backend) is selected by dotted path in config and
+        # resolved through the RETRIEVERS registry -- no reference file, no code change of ours.
+        recipe = ('[task]\noutput_schema = "json_field"\n'
+                  f'[reference]\nretriever = "{__name__}:StandaloneRetriever"\n'
+                  '[reference.options]\ntag = "hi"\n')
+        config = write_config(tmp_path / "cfg", recipe=recipe)
+        assembled = assemble(config, client_factory=scripted_factory())
+        assert isinstance(assembled.retriever, StandaloneRetriever)
+        assert assembled.retriever.retrieve("q", k=1)[0].text == "hi:q"
 
     def test_substitutions_fill_persona_instructions(self, tmp_path: Path) -> None:
         personas = ('[[persona]]\nid="p"\nkind="producer"\nmodel="prod"\n'

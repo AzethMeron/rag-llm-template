@@ -226,7 +226,10 @@ class PreviousAttemptBlock:
         attempt = context.get("previous_attempt")
         if attempt is None:
             return None
-        parts = [_section(self._heading, attempt.target)]
+        # The "previous attempt" can carry an empty target -- a first-round content/truncation
+        # error produces an Attempt with target="" -- so only show the target section when there is
+        # a target, never a dangling heading (the no-empty-section rule).
+        parts = [_section(self._heading, attempt.target)] if attempt.target.strip() else []
         if attempt.issues:
             parts.append("It was sent back for these reasons. Fix exactly these and change nothing "
                          "else that already works:\n"

@@ -5,8 +5,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
+import threading
+
 from ragkit.core.ports import Message, SamplingParams
 from ragkit.llm import LlmClient, ServerConfig
+from ragkit.llm.client import UsageStats
 from ragkit.llm.backends import resolve_backend
 from ragkit.llm.errors import (
     LlmContentError,
@@ -50,6 +53,32 @@ class TestHappyPath:
         assert client.stats.prompt_tokens == 10
         assert client.stats.completion_tokens == 4
         assert client.stats.peak_prompt_tokens == 10
+
+
+class TestUsageStatsConcurrency:
+    def test_concurrent_updates_do_not_lose_increments(self) -> None:
+        # One UsageStats is shared by every worker in a concurrent run; its docstring warns a bare
+        # `+=` would lose updates. Drive real contention on the lock-guarded counters and assert
+        # every increment survives (a missing lock would drop some under contention).
+        stats = UsageStats()
+        threads, per_thread = 8, 250
+
+        def worker() -> None:
+            for _ in range(per_thread):
+                stats.record({"prompt_tokens": 1, "completion_tokens": 2}, 0.001)
+                stats.record_retry()
+                stats.record_refusal()
+
+        workers = [threading.Thread(target=worker) for _ in range(threads)]
+        for t in workers:
+            t.start()
+        for t in workers:
+            t.join()
+
+        total = threads * per_thread
+        assert stats.requests == total
+        assert stats.prompt_tokens == total and stats.completion_tokens == 2 * total
+        assert stats.retries == total and stats.refusals == total
 
 
 class TestSampling:
