@@ -286,3 +286,70 @@ class TestEvalMain:
         journal, _ = self._setup(tmp_path, "urgent")
         code = pdm_eval.main(["--journal", str(journal), "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
+
+
+# --- decide from a manuals memory over each real vector DB (lancedb, qdrant) ----------------------
+_VEC_MODELS = """
+[endpoint.local]
+base_url = "http://127.0.0.1:8080/v1"
+[model.author]
+endpoint = "local"
+model_id = "a"
+[model.reviewer]
+endpoint = "local"
+model_id = "r"
+[model.embedder]
+endpoint = "local"
+model_id = "e"
+kind = "embedding"
+"""
+
+
+def _embed(text: str) -> list[float]:
+    return [1.0, (len(text) % 5) / 5.0, (sum(map(ord, text)) % 7) / 7.0]
+
+
+def _vector_factory(decision: dict) -> Callable[[str, float], httpx.Client]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/embeddings"):
+            return httpx.Response(200, json={"data": [{"embedding": _embed(t)}
+                                                      for t in body["input"]]})
+        props = body.get("response_format", {}).get("json_schema", {}).get(
+            "schema", {}).get("properties", {})
+        content = (json.dumps({"acceptable": True, "issues": []}) if "acceptable" in props
+                   else json.dumps(decision))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}], "usage": {}})
+
+    def factory(_b: str, _t: float) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(handler))
+    return factory
+
+
+@pytest.mark.parametrize("vector_driver", ["lancedb", "qdrant"])
+class TestManualsMemoryOnEachVectorDB:
+    """The manuals memory is retrieved through dense retrieval over EITHER real vector DB (lancedb,
+    qdrant); the grounded decision is checked against those retrieved manuals and VERIFIES. Only a
+    storage.toml driver edit differs. (The default fts5 lexical path is covered by TestEndToEnd.)"""
+
+    def test_a_grounded_decision_verifies(self, tmp_path: Path, vector_driver: str) -> None:
+        config = _staged(tmp_path)
+        (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
+        (config / "storage.toml").write_text(
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            encoding="utf-8")
+        (config / "retrieval.toml").write_text(
+            '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',
+            encoding="utf-8")
+        decision = {"diagnosis": "turbine hot-section wear", "severity": "urgent",
+                    "recommended_action": "inspect the hot section",
+                    "evidence": ["requires inspection of the hot section"]}
+        assembled = assemble(config, client_factory=_vector_factory(decision))
+        from ragkit.retrieve.retrievers import DenseRetriever
+        assert isinstance(assembled.retriever, DenseRetriever)
+        journal = tmp_path / "j.jsonl"
+        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
+                  install_signal_handlers=False)
+        [result] = list(read_journal(journal))
+        assert result.status is Status.VERIFIED

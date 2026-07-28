@@ -13,6 +13,7 @@ import pytest
 from ragkit.cli.app import assemble
 from ragkit.core.records import Record, Status, read_journal, write_catalog
 from ragkit.harness import pending_records, run_batch
+from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteIntrospector, SqliteStore
 
 from recipes.nl_to_sql import eval as sqleval
@@ -324,3 +325,48 @@ class TestEvalMain:
         gold.write_text('{"record_id": "q1", "sql": "SELECT 1"}\n', encoding="utf-8")
         code = self._run(config, tmp_path / "j.jsonl", gold)
         assert code == 1 and "no [sql] store" in capsys.readouterr().err
+
+
+_SQL_DRIVERS = [(SqliteStore, "sqlite", "database.sqlite"),
+                (DuckDBStore, "duckdb", "database.duckdb")]
+
+
+@pytest.mark.parametrize(("store_cls", "driver", "filename"), _SQL_DRIVERS)
+class TestDatabaseSwap:
+    """The recipe runs end-to-end against BOTH real SqlStore drivers (sqlite and duckdb) with only
+    a storage.toml driver edit -- proving the external database is swappable without code change."""
+
+    def _staged(self, tmp_path: Path, store_cls, driver: str, filename: str) -> Path:
+        config = tmp_path / "config"
+        shutil.copytree(CONFIG, config)
+        (tmp_path / "data").mkdir()
+        store_cls(str(tmp_path / "data" / filename), schema_sql=SCHEMA).close()
+        (config / "storage.toml").write_text(
+            f'[sql]\ndriver = "{driver}"\npath = "../data/{filename}"\nread_only = true\n'
+            f'[introspector]\ndriver = "{driver}"\npath = "../data/{filename}"\n', encoding="utf-8")
+        return config
+
+    def test_a_safe_query_verifies(self, tmp_path: Path, store_cls, driver: str,
+                                   filename: str) -> None:
+        config = self._staged(tmp_path, store_cls, driver, filename)
+        assembled = assemble(config, client_factory=_factory("SELECT count(*) FROM singer"))
+        journal = tmp_path / "j.jsonl"
+        write_catalog([Record(record_id="1", source="how many singers?")], tmp_path / "c.jsonl")
+        run_batch(assembled.harness, pending_records(tmp_path / "c.jsonl", journal), journal,
+                  install_signal_handlers=False)
+        [result] = list(read_journal(journal))
+        assert result.status is Status.VERIFIED and "SELECT" in (result.output or "")
+
+    def test_a_destructive_generation_is_rejected(self, tmp_path: Path, store_cls, driver: str,
+                                                  filename: str) -> None:
+        config = self._staged(tmp_path, store_cls, driver, filename)
+        assembled = assemble(config, client_factory=_factory("DROP TABLE singer"))
+        journal = tmp_path / "j.jsonl"
+        write_catalog([Record(record_id="1", source="delete all")], tmp_path / "c.jsonl")
+        run_batch(assembled.harness, pending_records(tmp_path / "c.jsonl", journal), journal,
+                  install_signal_handlers=False)
+        [result] = list(read_journal(journal))
+        assert result.status is Status.REJECTED
+        # The read-only binding on the chosen engine still holds the row.
+        check = store_cls(str(tmp_path / "data" / filename), read_only=True)
+        assert check.query("SELECT count(*) AS n FROM singer")[0]["n"] == 1

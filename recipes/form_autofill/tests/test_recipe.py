@@ -13,6 +13,7 @@ import pytest
 from ragkit.cli.app import assemble
 from ragkit.core.records import Record, Status, read_journal, write_catalog
 from ragkit.harness import pending_records, run_batch
+from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore
 
 from recipes.form_autofill import eval as fill_eval
@@ -290,3 +291,32 @@ class TestEvalMain:
         journal, _ = self._setup(tmp_path, json.dumps({"genre": "Rock", "unit_price": 0.99}))
         code = fill_eval.main(["--journal", str(journal), "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("store_cls", "driver", "filename"),
+                         [(SqliteStore, "sqlite", "chinook.sqlite"),
+                          (DuckDBStore, "duckdb", "chinook.duckdb")])
+class TestDatabaseSwap:
+    """The recipe fills a form from historical records held in EITHER real SqlStore driver (sqlite
+    and duckdb) via the sql_rows block -- a one-line storage.toml edit, no code change."""
+
+    def _staged(self, tmp_path: Path, store_cls, driver: str, filename: str) -> Path:
+        config = tmp_path / "config"
+        shutil.copytree(CONFIG, config)
+        (tmp_path / "data").mkdir()
+        store_cls(str(tmp_path / "data" / filename), schema_sql=FIXTURE).close()
+        (config / "storage.toml").write_text(
+            f'[sql]\ndriver = "{driver}"\npath = "../data/{filename}"\nread_only = true\n',
+            encoding="utf-8")
+        return config
+
+    def test_a_grounded_fill_verifies(self, tmp_path: Path, store_cls, driver: str,
+                                      filename: str) -> None:
+        config = self._staged(tmp_path, store_cls, driver, filename)
+        assembled = assemble(config, client_factory=_factory("Rock", 0.99))
+        journal = tmp_path / "j.jsonl"
+        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
+                  install_signal_handlers=False)
+        [result] = list(read_journal(journal))
+        assert result.status is Status.VERIFIED
+        assert json.loads(result.output or "{}") == {"genre": "Rock", "unit_price": 0.99}

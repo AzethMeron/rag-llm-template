@@ -191,3 +191,73 @@ class TestFaithfulToLlmTranslator:
                   install_signal_handlers=False)
         [result] = list(read_journal(journal))
         assert result.status is Status.REJECTED
+
+
+# --- retrieval memory over each real vector DB (lancedb, qdrant) + the default fts5 lexical -------
+_VEC_MODELS = """
+[endpoint.local]
+base_url = "http://127.0.0.1:8080/v1"
+[model.translator]
+endpoint = "local"
+model_id = "t"
+[model.reviewer]
+endpoint = "local"
+model_id = "r"
+[model.embedder]
+endpoint = "local"
+model_id = "e"
+kind = "embedding"
+"""
+
+
+def _embed(text: str) -> list[float]:
+    # A deterministic, non-zero 3-vector -- retrieval need only run, not be relevant, for the
+    # end-to-end to exercise the vector DB.
+    return [1.0, (len(text) % 5) / 5.0, (sum(map(ord, text)) % 7) / 7.0]
+
+
+def _vector_factory() -> Callable[[str, float], httpx.Client]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/embeddings"):
+            return httpx.Response(200, json={"data": [{"embedding": _embed(t)}
+                                                      for t in body["input"]]})
+        schema = body.get("response_format", {}).get("json_schema", {}).get("schema", {})
+        content = (json.dumps({"acceptable": True, "issues": []})
+                   if "acceptable" in schema.get("properties", {})
+                   else json.dumps({"translation": "Kot śpi."}))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": content}, "finish_reason": "stop"}], "usage": {}})
+
+    def factory(_b: str, _t: float) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(handler))
+    return factory
+
+
+@pytest.mark.parametrize("vector_driver", ["lancedb", "qdrant"])
+class TestRetrievalMemoryOnEachVectorDB:
+    """The translation memory is retrieved through dense retrieval over EITHER real vector DB
+    (lancedb, qdrant), assembled from retrieval.toml -- the recipe runs end-to-end on each with only
+    a storage.toml driver edit. (The default fts5 lexical path is covered by TestEndToEnd.)"""
+
+    def test_translates_with_a_vector_backed_memory(self, tmp_path: Path,
+                                                    vector_driver: str) -> None:
+        config = _staged_config(tmp_path)
+        (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
+        (config / "storage.toml").write_text(
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            encoding="utf-8")
+        (config / "retrieval.toml").write_text(
+            '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',
+            encoding="utf-8")
+        assembled = assemble(config, substitutions={"source_language": "English",
+                                                    "target_language": "Polish"},
+                             client_factory=_vector_factory())
+        from ragkit.retrieve.retrievers import DenseRetriever
+        assert isinstance(assembled.retriever, DenseRetriever)
+        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
+        write_catalog([Record(record_id="1", source="The cat is sleeping.")], catalog)
+        run_batch(assembled.harness, pending_records(catalog, journal), journal,
+                  install_signal_handlers=False)
+        [result] = list(read_journal(journal))
+        assert result.status is Status.VERIFIED and result.output == "Kot śpi."
