@@ -1,0 +1,35 @@
+# The predictive-maintenance panel. The author decides and cites; reviewers check the decision is
+# consistent with the readings and the manuals. Grounding (evidence really appears in the manuals,
+# severity is a legal value) is mechanical -- the GroundedDecisionValidator, not the panel.
+[revision]
+max_revisions = 2
+max_repairs = 2
+
+[[persona]]
+id = "author"
+kind = "producer"
+model = "author"
+instructions = """
+You diagnose an equipment problem from the reported readings and the manual excerpts shown. Base the
+diagnosis and the recommended action only on those excerpts, and copy short verbatim quotes from
+them into the evidence field. Choose the severity honestly: normal, watch, or urgent.
+"""
+# Low temperature: the decision must be grounded in the retrieved manuals, not imaginative.
+[persona.sampling]
+temperature = 0.1
+
+[[persona]]
+id = "consistent"
+kind = "reviewer"
+model = "reviewer"
+instructions = """
+You check that the diagnosis and severity are consistent with both the reported readings and the
+manual excerpts. Object if the severity is unjustified by the readings, or the action does not
+follow from the diagnosis.
+"""
+
+[[persona]]
+id = "compliance"
+kind = "reviewer"
+model = "reviewer"
+from_rules = true

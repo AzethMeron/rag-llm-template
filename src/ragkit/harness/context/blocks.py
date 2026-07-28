@@ -309,6 +309,45 @@ class SchemaBlock:
         return _section(self._heading, "\n".join(lines))
 
 
+class ReadingsBlock:
+    """Named fields of *this record's* request, rendered into the prompt — the sensor telemetry and
+    fault codes a decision task is given (``record.meta``). Unlike ``sql_rows`` (rows fetched from a
+    database) this reads only the record itself, so it needs no wired service. ``keys`` selects
+    which meta fields to show, in that order; absent keys are skipped, and a block with nothing to
+    show renders nothing (the no-empty-section rule)."""
+
+    CONFIG_KEYS = frozenset({"heading", "keys"})
+
+    def __init__(self, keys: Sequence[str] = (),
+                 heading: str = "Reported readings and codes:") -> None:
+        self._keys = tuple(keys)
+        self._heading = heading
+
+    @classmethod
+    def from_config(cls, options: Mapping[str, Any]) -> ReadingsBlock:
+        return cls(keys=tuple(options.get("keys", ())),
+                   heading=str(options.get("heading", "Reported readings and codes:")))
+
+    def render(self, record: Record,
+               context: Mapping[str, Any]) -> str | None:  # noqa: ARG002  -- reads the record only
+        keys = self._keys or tuple(record.meta.keys())
+        pairs = [(key, record.meta[key]) for key in keys if key in record.meta]
+        if not pairs:
+            return None
+        body = "\n".join(f"  {key}: {_render_value(value)}" for key, value in pairs)
+        return _section(self._heading, body)
+
+
+def _render_value(value: Any) -> str:
+    """A compact, readable rendering of a meta value for the prompt: a list becomes a comma-joined
+    line, a mapping its ``key=value`` pairs, a scalar its string form."""
+    if isinstance(value, Mapping):
+        return ", ".join(f"{k}={v}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
 def register_builtins() -> None:
     """Register the built-in blocks. Idempotent, so importing this module more than once is
     harmless; the registry refuses a genuine name collision."""
@@ -316,7 +355,7 @@ def register_builtins() -> None:
                         ("neighbours", NeighboursBlock), ("established", EstablishedBlock),
                         ("retrieved", RetrievedBlock),
                         ("previous_attempt", PreviousAttemptBlock), ("sql_rows", SqlRowsBlock),
-                        ("schema", SchemaBlock)):
+                        ("schema", SchemaBlock), ("readings", ReadingsBlock)):
         CONTEXT_BLOCKS.register(name, block)
 
 

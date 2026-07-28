@@ -76,13 +76,14 @@ def assemble(config_dir: Path, *, substitutions: dict[str, str] | None = None,
     lexicon = read_lexicon(config_dir / "lexicon.jsonl")
     validators = [VALIDATORS.create(spec, options) for spec, options in recipe.validators]
     validators.extend(extra_validators or [])
-    # The external read-only store and its introspector are made available to any pluggable
-    # validator (the generated-SQL safety check reads the schema from here).
+    # The external read-only store, its introspector, and the reference retriever are made
+    # available to any pluggable validator (the generated-SQL safety check reads the schema; the
+    # grounded-decision check re-retrieves the memory to verify a citation).
     external = _external_sql(storage)
-    shared = {"sql_store": external, "introspector": storage.introspector}
-    pipeline = ValidatorPipeline(ruleset, lexicon, extra=validators, shared=shared)
-
     retriever = _build_reference(recipe, config_dir, storage)
+    shared = {"sql_store": external, "introspector": storage.introspector,
+              "retriever": retriever}
+    pipeline = ValidatorPipeline(ruleset, lexicon, extra=validators, shared=shared)
     harness = Harness(pool, panel, ruleset, output_schema, pipeline, context,
                       memory=OutputMemory() if recipe.use_memory else None,
                       retriever=retriever, sql_store=external, introspector=storage.introspector,

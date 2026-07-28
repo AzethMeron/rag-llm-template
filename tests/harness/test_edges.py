@@ -142,12 +142,21 @@ class TestFormSchema:
         with pytest.raises(ConfigError, match="needs at least a 'name'"):
             OUTPUT_SCHEMAS.create("form", {"fields": [{"type": "string"}]})
 
+    def test_array_field_is_a_string_array(self) -> None:
+        schema = FormSchema([FormField(name="evidence", type="array")]).json_schema()
+        assert schema["properties"]["evidence"] == {"type": "array", "items": {"type": "string"}}
+
+    def test_array_field_extracts_the_list(self) -> None:
+        out = FormSchema([FormField(name="tags", type="array")]).extract({"tags": ["a", "b"]})
+        assert json.loads(out) == {"tags": ["a", "b"]}
+
 
 class TestBlockConfig:
     def test_each_builtin_builds_via_from_config(self) -> None:
         for kind, options in (("literal", {"text": "x"}), ("lexicon", {}), ("neighbours", {}),
                              ("established", {}), ("retrieved", {}), ("previous_attempt", {}),
-                             ("sql_rows", {"query": "select 1"})):
+                             ("sql_rows", {"query": "select 1"}), ("schema", {}),
+                             ("readings", {"keys": ["egt"]})):
             assert CONTEXT_BLOCKS.create(kind, options) is not None
 
     def test_retrieved_bad_k(self) -> None:

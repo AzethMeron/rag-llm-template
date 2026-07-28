@@ -54,13 +54,15 @@ class JsonFieldSchema:
 OUTPUT_SCHEMAS.register("json_field", JsonFieldSchema)
 
 
-_JSON_TYPES = frozenset({"string", "integer", "number", "boolean"})
+_JSON_TYPES = frozenset({"string", "integer", "number", "boolean", "array"})
+"""Field types a form may declare. ``array`` is an array of strings (a list of citations, tags,
+steps); the scalar types are the obvious ones."""
 
 
 @dataclass(frozen=True, slots=True)
 class FormField:
     """One field of a form to fill: its name, JSON type, an optional prompt description, and
-    whether the model must supply it."""
+    whether the model must supply it. ``array`` fields are arrays of strings."""
 
     name: str
     type: str = "string"
@@ -116,6 +118,8 @@ class FormSchema:
         properties: dict[str, Any] = {}
         for field in self._fields:
             prop: dict[str, Any] = {"type": field.type}
+            if field.type == "array":
+                prop["items"] = {"type": "string"}
             if field.description:
                 prop["description"] = field.description
             properties[field.name] = prop

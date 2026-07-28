@@ -28,4 +28,6 @@ ignore = [
 [lint.per-file-ignores]
 # Tests use unused fixture arguments (request, monkeypatch), kwargs-style dict() for
 # readability, throwaway unpacking, and nested with-blocks; none of that is a defect in a test.
+# The same applies to each recipe's own test suite.
 "tests/**" = ["ARG", "C408", "RUF059", "B011", "SIM117"]
+"recipes/*/tests/**" = ["ARG", "C408", "RUF059", "B011", "SIM117"]

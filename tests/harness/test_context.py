@@ -17,6 +17,7 @@ from ragkit.harness.context import (
     LiteralBlock,
     NeighboursBlock,
     PreviousAttemptBlock,
+    ReadingsBlock,
     RetrievedBlock,
     SchemaBlock,
     SqlRowsBlock,
@@ -142,6 +143,29 @@ class TestBlocks:
 
     def test_schema_empty_when_no_tables(self) -> None:
         assert SchemaBlock().render(_rec(), {"introspector": _StubIntrospector({})}) is None
+
+    def test_readings_renders_selected_meta_in_order(self) -> None:
+        record = _rec(egt=512.3, fan_speed=2380, fault_codes=["P1234", "P5678"], unused="x")
+        out = ReadingsBlock(keys=("egt", "fault_codes", "fan_speed")).render(record, {})
+        assert out is not None
+        assert "egt: 512.3" in out and "fan_speed: 2380" in out
+        assert "fault_codes: P1234, P5678" in out  # list joined
+        assert "unused" not in out  # not in the selected keys
+        # declared order preserved: egt before fault_codes before fan_speed
+        assert out.index("egt") < out.index("fault_codes") < out.index("fan_speed")
+
+    def test_readings_renders_a_mapping_value(self) -> None:
+        out = ReadingsBlock(keys=("sensors",)).render(
+            _rec(sensors={"t1": 90, "t2": 95}), {})
+        assert out is not None and "t1=90" in out and "t2=95" in out
+
+    def test_readings_all_meta_when_no_keys_given(self) -> None:
+        out = ReadingsBlock().render(_rec(a=1, b=2), {})
+        assert out is not None and "a: 1" in out and "b: 2" in out
+
+    def test_readings_empty_when_no_matching_meta(self) -> None:
+        assert ReadingsBlock(keys=("missing",)).render(_rec(a=1), {}) is None
+        assert ReadingsBlock().render(_rec(), {}) is None  # no meta at all
 
 
 class TestAssembler:

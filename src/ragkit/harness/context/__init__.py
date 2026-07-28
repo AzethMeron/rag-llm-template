@@ -12,6 +12,7 @@ from .blocks import (
     LiteralBlock,
     NeighboursBlock,
     PreviousAttemptBlock,
+    ReadingsBlock,
     RetrievedBlock,
     SchemaBlock,
     SqlRowsBlock,
@@ -20,5 +21,5 @@ from .blocks import (
 __all__ = [
     "ContextAssembler", "load_context", "CONTEXT_BLOCKS", "ContextBlockError",
     "LiteralBlock", "LexiconBlock", "NeighboursBlock", "EstablishedBlock",
-    "RetrievedBlock", "PreviousAttemptBlock", "SqlRowsBlock", "SchemaBlock",
+    "RetrievedBlock", "PreviousAttemptBlock", "SqlRowsBlock", "SchemaBlock", "ReadingsBlock",
 ]
