@@ -1,11 +1,30 @@
 # Recipe: translation
 
-Translation with a retrieved **translation memory**, in the manner the framework was generalised
-from. The reference corpus (prior translations) is retrieved per line and shown to the model as
-worked examples; the review panel checks fidelity and fluency; the untranslated-echo validator
-refuses a line the model handed back in the source language.
+A **faithful port of [`AzethMeron/llm-translator`](https://github.com/AzethMeron/llm-translator)**
+onto this framework — the same pipeline, prompts, review panel, rules and context, expressed in the
+framework's config rather than translation-specific Python. It is the proof that the framework
+*generalised* llm-translator without losing it: `config/personas.toml` + `config/rules.toml` +
+`config/context.toml` reproduce llm-translator's `agents.toml` + `translation_rules.toml` +
+`[context]`, and the harness builds the same `produce → mechanical check → review panel → revise`
+loop.
 
-## What it demonstrates
+## Faithful to llm-translator
+
+- **The producer prompt** is llm-translator's translate instructions verbatim (meaning-not-words,
+  the "who does what to whom" section, natural-target guidance), with `{source_language}` /
+  `{target_language}` filled from `--set`.
+- **The full five-reviewer panel, in order:** `accuracy → structure → grammar → fluency →
+  compliance` (the last built `from_rules`), consulted in file order, stopping at the first
+  objection — exactly llm-translator's panel.
+- **The rules:** all six forbidden failure-mode patterns (preamble, refusal/commentary, label,
+  translator's note, alternative rendering, collapsed placeholders) and all seven advisory criteria
+  (register, voice consistency, continuity, proper nouns, pronouns, figurative language,
+  localization), plus the line-width limit and the untranslated-echo mechanical check.
+- **The context building:** the glossary (lexicon), the retrieved translation-memory examples, the
+  surrounding neighbours (3 before / 2 after) and their established translations, and the previous
+  attempt on revision — llm-translator's `[context]` knobs mapped onto the framework's blocks.
+
+## What it also demonstrates about the framework
 
 - A reference `Retriever` wired from a JSONL corpus, retrieved into the prompt (`context.toml`).
 - A task-specific validator plugin (`plugins/validators.py`) selected by dotted path in

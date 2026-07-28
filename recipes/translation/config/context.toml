@@ -1,29 +1,51 @@
-# What goes into the translation prompt, in order. Each block contributes only when it has content
-# (no empty sections). The retrieved block shows the most similar reference translations; the
-# lexicon block shows established terms; the previous_attempt block appears only on revision.
+# What goes into the translation prompt, in order — a faithful port of llm-translator's [context].
+# Each block contributes only when it has content (no empty sections, ever). The surrounding context
+# keeps a run consistent (same term, name, register, tense from one line to the next).
+#
+# llm-translator knobs -> blocks here:
+#   glossary_terms = 12                -> the lexicon block's `limit`
+#   reference_examples + min_score     -> the retrieved block (the translation memory)
+#   before_units = 3 / after_units = 2 -> the neighbours block (surrounding SOURCE lines)
+#   include_translations = true        -> the established block (those neighbours' translations)
+#   context_char_budget                -> [context.budget].max_chars
 
 [[context.block]]
 kind = "literal"
-text = "Translate the single line marked below. Return only its translation, as JSON."
+text = "Translate the single line marked below into the target language. Return only its translation, as JSON."
 
-[[context.block]]
-kind = "retrieved"
-k = 3
-min_score = 0.30
-heading = "Reference translations of similar lines. Match their terminology and phrasing where they apply (they are examples, not the required answer):"
-
+# Established terminology for this line (the glossary): most-relevant first, capped at 12.
 [[context.block]]
 kind = "lexicon"
 limit = 12
 
+# Reference translations of similar lines, retrieved from the translation memory. Worked examples to
+# match for terminology and phrasing -- not the required answer. This is the CONSISTENCY feature:
+# it steers toward the corpus, so a good corpus in gives good out.
+[[context.block]]
+kind = "retrieved"
+k = 3
+min_score = 0.30
+heading = "Reference translations of similar lines (match their terminology and phrasing where they apply; they are examples, not the required answer):"
+
+# The surrounding source lines (the nearest 3 before, 2 after), shown in the SOURCE language.
 [[context.block]]
 kind = "neighbours"
-before = 2
+before = 3
 after = 2
 
+# Those neighbours that have already been translated this run, shown alongside their source -- so a
+# term/name/tense stays continuous across lines (llm-translator's include_translations).
+[[context.block]]
+kind = "established"
+before = 3
+after = 2
+
+# On revision only: the attempt being fixed and the reviewers' objections.
 [[context.block]]
 kind = "previous_attempt"
 
 [context.budget]
+# Soft character budget for the assembled context. Over budget, whole blocks are dropped by
+# priority (farthest-first is the framework's trim within a block), never truncated mid-section.
 max_chars = 8000
-trim_order = ["neighbours", "retrieved"]
+trim_order = ["established", "neighbours", "retrieved"]

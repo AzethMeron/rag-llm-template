@@ -133,3 +133,61 @@ class TestEndToEnd:
         assert assembled.retriever is not None
         hits = assembled.retriever.retrieve("The cat is sleeping on the sofa.", k=1)
         assert hits and "Kot śpi na kanapie." in hits[0].text
+
+
+class TestFaithfulToLlmTranslator:
+    """The recipe reproduces llm-translator's panel, rules, prompts and context building."""
+
+    def _harness(self, tmp_path: Path):
+        return assemble(_staged_config(tmp_path),
+                        substitutions={"source_language": "English", "target_language": "Polish"},
+                        client_factory=_factory("{}")).harness
+
+    def test_the_full_five_reviewer_panel_in_order(self, tmp_path: Path) -> None:
+        panel = self._harness(tmp_path).panel
+        assert panel.producer.id == "translator"
+        assert [r.id for r in panel.reviewers] == [
+            "accuracy", "structure", "grammar", "fluency", "compliance"]
+        assert panel.reviewers[-1].from_rules  # compliance judges the advisory rules
+        assert panel.max_revisions == 2 and panel.max_repairs == 2
+
+    def test_the_full_rule_set(self, tmp_path: Path) -> None:
+        rules = self._harness(tmp_path).ruleset
+        assert len(rules.forbidden_patterns) == 6   # llm-translator's six failure-mode patterns
+        assert {advisory_id for advisory_id, _description in rules.advisory_rules} == {
+            "register", "voice_consistency", "continuity", "proper_nouns",
+            "pronouns_and_reference", "figurative_language", "localization"}
+        assert rules.max_line_columns == 110
+
+    def test_the_translator_system_prompt_matches(self, tmp_path: Path) -> None:
+        harness = self._harness(tmp_path)
+        prompt = harness._system_prompt(harness.panel.producer.instructions, placeholders=False)
+        assert "professional translator working from English into Polish" in prompt
+        assert "Who does what to whom" in prompt          # the signature llm-translator section
+        assert "Style policy:" in prompt                  # the rule set's directives are appended
+        assert "110 display columns" in prompt            # the line-width directive
+        assert prompt.rstrip().endswith("Respond only with the requested JSON object.")
+
+    def test_the_user_prompt_builds_the_same_context(self, tmp_path: Path) -> None:
+        harness = self._harness(tmp_path)
+        record = Record(record_id="1", source="The cat is sleeping on the sofa.",
+                        meta={"context_before": ["Hello there."], "context_after": ["Good night."]})
+        prompt = harness._user_prompt(record, None)
+        # The retrieved translation-memory examples, the neighbours, and the line itself.
+        assert "Reference translations of similar lines" in prompt
+        assert "Kot śpi na kanapie." in prompt            # a retrieved worked example
+        assert "Hello there." in prompt and "Good night." in prompt  # neighbours
+        assert prompt.rstrip().endswith("Line to translate:\nThe cat is sleeping on the sofa.")
+
+    def test_a_forbidden_preamble_is_rejected(self, tmp_path: Path) -> None:
+        # "Sure! ..." is llm-translator's conversational-preamble failure mode -> blocked, REJECTED.
+        config = _staged_config(tmp_path)
+        assembled = assemble(config, substitutions={"source_language": "English",
+                                                    "target_language": "Polish"},
+                             client_factory=_factory(json.dumps({"translation": "Sure! Kot śpi."})))
+        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
+        write_catalog([Record(record_id="1", source="The cat sleeps.")], catalog)
+        run_batch(assembled.harness, pending_records(catalog, journal), journal,
+                  install_signal_handlers=False)
+        [result] = list(read_journal(journal))
+        assert result.status is Status.REJECTED

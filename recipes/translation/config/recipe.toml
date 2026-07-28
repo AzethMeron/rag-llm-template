@@ -5,7 +5,11 @@
 [task]
 output_schema = "json_field"
 input_label = "Line to translate:"
-use_memory = true
+use_memory = true   # feed already-translated neighbours to the `established` context block
+# Stand-in for a placeholder in a *context* line whose speaker is unknown (llm-translator's
+# anonymous_subject). A neighbour is shown in the SOURCE language, so use a source-language
+# third-person word ("they" for English, "sie"/"on" for German/French, ...).
+stand_in = "they"
 
 [task.output_schema_options]
 field = "translation"
