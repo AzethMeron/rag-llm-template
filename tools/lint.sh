@@ -27,12 +27,15 @@ cd "$REPO_ROOT"
 status=0
 
 if [[ "$fix" == 1 ]]; then
-    "$python" -m ruff check --fix src tests || status=1
+    "$python" -m ruff check --fix src tests recipes || status=1
 else
-    "$python" -m ruff check src tests || status=1
+    "$python" -m ruff check src tests recipes || status=1
 fi
 
 "$python" -m mypy src || status=1
+# Recipe plugins import ragkit by the same dotted path a run uses; MYPYPATH puts src on the
+# search path so ragkit (with its py.typed marker) resolves as a typed package.
+MYPYPATH="${REPO_ROOT}/src" "$python" -m mypy --explicit-package-bases recipes || status=1
 
 if [[ "$status" == 0 ]]; then
     note "clean."

@@ -1,0 +1,29 @@
+# What goes into the translation prompt, in order. Each block contributes only when it has content
+# (no empty sections). The retrieved block shows the most similar reference translations; the
+# lexicon block shows established terms; the previous_attempt block appears only on revision.
+
+[[context.block]]
+kind = "literal"
+text = "Translate the single line marked below. Return only its translation, as JSON."
+
+[[context.block]]
+kind = "retrieved"
+k = 3
+min_score = 0.30
+heading = "Reference translations of similar lines. Match their terminology and phrasing where they apply (they are examples, not the required answer):"
+
+[[context.block]]
+kind = "lexicon"
+limit = 12
+
+[[context.block]]
+kind = "neighbours"
+before = 2
+after = 2
+
+[[context.block]]
+kind = "previous_attempt"
+
+[context.budget]
+max_chars = 8000
+trim_order = ["neighbours", "retrieved"]

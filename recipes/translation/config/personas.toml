@@ -1,0 +1,43 @@
+# The translation panel. Reviewers are consulted in order and the panel stops at the first
+# objection, so the most decisive lane is first. {source_language}/{target_language} are filled
+# from the command line (--set source_language=English --set target_language=Polish).
+
+[revision]
+max_revisions = 2
+max_repairs = 2
+
+[[persona]]
+id = "translator"
+kind = "producer"
+model = "translator"
+instructions = """
+You translate from {source_language} into {target_language}. Produce a faithful, natural
+translation of the single line given -- the meaning and force of the original in fluent
+{target_language}, not a word-for-word gloss. Do not add notes, alternatives, or commentary.
+"""
+
+[[persona]]
+id = "accuracy"
+kind = "reviewer"
+model = "reviewer"
+instructions = """
+You check fidelity of meaning. Object only when the {target_language} says something the
+{source_language} does not, drops something it does, or reverses who does what to whom. A wording
+you would merely have chosen differently is not an error.
+"""
+
+[[persona]]
+id = "fluency"
+kind = "reviewer"
+model = "reviewer"
+instructions = """
+You check that the {target_language} reads as natural {target_language}, not as translationese: no
+calques, no source word order forced onto the target, no unidiomatic collocations. Object only to a
+definite infelicity a native editor would fix.
+"""
+
+[[persona]]
+id = "compliance"
+kind = "reviewer"
+model = "reviewer"
+from_rules = true

@@ -1,0 +1,45 @@
+# Translation policy. [[forbidden]] patterns are model failure modes -- text that is *about* the
+# translation rather than *being* it. [[advisory]] criteria are judged by the compliance reviewer.
+# The patterns are English-targeted (small models leak English meta-text even on non-English jobs);
+# add target-language equivalents for your pair.
+
+[limits]
+max_line_columns = 110
+max_columns_tolerance = 0.12
+require_nonempty = true
+# line_width means "too long", which is imperfect but still worth showing (the alternative is the
+# untranslated source); untranslated means "not done", which is not.
+keep_flagged_rules = ["line_width"]
+
+[lexicon]
+severity = "warning"
+
+[style]
+directives = [
+  "Match the register of the source: formal stays formal, casual stays casual.",
+  "Keep names and numbers exactly as they appear unless the target language requires inflection.",
+]
+
+[[forbidden]]
+pattern = "(?i)^(here is|here's|sure|certainly|of course|as requested)"
+reason = "conversational preamble -- output only the translation"
+
+[[forbidden]]
+pattern = "(?i)(as an ai|i cannot|i can't translate|i'm unable to|i apologize|i'm sorry, but)"
+reason = "refusal or commentary instead of a translation"
+
+[[forbidden]]
+pattern = "(?i)^(translation|translated|output|result)\\s*:"
+reason = "a label prefix instead of the translation itself"
+
+[[advisory]]
+id = "register"
+description = "The register (formality, tone) matches the source throughout."
+
+[[advisory]]
+id = "proper_nouns"
+description = "Names of people and places are rendered consistently, inflected but not respelled."
+
+[[advisory]]
+id = "figurative_language"
+description = "Idioms and figures of speech are rendered by an equivalent, not translated literally."

@@ -1,0 +1,24 @@
+# Models for the translation recipe. The model_id values are what the served router exposes; match
+# them to your llama-server router (the GGUF file names from tools/fetch_models.sh, minus .gguf).
+# The producer runs on the larger model, the reviewers on a small one -- personas sharing a model
+# share it on the server, so only two distinct models load.
+
+[endpoint.local]
+provider = "llamacpp-router"
+base_url = "http://127.0.0.1:8080/v1"
+resident_max = 4
+parallel = 2
+
+[model.translator]
+endpoint = "local"
+model_id = "Qwen3.5-2B-Instruct-Q4_K_M"
+backend = "auto"
+context_window = 8192
+approx_vram_mb = 2600
+
+[model.reviewer]
+endpoint = "local"
+model_id = "Qwen3.5-0.8B-Instruct-Q4_K_M"
+backend = "auto"
+context_window = 8192
+approx_vram_mb = 900
