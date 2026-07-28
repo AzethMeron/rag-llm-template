@@ -171,10 +171,13 @@ directory, so a config is portable.
 
 | Table | Driver (built-in) | Key options |
 |---|---|---|
-| `[sql]` | `sqlite` | `path`, `read_only` (the external data source is `read_only = true`). |
+| `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only` (the external data source is `read_only = true`). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
 | `[vector]` | `lancedb` | `path`, `dim`, ... (the default real vector DB). |
 | `[lexical]` | `fts5` | `path` (SQLite FTS5 BM25). |
-| `[introspector]` | `sqlite` | `path` (reads a schema without importing a store driver). |
+| `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
+
+Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a
+third-party driver — resolved through the registry, no framework change.
 
 The two database roles are kept apart: the framework's own writable store, and the external
 task data source (`read_only` — a write is refused at the port).

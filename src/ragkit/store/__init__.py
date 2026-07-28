@@ -20,6 +20,7 @@ from ragkit.core.registry import Registry
 
 from .filters import FilterError, to_sql
 from .lexical.fts5 import Fts5Index, LexicalIndexError
+from .sql.duckdb import DuckDBIntrospector, DuckDBStore
 from .sql.sqlite import SqliteIntrospector, SqliteStore, SqlStoreError
 from .vector.lancedb import LanceVectorIndex, VectorIndexError
 
@@ -37,9 +38,11 @@ SCHEMA_INTROSPECTORS: Registry[SchemaIntrospector] = Registry(
     entry_point_group="ragkit.schema_introspectors")
 
 SQL_STORES.register("sqlite", SqliteStore)
+SQL_STORES.register("duckdb", DuckDBStore)
 VECTOR_INDEXES.register("lancedb", LanceVectorIndex)
 LEXICAL_INDEXES.register("fts5", Fts5Index)
 SCHEMA_INTROSPECTORS.register("sqlite", SqliteIntrospector)
+SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,7 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path, 
 __all__ = [
     "Storage", "load_storage",
     "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "SCHEMA_INTROSPECTORS",
-    "SqliteStore", "SqliteIntrospector", "Fts5Index", "LanceVectorIndex",
+    "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
+    "Fts5Index", "LanceVectorIndex",
     "SqlStoreError", "LexicalIndexError", "VectorIndexError", "FilterError", "to_sql",
 ]

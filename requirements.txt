@@ -47,6 +47,14 @@ tqdm==4.70.0
 typing-inspection==0.4.2
 urllib3==2.7.0
 
+# --- alternative SQL store (DuckDB) -------------------------------------------
+# A second real SqlStore driver, so swapping the database is a config edit (driver = "sqlite" ->
+# "duckdb") proven by the conformance suite, not just an assertion. DuckDB is an embedded,
+# in-process SQL engine in a single self-contained wheel (no transitives, no server), imported
+# lazily inside store/sql/duckdb.py alone. Only needed to use the duckdb driver; a sqlite run does
+# not touch it.
+duckdb==1.5.5
+
 # --- development and tests ----------------------------------------------------
 # The suite never reaches a server, so this is all it needs.
 pytest==9.1.1

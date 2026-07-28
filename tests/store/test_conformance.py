@@ -18,8 +18,10 @@ from typing import Any
 
 import pytest
 
-from ragkit.core.ports import LexicalIndex, VectorIndex
+from ragkit.core.ports import LexicalIndex, SqlStore, VectorIndex
 from ragkit.store.lexical.fts5 import Fts5Index
+from ragkit.store.sql.duckdb import DuckDBStore
+from ragkit.store.sql.sqlite import SqliteStore, SqlStoreError
 from ragkit.store.vector.lancedb import LanceVectorIndex
 
 
@@ -141,3 +143,38 @@ class TestLexicalIndexConformance:
 
     def test_empty_query(self, factory: Callable[[Path], LexicalIndex], tmp_path: Path) -> None:
         assert factory(tmp_path).search("", k=5) == []
+
+
+# Two real SqlStore engines behind one port: swapping SQLite -> DuckDB is a config edit only.
+_SCHEMA = "CREATE TABLE t(id INTEGER, name VARCHAR); INSERT INTO t VALUES (1, 'a'), (2, 'b');"
+SQL_DRIVERS: list[tuple[type[SqlStore], str]] = [
+    (SqliteStore, "s.sqlite"),
+    (DuckDBStore, "s.duckdb"),
+]
+
+
+@pytest.mark.parametrize(("driver", "filename"), SQL_DRIVERS)
+class TestSqlStoreConformance:
+    def test_query_and_write(self, driver: type[SqlStore], filename: str, tmp_path: Path) -> None:
+        store = driver(str(tmp_path / filename), schema_sql=_SCHEMA)  # type: ignore[call-arg]
+        assert store.query("SELECT name FROM t WHERE id = ?", [1]) == [{"name": "a"}]
+        store.execute("INSERT INTO t VALUES (3, 'c')")
+        assert len(store.query("SELECT * FROM t")) == 3
+        store.close()  # type: ignore[attr-defined]
+
+    def test_read_only_binding_refuses_a_write(self, driver: type[SqlStore], filename: str,
+                                               tmp_path: Path) -> None:
+        path = str(tmp_path / filename)
+        driver(path, schema_sql=_SCHEMA).close()  # type: ignore[call-arg,attr-defined]
+        readonly = driver(path, read_only=True)  # type: ignore[call-arg]
+        assert readonly.query("SELECT count(*) AS n FROM t")[0]["n"] == 2
+        with pytest.raises(SqlStoreError, match="read_only"):
+            readonly.execute("INSERT INTO t VALUES (9, 'z')")
+        readonly.close()  # type: ignore[attr-defined]
+
+    def test_bad_sql_is_a_structured_error(self, driver: type[SqlStore], filename: str,
+                                          tmp_path: Path) -> None:
+        store = driver(str(tmp_path / filename), schema_sql=_SCHEMA)  # type: ignore[call-arg]
+        with pytest.raises(SqlStoreError, match="query failed"):
+            store.query("SELECT * FROM no_such_table")
+        store.close()  # type: ignore[attr-defined]
