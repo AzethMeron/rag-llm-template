@@ -1,0 +1,269 @@
+"""The seams: the ``Protocol`` every replaceable component implements, and the value types
+they exchange.
+
+These are the contracts that make the framework decoupled. A layer depends on a port here,
+never on a concrete driver; the concrete driver is resolved through the matching
+:class:`~ragkit.core.registry.Registry` and checked against the port with ``isinstance``. Each
+port is ``runtime_checkable`` so that check works whether it is defined by methods, attributes,
+or both.
+
+Signatures are kept deliberately small and hard to misuse (``CLAUDE.md``: small, stable,
+hard-to-misuse public APIs). Where a later milestone implements a port it may add optional
+parameters, but the shape here is the stable core each driver must honour.
+
+A shared score convention runs through the retrieval ports: **every score a port returns is
+"higher is better", normalised toward ``[0, 1]``.** A backend whose native scale is inverted
+(SQLite's ``bm25()`` is negative, lower-is-better) or unbounded (a cross-encoder logit) is the
+driver's problem to convert *inside* the driver, so a sign convention can never leak into the
+fuser and silently invert a ranking.
+"""
+from __future__ import annotations
+
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Protocol, runtime_checkable
+
+from .records import Record
+from .rules import Violation
+
+# --- shared value types -------------------------------------------------------
+
+_EMPTY: Mapping[str, Any] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    """One chat turn — the unit a model client and a backend operate on."""
+
+    role: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class Document:
+    """A source document after extraction, before chunking."""
+
+    doc_id: str
+    text: str
+    meta: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """One indexable unit of a document: the text, an id, and its provenance in ``meta``
+    (``document_id``, ``version_id``, ``ordinal``, ``section_path``, offsets, ...)."""
+
+    chunk_id: str
+    text: str
+    meta: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
+
+
+@dataclass(frozen=True, slots=True)
+class Retrieved:
+    """A chunk a query matched, with its relevance score (higher is better, toward ``[0, 1]``)."""
+
+    chunk_id: str
+    text: str
+    score: float
+    meta: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
+
+
+class FilterOp(str, Enum):
+    """Comparisons a metadata filter predicate can express."""
+
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LE = "le"
+    GT = "gt"
+    GE = "ge"
+    IN = "in"
+
+
+@dataclass(frozen=True, slots=True)
+class Predicate:
+    """One metadata comparison: ``field <op> value``."""
+
+    field: str
+    op: FilterOp
+    value: Any
+
+
+# A filter is a conjunction (AND) of predicates -- the framework's own small, backend-neutral
+# filter language. Each store driver compiles it to its own dialect; a driver that cannot honour
+# a predicate refuses it at that boundary rather than at query time. Deliberately not raw backend
+# filter dicts, which would couple every caller to one driver.
+Filter = tuple[Predicate, ...]
+
+
+# --- ingestion ----------------------------------------------------------------
+
+
+@runtime_checkable
+class Source(Protocol):
+    """The upstream boundary toward the input: yields the records a run will work on."""
+
+    def records(self) -> Iterator[Record]: ...
+
+
+@runtime_checkable
+class Sink(Protocol):
+    """The downstream boundary toward the output: writes produced records back to their home."""
+
+    def write(self, records: Iterable[Record]) -> None: ...
+
+
+@runtime_checkable
+class Extractor(Protocol):
+    """Turns a raw source (a file's bytes, a row set) into documents ready to chunk."""
+
+    def extract(self, source: bytes | str, *, meta: Mapping[str, Any] = _EMPTY
+                ) -> Iterator[Document]: ...
+
+
+@runtime_checkable
+class Chunker(Protocol):
+    """Splits a document into indexable chunks, preserving provenance in each chunk's meta."""
+
+    def chunk(self, document: Document) -> Iterator[Chunk]: ...
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    """Encodes texts into dense vectors. Rows are returned in input order."""
+
+    def embed(self, texts: Sequence[str]) -> list[Sequence[float]]: ...
+
+
+# --- storage ------------------------------------------------------------------
+
+
+@runtime_checkable
+class VectorIndex(Protocol):
+    """A dense-vector store. ``search`` returns ``(chunk_id, score)`` best-first, score
+    higher-is-better. ``reconcile`` reconciles the index against the authoritative chunk set
+    (a no-op for a driver that co-locates vectors with the rows)."""
+
+    def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
+               metas: Sequence[Mapping[str, Any]]) -> None: ...
+
+    def search(self, vector: Sequence[float], *, k: int,
+               where: Filter = ()) -> list[tuple[str, float]]: ...
+
+    def delete(self, ids: Sequence[str]) -> None: ...
+
+    def count(self) -> int: ...
+
+    def reconcile(self, chunk_ids: Iterable[str]) -> None: ...
+
+
+@runtime_checkable
+class LexicalIndex(Protocol):
+    """A keyword/BM25 index. ``search`` returns ``(chunk_id, score)`` best-first, score
+    higher-is-better (a driver over an inverted BM25 converts the native scale itself)."""
+
+    def index(self, chunk_id: str, text: str) -> None: ...
+
+    def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
+
+    def delete(self, chunk_id: str) -> None: ...
+
+
+@runtime_checkable
+class SqlStore(Protocol):
+    """A relational store. ``read_only`` marks a binding the framework must not write through;
+    a write attempt on one is refused at the port, before the database. ``query`` runs a
+    read; ``execute`` a write (and raises on a ``read_only`` binding)."""
+
+    read_only: bool
+
+    def query(self, sql: str, params: Sequence[Any] = ()) -> list[Mapping[str, Any]]: ...
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> None: ...
+
+
+@runtime_checkable
+class SchemaIntrospector(Protocol):
+    """Reads a database's schema for the NL->SQL feature, without importing a store driver.
+    Returns a mapping of table name to its ordered column ``(name, type)`` pairs."""
+
+    def schema(self) -> Mapping[str, Sequence[tuple[str, str]]]: ...
+
+
+# --- retrieval ----------------------------------------------------------------
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """Retrieves the chunks most relevant to a query, best-first, each with score >=
+    ``min_score``. Required to be deterministic and safe to call concurrently — one retriever
+    is shared by every worker in a run."""
+
+    def retrieve(self, query: str, *, k: int, min_score: float = 0.0) -> tuple[Retrieved, ...]: ...
+
+
+@runtime_checkable
+class Reranker(Protocol):
+    """Re-scores a candidate shortlist against a query. Returns ``(index, score)`` into the
+    given documents, best-first; ``index`` is a permutation of ``range(len(documents))``."""
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[tuple[int, float]]: ...
+
+
+# --- harness ------------------------------------------------------------------
+
+
+@runtime_checkable
+class ContextBlock(Protocol):
+    """One prompt section. Returns the rendered text, or ``None`` when it has no content — the
+    no-empty-section rule is enforced here, so an absent block contributes nothing rather than
+    a dangling heading."""
+
+    def render(self, record: Record, context: Mapping[str, Any]) -> str | None: ...
+
+
+@runtime_checkable
+class Validator(Protocol):
+    """A mechanical (code-decidable) check over a produced output. Returns the violations it
+    finds, empty when the output passes. Must abstain (return no *blocking* violation) rather
+    than guess when the input gives it no positive evidence to judge on."""
+
+    def validate(self, record: Record, output: str,
+                 context: Mapping[str, Any]) -> list[Violation]: ...
+
+
+@runtime_checkable
+class OutputSchema(Protocol):
+    """Describes the structured output a task produces: its JSON schema (what the model is
+    constrained or asked to return) and how to pull the output string out of a parsed reply."""
+
+    name: str
+
+    def json_schema(self) -> dict[str, Any]: ...
+
+    def extract(self, reply: Mapping[str, Any]) -> str: ...
+
+
+# --- model layer --------------------------------------------------------------
+
+
+@runtime_checkable
+class Backend(Protocol):
+    """Request-shaping for one model family: turns messages + a JSON schema into the
+    ``(messages, response_format)`` a specific server will honour (strict grammar, or a
+    prompt-described shape)."""
+
+    name: str
+
+    def structured_request(self, messages: Sequence[Message], schema: Mapping[str, Any]
+                           ) -> tuple[tuple[Message, ...], dict[str, Any]]: ...
+
+
+@runtime_checkable
+class Provider(Protocol):
+    """A transport to one endpoint kind (llama.cpp router, ollama, any OpenAI-compatible
+    server). Routes a chat completion to a named model and returns its text."""
+
+    def chat(self, messages: Sequence[Message], *, model: str, schema: Mapping[str, Any] | None,
+             temperature: float, max_tokens: int) -> str: ...

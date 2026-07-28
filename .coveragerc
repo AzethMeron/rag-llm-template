@@ -1,0 +1,13 @@
+# Coverage configuration.
+#
+# exclude_also ADDS to coverage's default exclusions (which already include "pragma: no cover"),
+# for lines that cannot be executed in a test or are meaningless to: a defensive assertion that
+# fires only if an invariant is already broken, the module-run entry guard, and the bodies of
+# typing-only Protocol methods (which are `...` and never executed).
+[report]
+exclude_also =
+    raise AssertionError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    class .*\(Protocol\):
+    \.\.\.
