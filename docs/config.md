@@ -173,7 +173,7 @@ directory, so a config is portable.
 | Table | Driver (built-in) | Key options |
 |---|---|---|
 | `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only` (the external data source is `read_only = true`). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
-| `[vector]` | `lancedb` | `path`, `dim`, ... (the default real vector DB). |
+| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim`, ... . Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
 | `[lexical]` | `fts5` | `path` (SQLite FTS5 BM25). |
 | `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
 

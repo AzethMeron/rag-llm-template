@@ -110,7 +110,7 @@ DRIVER_DEP_LOCATIONS = {
     "pyarrow": ("store/vector/lancedb.py",),
     "numpy": ("store/vector/", "retrieve/", "ingest/"),  # dense-vector math
     "usearch": ("store/vector/",),
-    "qdrant_client": ("store/vector/",),
+    "qdrant_client": ("store/vector/qdrant.py",),  # the shipped Qdrant driver, confined to it
     "sqlite_vec": ("store/vector/",),
     "psycopg": ("store/",),
     "chromadb": ("store/vector/",),

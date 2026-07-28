@@ -106,12 +106,14 @@ verify by running, don't assert.
 The user re-checked with "violations are only allowed if I've explicitly approved them" and decided
 each grey-zone item:
 
-- **One driver per port → CLOSED (approved: ship a second real driver).** Added **DuckDB** as a
-  second real `SqlStore` + introspector (`store/sql/duckdb.py`), and a `SqlStore` conformance class
-  (the port had none) that runs SQLite *and* DuckDB through identical operations. The vector/lexical
-  conformance suites also now run a second, independent in-memory implementation each. Swapping the
-  database is a one-line config edit, demonstrated two ways (config dotted-path driver + two
-  implementations passing conformance).
+- **One driver per port → CLOSED (approved: ship a second real driver — for BOTH SQL and vector).**
+  Added **DuckDB** as a second real `SqlStore` + introspector (`store/sql/duckdb.py`) and **Qdrant**
+  as a second real `VectorIndex` (`store/vector/qdrant.py`, embedded local mode, HNSW ANN + native
+  metadata filtering, and the same driver points at a Qdrant server by `url`). Added a `SqlStore`
+  conformance class (the port had none); the vector conformance now runs LanceDB **and** Qdrant
+  **and** an in-memory impl, the SQL conformance runs SQLite **and** DuckDB, the lexical FTS5 + an
+  in-memory impl. Swapping either database is a one-line config edit, demonstrated by two real
+  drivers passing the identical conformance operations plus the config dotted-path driver test.
 - **No `retrieval.toml` → CLOSED (approved: build it).** `retrieval.toml` now assembles the full
   lexical/dense/hybrid stack from config — the per-arm floors, candidate pool, MMR λ, and rerank
   model — via `retrieve/tuning.py` (parse) + `cli/app.py` (wire). The previously-hardcoded

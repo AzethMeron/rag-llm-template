@@ -55,6 +55,21 @@ urllib3==2.7.0
 # not touch it.
 duckdb==1.5.5
 
+# --- alternative vector database (Qdrant) -------------------------------------
+# A second real VectorIndex driver, so swapping the vector DB is a config edit
+# (driver = "lancedb" -> "qdrant"), proven by the conformance suite. Qdrant is a real vector
+# database (HNSW ANN, native metadata filtering); its client's local mode runs in-process with no
+# server, and the same driver points at a Qdrant server by url. Imported lazily inside
+# store/vector/qdrant.py alone. httpx/numpy/pydantic/urllib3 are already pinned above.
+qdrant-client==1.18.0
+# transitive
+grpcio==1.83.0
+h2==4.4.0
+hpack==4.2.0
+hyperframe==6.1.0
+portalocker==3.2.0
+protobuf==7.35.1
+
 # --- development and tests ----------------------------------------------------
 # The suite never reaches a server, so this is all it needs.
 pytest==9.1.1

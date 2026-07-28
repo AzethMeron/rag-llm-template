@@ -23,6 +23,7 @@ from .lexical.fts5 import Fts5Index, LexicalIndexError
 from .sql.duckdb import DuckDBIntrospector, DuckDBStore
 from .sql.sqlite import SqliteIntrospector, SqliteStore, SqlStoreError
 from .vector.lancedb import LanceVectorIndex, VectorIndexError
+from .vector.qdrant import QdrantVectorIndex
 
 SQL_STORES: Registry[SqlStore] = Registry(
     "sql store", SqlStore,  # type: ignore[type-abstract]
@@ -40,6 +41,7 @@ SCHEMA_INTROSPECTORS: Registry[SchemaIntrospector] = Registry(
 SQL_STORES.register("sqlite", SqliteStore)
 SQL_STORES.register("duckdb", DuckDBStore)
 VECTOR_INDEXES.register("lancedb", LanceVectorIndex)
+VECTOR_INDEXES.register("qdrant", QdrantVectorIndex)
 LEXICAL_INDEXES.register("fts5", Fts5Index)
 SCHEMA_INTROSPECTORS.register("sqlite", SqliteIntrospector)
 SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
@@ -95,6 +97,6 @@ __all__ = [
     "Storage", "load_storage",
     "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "SCHEMA_INTROSPECTORS",
     "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
-    "Fts5Index", "LanceVectorIndex",
+    "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex",
     "SqlStoreError", "LexicalIndexError", "VectorIndexError", "FilterError", "to_sql",
 ]

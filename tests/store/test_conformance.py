@@ -23,6 +23,7 @@ from ragkit.store.lexical.fts5 import Fts5Index
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore, SqlStoreError
 from ragkit.store.vector.lancedb import LanceVectorIndex
+from ragkit.store.vector.qdrant import QdrantVectorIndex
 
 
 class InMemoryVectorIndex:
@@ -93,6 +94,7 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 # independent in-memory implementation must pass the identical conformance operations.
 VECTOR_FACTORIES: list[Callable[[Path], VectorIndex]] = [
     lambda tmp: LanceVectorIndex(str(tmp / "v.lance"), dim=3),
+    lambda tmp: QdrantVectorIndex(str(tmp / "v.qdrant"), dim=3),  # a second REAL vector DB
     lambda tmp: InMemoryVectorIndex(),
 ]
 LEXICAL_FACTORIES: list[Callable[[Path], LexicalIndex]] = [
