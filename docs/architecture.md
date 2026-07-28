@@ -78,11 +78,26 @@ A decode setting is configured where it takes effect, so there is one obvious ho
   single source of truth for both routing and serving rather than a config file and a hand-written
   command line that can drift.
 
-## Still to come (built milestone by milestone)
+## Evaluation
 
-The generalised evaluation harnesses (retrieval `Recall@k`/`MRR`/`NDCG` and blinded output
-judging, with the "a metric must be independent of what it ranks" guard) and a cross-cutting
-documentation pass with a per-file config-option reference. The storage, ingest/retrieve, model,
-and harness layers and the worked recipes (translation, NL→SQL, form autofill, and an industrial
-predictive-maintenance decision recipe) are in place, each with a script that fetches real data on
-demand.
+Two separable layers, both in `ragkit.eval`, both built so a circular configuration is *refused*
+rather than reported (the hard-won lesson recorded in `.audit/`): **a metric must be independent of
+what it ranks.**
+
+- **Retrieval** — `evaluate_retrieval` scores each system with `Recall@k`, `MRR`, `MAP`, and
+  `NDCG@k` against `Qrels` (ground truth carrying a `source` label). It raises rather than run if
+  the ground truth's source is a system under evaluation (it would score `1.0` by construction), or
+  if an evaluated query has no gold judgments.
+- **Output** — `evaluate_ab` is a blinded A/B judge: the LLM judge sees neutral "Output 1/2" in an
+  injected deterministic order (no hidden RNG), never the system names, and A/B-ing a system against
+  itself is refused.
+
+## Where to look next
+
+- **`docs/config.md`** — the per-file configuration reference (every key, its type, default, and
+  meaning). Wrong types and unknown keys are errors, not silent defaults.
+- **`recipes/<task>/README.md`** — each of the four worked recipes (translation, NL→SQL, form
+  autofill, predictive-maintenance decisions), with the real dataset its `fetch.sh` pulls and the
+  eval it runs.
+- **`.audit/`** — the design investigations kept across sessions, including the circular-metric
+  lesson the evaluation layer encodes.

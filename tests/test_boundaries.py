@@ -26,7 +26,7 @@ TOP = "ragkit"
 
 # Bottom-to-top. A module in a layer may import its own layer and any layer below it, never
 # above. Layers not yet built simply contribute no modules; the rule already holds for them.
-LAYER_ORDER = ("core", "store", "llm", "ingest", "retrieve", "harness", "cli")
+LAYER_ORDER = ("core", "store", "llm", "ingest", "retrieve", "harness", "eval", "cli")
 LAYER_RANK = {name: rank for rank, name in enumerate(LAYER_ORDER)}
 
 
