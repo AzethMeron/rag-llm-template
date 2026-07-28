@@ -102,17 +102,27 @@ verify by running, don't assert.
   one article (~18 paragraphs) because the API paginates; now one request per title with
   Retry-After/backoff. Verified end-to-end: 538 paragraphs across all 11 titles.
 
-**Known limitations, recorded rather than hidden:**
-- **One driver per port.** `sqlite`, `lancedb`, `fts5` are the only shipped drivers, so
-  interchangeability is proven by *contract* (each satisfies its port; the conformance suite runs
-  against it) but not *demonstrated* by swapping to a second real driver. A second `VectorIndex`
-  (e.g. qdrant/in-memory) would make the conformance suite bite and enable the executable swap test.
-- **`Provider` is not registry-resolved** — the endpoint provider is dispatched from a hardcoded
-  `_PROVIDERS` frozenset (`llm/pool.py`), so a genuinely new provider needs a code change (the
-  OpenAI-compatible client covers the three shipped ones). `Backend` likewise uses a small separate
-  registry (`llm/backends.py`) holding stateless singletons rather than the general one.
-- **No `retrieval.toml` / config-assembled hybrid retrieval.** The retrieved-block `min_score` is
-  TOML, but the hybrid/rerank/embedding calibration floors are hardcoded defaults; no shipped recipe
-  builds a `HybridRetriever` from config, so those floors are latent rather than exposed.
+**Second re-audit (strict): remaining grey-zone items put to the user; two closed on approval.**
+The user re-checked with "violations are only allowed if I've explicitly approved them" and decided
+each grey-zone item:
+
+- **One driver per port → CLOSED (approved: ship a second real driver).** Added **DuckDB** as a
+  second real `SqlStore` + introspector (`store/sql/duckdb.py`), and a `SqlStore` conformance class
+  (the port had none) that runs SQLite *and* DuckDB through identical operations. The vector/lexical
+  conformance suites also now run a second, independent in-memory implementation each. Swapping the
+  database is a one-line config edit, demonstrated two ways (config dotted-path driver + two
+  implementations passing conformance).
+- **No `retrieval.toml` → CLOSED (approved: build it).** `retrieval.toml` now assembles the full
+  lexical/dense/hybrid stack from config — the per-arm floors, candidate pool, MMR λ, and rerank
+  model — via `retrieve/tuning.py` (parse) + `cli/app.py` (wire). The previously-hardcoded
+  hybrid/rerank/embedding floors are now TOML. Tested end-to-end (hybrid assembles and retrieves)
+  with embeddings + rerank served over `MockTransport`, no server.
+- **`Provider` not registry-resolved → APPROVED as-is.** The user accepted OpenAI-compatible-only as
+  a design choice (it covers llama.cpp/Ollama/vLLM/any OpenAI-compatible server); `base_url` is
+  configurable. `Backend` keeps its small separate registry (stateless singletons). This is now an
+  explicitly-approved exception, not an unreviewed gap.
+
+**Known limitation (verification, not code):**
 - **`nl_to_sql` `fetch.sh` is verified statically only** — Spider needs a large gated download URL
-  not available here; the other three fetchers were run end-to-end against live sources.
+  not available here; the other three fetchers were run end-to-end against live sources (a real
+  Wikipedia-pagination bug in the predictive-maintenance fetcher was found and fixed that way).

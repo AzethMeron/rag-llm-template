@@ -32,7 +32,13 @@ from ragkit.harness import (
 from ragkit.harness.memory import OutputMemory
 from ragkit.ingest.corpus import Corpus, CorpusItem
 from ragkit.llm.pool import ClientFactory, ModelPool, load_models
-from ragkit.retrieve import RETRIEVERS
+from ragkit.retrieve import (
+    RETRIEVERS,
+    EmbeddingClient,
+    RerankClient,
+    RetrievalSettings,
+    load_retrieval,
+)
 from ragkit.store import Storage, load_storage
 from ragkit.store.lexical.fts5 import Fts5Index
 
@@ -91,7 +97,11 @@ def assemble(config_dir: Path, *, substitutions: dict[str, str] | None = None,
     # grounded-decision check re-retrieves the memory to verify a citation).
     external = _external_sql(storage)
     if retriever is None:
-        retriever = _build_reference(recipe, config_dir, storage)
+        retrieval_path = config_dir / "retrieval.toml"
+        retriever = (_build_retrieval(load_retrieval(retrieval_path), recipe, config_dir, storage,
+                                      pool, client_factory)
+                     if retrieval_path.is_file()
+                     else _build_reference(recipe, config_dir, storage))
     shared = {"sql_store": external, "introspector": storage.introspector,
               "retriever": retriever}
     pipeline = ValidatorPipeline(ruleset, lexicon, extra=validators, shared=shared)
@@ -186,10 +196,13 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
 
 
 def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:
+    corpus = Corpus(lexical=storage.lexical or Fts5Index())
+    corpus.add_all(_corpus_items(path, recipe))
+    return corpus
+
+
+def _corpus_items(path: Path, recipe: _Recipe) -> list[CorpusItem]:
     import json
-    lexical = storage.lexical or Fts5Index()
-    embedder = None  # dense reference retrieval is wired by a recipe, not from config alone here
-    corpus = Corpus(lexical=lexical, embedder=embedder)
     items: list[CorpusItem] = []
     for line_no, line in enumerate(path.read_text("utf-8").splitlines(), 1):
         if not line.strip():
@@ -206,8 +219,62 @@ def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:
                    if recipe.reference_display_field else _default_display(record))
         items.append(CorpusItem(chunk_id=f"ref-{line_no}", index_text=index_text,
                                 display_text=display, meta=record))
-    corpus.add_all(items)
-    return corpus
+    return items
+
+
+def _build_retrieval(settings: RetrievalSettings, recipe: _Recipe, config_dir: Path,
+                     storage: Storage, pool: ModelPool,
+                     client_factory: ClientFactory | None) -> Retriever:
+    """Assemble the retriever configured by ``retrieval.toml``: a lexical, dense, or hybrid stack
+    over the reference corpus, with the per-arm floors, candidate pool, MMR trade-off, and rerank
+    model from config. Embedding and rerank clients route over the endpoint of their named model
+    (``models.toml``), through ``client_factory`` so a test drives them with no server."""
+    if not recipe.reference_file:
+        raise CliError("retrieval.toml is present but the recipe sets no [reference].file to "
+                       "build the corpus from")
+    path = (config_dir / recipe.reference_file).resolve()
+    if not path.is_file():
+        raise CliError("reference corpus not found", path=path)
+
+    embedder = (_embedding_client(settings, pool, client_factory)
+                if settings.needs_embedding else None)
+    vector = storage.vector if settings.needs_embedding else None
+    if settings.needs_embedding and vector is None:
+        raise CliError(f"retrieval.kind={settings.kind!r} needs a [vector] store in storage.toml "
+                       f"(built with the embedding model's output dimension)")
+    corpus = Corpus(lexical=storage.lexical or Fts5Index(), vector=vector, embedder=embedder)
+    corpus.add_all(_corpus_items(path, recipe))
+
+    if settings.kind == "lexical":
+        return corpus.lexical_retriever()
+    if settings.kind == "dense":
+        return corpus.dense_retriever()
+    reranker = _rerank_client(settings, pool, client_factory) if settings.rerank_enabled else None
+    return corpus.hybrid_retriever(
+        reranker=reranker, candidate_pool=settings.candidate_pool, mmr_lambda=settings.mmr_lambda,
+        lexical_min_score=settings.lexical_min_score, dense_min_score=settings.dense_min_score)
+
+
+def _embedding_client(settings: RetrievalSettings, pool: ModelPool,
+                      client_factory: ClientFactory | None) -> EmbeddingClient:
+    spec = pool.model_spec(settings.embedding_model)
+    if spec.kind != "embedding":
+        raise CliError(f"[retrieval.dense].model {settings.embedding_model!r} is a {spec.kind!r} "
+                       f"model, not an embedding model")
+    endpoint = pool.endpoint(spec.endpoint)
+    client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
+    return EmbeddingClient(base_url=endpoint.base_url, model=spec.model_id, client=client)
+
+
+def _rerank_client(settings: RetrievalSettings, pool: ModelPool,
+                   client_factory: ClientFactory | None) -> RerankClient:
+    spec = pool.model_spec(settings.rerank_model)
+    if spec.kind != "rerank":
+        raise CliError(f"[retrieval.rerank].model {settings.rerank_model!r} is a {spec.kind!r} "
+                       f"model, not a rerank model")
+    endpoint = pool.endpoint(spec.endpoint)
+    client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
+    return RerankClient(base_url=endpoint.base_url, model=spec.model_id, client=client)
 
 
 def _default_display(record: dict[str, Any]) -> str:

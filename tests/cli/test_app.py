@@ -11,7 +11,12 @@ from ragkit.harness import pending_records, run_batch
 from ragkit.llm.pool import ModelPoolError
 from ragkit.cli.app import assemble
 
-from .conftest import scripted_factory, write_config
+from .conftest import RETRIEVAL_MODELS, retrieval_factory, scripted_factory, write_config
+
+_REF = [{"source": "the cat sat", "target": "kot"}, {"source": "a dog ran", "target": "pies"}]
+_VECTOR_STORAGE = '[vector]\ndriver = "lancedb"\npath = "v.lance"\ndim = 3\n'
+_RECIPE_WITH_REF = ('[task]\noutput_schema = "json_field"\n[task.output_schema_options]\n'
+                    'field = "translation"\n[reference]\nfile = "ref.jsonl"\n')
 
 
 class StandaloneRetriever:
@@ -91,6 +96,75 @@ class TestAssembleAndRun:
         assembled = assemble(config, substitutions={"target_language": "Polish"},
                              client_factory=scripted_factory())
         assert "Polish" in assembled.harness.panel.producer.instructions
+
+
+class TestRetrievalToml:
+    def test_lexical_stack_from_config(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=_REF,
+                              retrieval='[retrieval]\nkind = "lexical"\n[retrieval.lexical]\n'
+                                        'min_score = 0.1\n')
+        assembled = assemble(config, client_factory=scripted_factory())
+        from ragkit.retrieve.retrievers import LexicalRetriever
+        assert isinstance(assembled.retriever, LexicalRetriever)
+
+    def test_hybrid_stack_from_config_assembles_and_retrieves(self, tmp_path: Path) -> None:
+        retrieval = ('[retrieval]\nkind = "hybrid"\ncandidate_pool = 10\n'
+                     '[retrieval.dense]\nmodel = "embedder"\n'
+                     '[retrieval.rerank]\nenabled = true\nmodel = "reranker"\n')
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF, storage=_VECTOR_STORAGE, retrieval=retrieval)
+        assembled = assemble(config, client_factory=retrieval_factory())
+        from ragkit.retrieve.hybrid import HybridRetriever
+        assert isinstance(assembled.retriever, HybridRetriever)
+        hits = assembled.retriever.retrieve("cat", k=2, min_score=0.0)
+        assert any("cat" in hit.text for hit in hits)  # the stack actually returns the cat doc
+
+    def test_dense_stack_from_config(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF, storage=_VECTOR_STORAGE,
+                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n')
+        assembled = assemble(config, client_factory=retrieval_factory())
+        from ragkit.retrieve.retrievers import DenseRetriever
+        assert isinstance(assembled.retriever, DenseRetriever)
+
+    def test_dense_without_a_vector_store_is_refused(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF,  # no storage.toml -> no [vector]
+                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n')
+        with pytest.raises(ConfigError, match=r"needs a \[vector\] store"):
+            assemble(config, client_factory=retrieval_factory())
+
+    def test_wrong_kind_of_model_is_refused(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF, storage=_VECTOR_STORAGE,
+                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
+                                        'model = "prod"\n')  # prod is a chat model
+        with pytest.raises(ConfigError, match="not an embedding model"):
+            assemble(config, client_factory=retrieval_factory())
+
+    def test_retrieval_without_a_reference_file_is_refused(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg",  # recipe has no [reference].file
+                              retrieval='[retrieval]\nkind = "lexical"\n')
+        with pytest.raises(ConfigError, match=r"no \[reference\]\.file"):
+            assemble(config, client_factory=scripted_factory())
+
+    def test_missing_reference_corpus_file_is_refused(self, tmp_path: Path) -> None:
+        # [reference].file is set but the file is absent (reference=None writes no ref.jsonl).
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF,
+                              retrieval='[retrieval]\nkind = "lexical"\n')
+        with pytest.raises(ConfigError, match="reference corpus not found"):
+            assemble(config, client_factory=scripted_factory())
+
+    def test_wrong_kind_of_rerank_model_is_refused(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF, storage=_VECTOR_STORAGE,
+                              retrieval='[retrieval]\nkind = "hybrid"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n[retrieval.rerank]\nenabled = true\n'
+                                        'model = "prod"\n')  # prod is a chat model
+        with pytest.raises(ConfigError, match="not a rerank model"):
+            assemble(config, client_factory=retrieval_factory())
 
 
 class TestChecksBeforeServer:

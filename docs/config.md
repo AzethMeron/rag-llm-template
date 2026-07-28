@@ -12,7 +12,8 @@ loaded one. `required` below means there is no default.
 
 The files: [`models.toml`](#modelstoml) · [`personas.toml`](#personastoml) ·
 [`rules.toml`](#rulestoml) · [`context.toml`](#contexttoml) · [`storage.toml`](#storagetoml) ·
-[`recipe.toml`](#recipetoml). A recipe's directory holds the subset it needs.
+[`recipe.toml`](#recipetoml) · [`retrieval.toml`](#retrievaltoml). A recipe's directory holds the
+subset it needs.
 
 ---
 
@@ -222,3 +223,31 @@ stateful:
 - A **corpus-stateful** retriever (one that must hold our reference corpus) is injected:
   `assemble(config_dir, retriever=my_retriever)`, exactly as `client_factory` and
   `extra_validators` are injected.
+
+---
+
+## retrieval.toml
+
+Optional. When present, it assembles the reference retriever — a lexical, dense, or hybrid stack —
+from config instead of the default single lexical retriever, exposing the per-arm **floors**, the
+candidate pool, the MMR trade-off, and the rerank model. The dense/hybrid kinds need a `[vector]`
+store in `storage.toml` (built with the embedding model's output dimension) and an embedding model
+in `models.toml`; rerank needs a rerank model. The final relevance floor for a run stays the
+retrieved *block*'s `min_score` (`context.toml`); the per-arm floors below are the fusion-input
+floors.
+
+### `[retrieval]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `kind` | `"lexical" \| "dense" \| "hybrid"` | `"lexical"` | Which stack to build. |
+| `candidate_pool` | int ≥ 1 | `40` | Candidates fetched per arm before fusion (hybrid). |
+| `mmr_lambda` | float in `[0,1]` | `0.7` | MMR relevance-vs-diversity trade-off (hybrid). |
+
+| Sub-table | Key | Type | Default | Meaning |
+|---|---|---|---|---|
+| `[retrieval.lexical]` | `min_score` | float in `[0,1]` | `0.30` | Lexical-arm fusion floor. |
+| `[retrieval.dense]` | `model` | string | required for dense/hybrid | Embedding model (`models.toml`, `kind="embedding"`). |
+| `[retrieval.dense]` | `min_score` | float in `[0,1]` | `0.55` | Dense-arm fusion floor. |
+| `[retrieval.rerank]` | `enabled` | bool | `false` | Add a cross-encoder rerank stage (hybrid). |
+| `[retrieval.rerank]` | `model` | string | required if enabled | Rerank model (`models.toml`, `kind="rerank"`). |

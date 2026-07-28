@@ -15,13 +15,14 @@ from .fusion import RRF_K, best_possible_rrf, mmr_order, rrf
 from .hybrid import HybridError, HybridRetriever
 from .rerank import DEFAULT_RERANK_MIN_SCORE, RerankClient, RerankError, sigmoid
 from .retrievers import DenseRetriever, LexicalRetriever, trigram_similarity
+from .tuning import RetrievalSettings, load_retrieval
 
 RETRIEVERS: Registry[Retriever] = Registry(
     "retriever", Retriever,  # type: ignore[type-abstract]
     entry_point_group="ragkit.retrievers")
 
 __all__ = [
-    "RETRIEVERS",
+    "RETRIEVERS", "RetrievalSettings", "load_retrieval",
     "LexicalRetriever", "DenseRetriever", "HybridRetriever", "HybridError",
     "EmbeddingClient", "EmbeddingError", "DEFAULT_EMBEDDING_MIN_SCORE",
     "RerankClient", "RerankError", "DEFAULT_RERANK_MIN_SCORE", "sigmoid",
