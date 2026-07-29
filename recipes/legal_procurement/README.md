@@ -118,7 +118,25 @@ Over the **full 7.1M real passages**, **956 gold questions**, lexical **BM25** (
 | NDCG@10 | 0.250 |
 
 This is a **zero-shot lexical baseline** — no dense or hybrid retrieval, no reranking — so it is a
-floor, not a ceiling: dense/hybrid would lift these numbers.
+floor, not a ceiling. Controlled experiments confirm BM25 is near its ceiling here: the gold *is*
+retrievable (Recall@20 ≈ 0.87 when the gold passages are guaranteed present) but is buried as the
+corpus scales; changing the FTS5 tokenizer (`trigram`/`ascii`/`porter`) or stripping query stopwords
+does **not** help (Polish is highly inflected and FTS5 has no Polish stemmer). **Dense (semantic)
+retrieval is the real lever.** On an identical controlled 25k-passage set (100 questions):
+
+| Retriever | Recall@20 | MRR@10 | NDCG@10 |
+|---|---|---:|---:|
+| lexical BM25 | 0.174 | 0.451 | 0.197 |
+| **dense** (Qwen3-Embedding-0.6B) | **0.230** | 0.545 | 0.240 |
+| hybrid (RRF) | 0.215 | **0.568** | **0.242** |
+
+Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best. **To enable dense**
+(a one-time GPU cost to embed the corpus — kept out of the default so `eval.py` runs with no GPU),
+add an embedding model to `models.toml` (`[model.embedder]`, `kind = "embedding"`), a `[vector]`
+store to `storage.toml` (`driver = "lancedb"`, `dim` = the embedder's output dim), and a
+`retrieval.toml` with `[retrieval] kind = "dense"` / `[retrieval.dense] model = "embedder"`; for the
+best ranking use `kind = "hybrid"` with a reranker (the framework warns against equal-weight hybrid
+without one).
 
 **Low-RAM at scale (the concrete evidence).** The full **7.1M-passage** polqa corpus was **ingested
 and queried at ~37 MB process RSS**, because the search index and the chunk rows live on disk and a

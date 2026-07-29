@@ -95,13 +95,17 @@ PYTHONPATH=src:. python -m recipes.med_evidence.eval \
 Over a **597k-doc corpus** (596,055 ClinicalTrials.gov studies + 1,000 PubMedQA abstracts), **60
 gold questions**, answered by **Qwen3-14B via llama.cpp**:
 
-| Metric | Value |
-|---|---|
-| decision accuracy | 0.300 |
-| abstain_rate | 0.033 |
-| answered_accuracy | 0.367 |
+| Metric | Initial prompt | After the decision-prompt fix |
+|---|---:|---:|
+| decision accuracy | 0.300 | **0.383** |
+| answered_accuracy | 0.367 | **0.489** |
+| "no" produced (gold has 18) | 0 | 6 |
+| "maybe" hedge | 26 | 12 |
 
-51/60 outputs passed the grounding guard. These are honest baselines, not tuned results: the RAG
-framing — the model must first *retrieve the right abstract among ~600k distractors* and then
-decide — is materially harder than the classic PubMedQA setup where the gold abstract is handed to
-the model. Dense/hybrid retrieval and a stronger decoder would lift them.
+Controlled experiments showed retrieval was *not* the bottleneck (the gold abstract is retrieved
+~97% of the time): the model produced **zero "no"** and over-hedged to "maybe", losing 24/60 records.
+Defining "no" in the prompt (a null/no-difference/opposite result is a "no") and stopping the
+`calibrated_decision` rule from treating "qualified" as "maybe" lifted accuracy 0.300 → 0.383. These
+remain honest baselines, not tuned results — the RAG framing (retrieve the right abstract among
+~600k distractors, *then* decide) is materially harder than classic PubMedQA where the abstract is
+handed to the model; further gains would come from dense/hybrid retrieval and a stronger decoder.
