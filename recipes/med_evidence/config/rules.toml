@@ -1,0 +1,43 @@
+# Biomedical-evidence policy. Grounding and decision legality are enforced mechanically by the
+# GroundedEvidenceValidator and DecisionEnumValidator; the [[forbidden]] patterns catch prescriptive
+# medical advice in code; the [[advisory]] criteria are what the from_rules compliance reviewer
+# judges in prose.
+[limits]
+require_nonempty = true
+
+# --- forbidden patterns (rejected outright) -----------------------------------
+# Prescriptive medical advice: imperative dosing, prescribing, or telling a patient what to do. The
+# system reports what the evidence says; it must never instruct. These are model failure modes, not
+# anything a grounded evidence summary should ever contain.
+[[forbidden]]
+pattern = "(?i)\\byou should take\\b"
+reason = "prescriptive medical advice: instructs the reader to take something"
+
+[[forbidden]]
+pattern = "(?i)\\btake \\d+\\s*mg\\b"
+reason = "prescriptive dosing instruction; the system reports evidence, it does not prescribe"
+
+[[forbidden]]
+pattern = "(?i)\\bstop taking\\b"
+reason = "prescriptive medical advice: instructs the reader to stop a medication"
+
+[[forbidden]]
+pattern = "(?i)\\bwe recommend (?:you|that you)\\b"
+reason = "prescriptive recommendation directed at the reader; report evidence, do not advise"
+
+# --- advisory criteria (judged by the from_rules compliance reviewer) ---------
+[[advisory]]
+id = "grounded_evidence"
+description = "The evidence quotes are copied verbatim from the abstract excerpts shown, not paraphrased or invented, and they support the stated decision."
+
+[[advisory]]
+id = "calibrated_decision"
+description = "The decision matches the strength of the evidence: 'yes' or 'no' only when the excerpts clearly support it, and 'maybe' when the evidence is mixed, partial, or qualified."
+
+[[advisory]]
+id = "abstain_when_unsupported"
+description = "When the abstract excerpts do not address the question, the decision is 'unsupported' rather than a guessed yes/no/maybe."
+
+[[advisory]]
+id = "no_medical_advice"
+description = "The answer states what the evidence shows and does not give prescriptive medical advice or tell a patient what to do, take, or stop."

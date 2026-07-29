@@ -1,0 +1,39 @@
+# The biomedical evidence-intelligence task: given a yes/no/maybe research question, retrieve the
+# relevant abstract(s) (the memory) and produce a grounded decision. The decision is a form; the
+# GroundedEvidenceValidator refuses any answer whose evidence is missing (for a non-abstaining
+# decision) or not found in the retrieved abstracts, and the DecisionEnumValidator refuses a
+# decision outside {yes, no, maybe, unsupported}.
+[task]
+output_schema = "form"
+input_label = "Question:"
+
+[[task.output_schema_options.fields]]
+name = "decision"
+description = "one of: yes, no, maybe, unsupported"
+
+[[task.output_schema_options.fields]]
+name = "evidence"
+type = "array"
+description = "short verbatim quotes copied from the abstracts that support the decision"
+
+[[task.output_schema_options.fields]]
+name = "rationale"
+description = "one-sentence justification for the decision, grounded in the quoted evidence"
+
+# The abstracts memory: a JSONL corpus retrieved per record by the question. fetch.sh writes
+# data/abstracts.jsonl (PubMedQA abstracts, optionally scaled with ClinicalTrials.gov summaries);
+# each line is {id, text}.
+[reference]
+file = "../data/abstracts.jsonl"
+retriever = "lexical"
+index_field = "text"
+display_field = "text"
+
+[[validator]]
+kind = "recipes.med_evidence.plugins.validators:GroundedEvidenceValidator"
+min_quote_len = 12
+k = 20
+
+[[validator]]
+kind = "recipes.med_evidence.plugins.validators:DecisionEnumValidator"
+allowed = ["yes", "no", "maybe", "unsupported"]

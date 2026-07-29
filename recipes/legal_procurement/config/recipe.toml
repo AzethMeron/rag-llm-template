@@ -1,0 +1,31 @@
+# The Polish legal / public-procurement passage-retrieval task: given a question, retrieve the most
+# relevant legal passages (the memory) and produce a grounded answer that CITES the passages it used
+# by their id, or abstains ("brak podstaw") when nothing relevant is retrieved. The answer is a form;
+# the CitationGroundingValidator refuses any answer whose citations are missing or point at a passage
+# that was not actually retrieved for this question (a fabricated citation).
+[task]
+output_schema = "form"
+input_label = "Pytanie:"
+
+[[task.output_schema_options.fields]]
+name = "answer"
+description = "a short grounded answer in Polish, or 'brak podstaw' if unsupported"
+
+[[task.output_schema_options.fields]]
+name = "citations"
+type = "array"
+description = "ids of the passages actually used to support the answer (empty when abstaining)"
+
+# The legal-passage memory: a JSONL corpus retrieved per question by the question text. fetch.sh
+# writes data/passages.jsonl from the real polqa corpus; each line is {id, text}. The framework
+# assigns each line a stable chunk id ("ref-<line>"), which is the id a citation must refer to and
+# the id the retrieval eval scores against the gold.
+[reference]
+file = "../data/passages.jsonl"
+retriever = "lexical"
+index_field = "text"
+display_field = "text"
+
+[[validator]]
+kind = "recipes.legal_procurement.plugins.validators:CitationGroundingValidator"
+k = 20
