@@ -39,6 +39,10 @@ _WHITESPACE = re.compile(r"\s+")
 # inside is verbatim from an abstract, and the abstract passage itself is unquoted. Matching would
 # then fail on the surrounding quote characters alone -- rejecting a correctly-grounded citation.
 _QUOTES = re.compile(r"[\"'“”‘’«»`]")
+# An ellipsis abbreviates a longer passage ("A ... B"): a real model routinely elides a middle
+# clause. The quote is split on it and each substantial segment checked, so a legitimately elided
+# citation is grounded while a fully invented one still is not.
+_ELLIPSIS = re.compile(r"\s*(?:\.{3,}|…|\.\s\.\s\.)\s*")
 
 _ALLOWED_DECISIONS = ("yes", "no", "maybe", "unsupported")
 
@@ -127,13 +131,17 @@ class GroundedEvidenceValidator:
 
         violations: list[Violation] = []
         for quote in quotes:
-            normalised = _normalise(quote)
-            if len(normalised) < self._min_quote_len:
+            # Split on an ellipsis and check each substantial segment: an elided quote ("A ... B")
+            # is grounded when every long-enough part is verbatim in the abstracts, but a quote with
+            # no part long enough to verify, or any invented part, still blocks.
+            segments = [_normalise(s) for s in _ELLIPSIS.split(quote)]
+            substantial = [seg for seg in segments if len(seg) >= self._min_quote_len]
+            if not substantial:
                 violations.append(_violation(
                     "ungrounded_evidence",
                     f"citation {quote!r} is too short to verify (< {self._min_quote_len} chars); "
                     f"quote a specific phrase from the abstracts"))
-            elif normalised not in corpus:
+            elif not all(seg in corpus for seg in substantial):
                 violations.append(_violation(
                     "ungrounded_evidence",
                     f"citation {quote!r} does not appear in any retrieved abstract; it looks "
