@@ -4,6 +4,10 @@
 # judges in prose.
 [limits]
 require_nonempty = true
+# The output is a structured JSON decision, not prose laid out in columns, so the display-width
+# limit is not meaningful here — a one-sentence rationale legitimately exceeds 110 columns. Raise
+# it so a good decision is not rejected for line length (grounding + enum checks still apply).
+max_line_columns = 4000
 
 # --- forbidden patterns (rejected outright) -----------------------------------
 # Prescriptive medical advice: imperative dosing, prescribing, or telling a patient what to do. The
@@ -32,7 +36,7 @@ description = "The evidence quotes are copied verbatim from the abstract excerpt
 
 [[advisory]]
 id = "calibrated_decision"
-description = "The decision matches the strength of the evidence: 'yes' or 'no' only when the excerpts clearly support it, and 'maybe' when the evidence is mixed, partial, or qualified."
+description = "The decision matches the evidence: 'yes' when the excerpts support the hypothesis, 'no' when they contradict or negate it (a no-difference/no-association/no-effect or opposite result is a 'no'), and 'maybe' only when the findings are genuinely mixed or inconclusive — not merely nuanced or qualified."
 
 [[advisory]]
 id = "abstain_when_unsupported"
