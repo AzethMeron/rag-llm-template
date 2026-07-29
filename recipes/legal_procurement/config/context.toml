@@ -1,0 +1,20 @@
+# The prompt: the answer instruction, then the legal passages retrieved for this question. The
+# retrieved block is the memory the answer must be grounded in -- the CitationGroundingValidator
+# re-checks every citation against it. No empty section is ever shown (a question that retrieves
+# nothing drops the block, and the model should then answer "brak podstaw").
+[[context.block]]
+kind = "literal"
+text = "Using ONLY the legal passages below, answer the question and cite the passage ids you used. If none are relevant, answer 'brak podstaw'."
+
+[[context.block]]
+kind = "retrieved"
+heading = "Relevant legal passages:"
+k = 10
+min_score = 0.0
+
+[context.budget]
+# Soft character budget for the assembled context. Over budget the retrieved block is trimmed whole
+# (farthest-first within it), never truncated mid-passage, so a citation always refers to a passage
+# shown in full.
+max_chars = 12000
+trim_order = ["retrieved"]

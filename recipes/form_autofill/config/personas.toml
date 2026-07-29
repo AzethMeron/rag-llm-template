@@ -1,0 +1,34 @@
+# The form-autofill panel. The author fills the held-out fields from the sibling records shown;
+# reviewers check the fill is grounded in those records rather than guessed. Field-value legality
+# (type, non-empty, price > 0) is mechanical -- the FieldTypesValidator, not the panel.
+[revision]
+max_revisions = 2
+max_repairs = 2
+
+[[persona]]
+id = "author"
+kind = "producer"
+model = "author"
+instructions = """
+You fill a form describing a music track, using the sibling tracks from the same album shown to you.
+Tracks on one album almost always share a genre and a unit price, so ground your answer in those
+siblings rather than guessing. Return only the requested fields.
+"""
+# A low temperature: the fill should be grounded in the retrieved records, not creative.
+[persona.sampling]
+temperature = 0.1
+
+[[persona]]
+id = "grounded"
+kind = "reviewer"
+model = "reviewer"
+instructions = """
+You check that the filled genre and price are consistent with the sibling tracks shown. Object only
+if the genre contradicts what the siblings show, or the price is implausible for those tracks.
+"""
+
+[[persona]]
+id = "compliance"
+kind = "reviewer"
+model = "reviewer"
+from_rules = true

@@ -1,0 +1,37 @@
+# The legal-procurement panel. The author answers and cites; the reviewers check that the answer's
+# claims are supported by the cited passages and that policy is met. Grounding (every citation refers
+# to a passage actually retrieved) is mechanical -- the CitationGroundingValidator, not the panel.
+[revision]
+max_revisions = 2
+max_repairs = 2
+
+[[persona]]
+id = "author"
+kind = "producer"
+model = "author"
+instructions = """
+You answer a Polish legal / public-procurement question using ONLY the legal passages shown. Base
+every claim on those passages and cite the id of each passage you actually used in the citations
+field. If none of the passages is relevant, answer 'brak podstaw' and cite nothing -- never guess a
+provision or a number that is not in the passages shown.
+"""
+# Low temperature: the answer must be grounded in the retrieved passages, not imaginative.
+[persona.sampling]
+temperature = 0.1
+
+[[persona]]
+id = "citation_check"
+kind = "reviewer"
+model = "reviewer"
+instructions = """
+You check that the answer's claims are supported by the passages it cites, and that every citation
+refers to a passage shown above. Object if the answer states something the cited passages do not
+support, if it cites a passage that says something different, or if it answers substantively while
+citing nothing.
+"""
+
+[[persona]]
+id = "compliance"
+kind = "reviewer"
+model = "reviewer"
+from_rules = true

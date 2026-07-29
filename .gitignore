@@ -1,0 +1,21 @@
+# The pinned virtual environment is rebuilt from requirements.txt, never committed.
+/.venv/
+
+# Python bytecode and tool caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Run artefacts: catalogues, journals, logs, and any local working data.
+/work/
+
+# Downloaded model files (GGUFs and the like) fetched by tools/fetch_models.sh.
+/models/
+
+# Recipe datasets are fetched on demand by each recipe's fetch.sh and are NEVER committed
+# (CLAUDE.md: the project is self-contained via a fetch script, not vendored data).
+recipes/*/data/

@@ -1,0 +1,11 @@
+# The external database the questions are asked against, opened READ-ONLY. Point path at the
+# Spider .sqlite you selected (fetch.sh writes data/database.sqlite). The introspector reads the
+# same file to put the schema in the prompt.
+[sql]
+driver = "sqlite"
+path = "../data/database.sqlite"
+read_only = true
+
+[introspector]
+driver = "sqlite"
+path = "../data/database.sqlite"

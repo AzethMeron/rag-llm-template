@@ -1,0 +1,13 @@
+# The reference corpus (polqa's passages) is large — millions of passages, gigabytes of text — so
+# the lexical index is kept ON DISK next to the fetched data rather than in RAM. The corpus is
+# streamed into it once (build-once) and the persisted index is reused on later runs. Delete
+# data/passages.fts5 to force a rebuild after re-fetching a different corpus size.
+[lexical]
+driver = "fts5"
+path = "../data/passages.fts5"
+
+# The chunk rows (the passage text a hit resolves to) — the relational store every retrieval path
+# resolves through, kept on disk next to the index so nothing is held in RAM.
+[documents]
+driver = "sqlite"
+path = "../data/passages.docs.db"

@@ -1,0 +1,31 @@
+# The NL->SQL panel. The producer writes one SELECT; reviewers check that it answers the question
+# and uses only real tables/columns. The generated-SQL SAFETY checks are mechanical (a validator),
+# not the panel's job -- the panel judges correctness, the code judges safety.
+[revision]
+max_revisions = 2
+max_repairs = 2
+
+[[persona]]
+id = "author"
+kind = "producer"
+model = "author"
+instructions = """
+You translate a natural-language question into a single read-only SQL SELECT for the database whose
+schema is shown. Use only tables and columns that appear in the schema. Return only the SQL query.
+Never write anything that changes data (no INSERT/UPDATE/DELETE/DROP/etc.).
+"""
+
+[[persona]]
+id = "answers_question"
+kind = "reviewer"
+model = "reviewer"
+instructions = """
+You check that the query actually answers the question asked -- the right columns selected, the
+right filters and joins. Object only when it would return the wrong answer, not over style.
+"""
+
+[[persona]]
+id = "compliance"
+kind = "reviewer"
+model = "reviewer"
+from_rules = true

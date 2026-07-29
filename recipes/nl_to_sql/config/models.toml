@@ -1,0 +1,18 @@
+# Models for the NL->SQL recipe. A capable producer helps; the reviewers are cheap.
+[endpoint.local]
+provider = "llamacpp-router"
+base_url = "http://127.0.0.1:8080/v1"
+resident_max = 4
+parallel = 2
+
+[model.author]
+endpoint = "local"
+model_id = "Qwen3.5-2B-Instruct-Q4_K_M"
+backend = "auto"
+context_window = 8192
+
+[model.reviewer]
+endpoint = "local"
+model_id = "Qwen3.5-0.8B-Instruct-Q4_K_M"
+backend = "auto"
+context_window = 8192

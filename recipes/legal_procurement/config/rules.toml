@@ -1,0 +1,16 @@
+# Legal-procurement policy. Citation grounding is enforced mechanically by the
+# CitationGroundingValidator; these advisory criteria are what the compliance reviewer judges.
+[limits]
+require_nonempty = true
+
+[[advisory]]
+id = "grounded_citation"
+description = "Every citation refers to a passage shown above, and the answer's claims follow from those cited passages rather than from outside knowledge."
+
+[[advisory]]
+id = "abstain_when_unsupported"
+description = "When none of the retrieved passages is relevant to the question, the answer is 'brak podstaw' rather than a guessed provision."
+
+[[advisory]]
+id = "no_fabrication"
+description = "The answer does not invent legal provisions, article numbers, deadlines, or thresholds that are not present in the cited passages."

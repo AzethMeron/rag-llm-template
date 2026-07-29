@@ -1,0 +1,38 @@
+# The predictive-maintenance decision task: given an operator report plus sensor readings and fault
+# codes, retrieve the relevant manual passages (the memory) and produce a grounded decision. The
+# decision is a form; the GroundedDecisionValidator refuses any decision whose evidence is missing
+# or not found in the retrieved manuals.
+[task]
+output_schema = "form"
+input_label = "Reported problem:"
+
+[[task.output_schema_options.fields]]
+name = "diagnosis"
+description = "the single most likely fault, in one sentence"
+
+[[task.output_schema_options.fields]]
+name = "severity"
+description = "one of: normal, watch, urgent"
+
+[[task.output_schema_options.fields]]
+name = "recommended_action"
+description = "the maintenance action to take now"
+
+[[task.output_schema_options.fields]]
+name = "evidence"
+type = "array"
+description = "one or more short quotes copied verbatim from the manual excerpts that justify the diagnosis"
+
+# The manuals memory: a JSONL corpus retrieved per record by the reported problem. fetch.sh writes
+# data/manuals.jsonl (real reference articles); each line is {id, text}.
+[reference]
+file = "../data/manuals.jsonl"
+retriever = "lexical"
+index_field = "text"
+display_field = "text"
+
+[[validator]]
+kind = "recipes.predictive_maintenance.plugins.validators:GroundedDecisionValidator"
+severities = ["normal", "watch", "urgent"]
+min_quote_len = 12
+k = 20

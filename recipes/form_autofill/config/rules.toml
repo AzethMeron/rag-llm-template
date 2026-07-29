@@ -1,0 +1,12 @@
+# Form-autofill policy. Field-value legality is enforced mechanically by the FieldTypesValidator;
+# these advisory criteria are what the compliance reviewer judges.
+[limits]
+require_nonempty = true
+
+[[advisory]]
+id = "grounded_fill"
+description = "Every filled value is supported by the sibling tracks shown, not invented from nothing."
+
+[[advisory]]
+id = "plausible_price"
+description = "The unit price matches what the sibling tracks charge (Chinook prices are uniform per album), not an arbitrary number."

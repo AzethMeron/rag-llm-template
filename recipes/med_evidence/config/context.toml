@@ -1,0 +1,18 @@
+# The prompt: the decision instruction, then the retrieved abstract excerpts the answer must be
+# grounded in. The retrieved block is what the evidence quotes have to come from -- the
+# GroundedEvidenceValidator re-checks every quote against it.
+[[context.block]]
+kind = "literal"
+text = "You are a biomedical evidence assistant. Using ONLY the abstract excerpts below, decide the question yes / no / maybe. Answer 'no' when the excerpts contradict or negate the question — a no-difference, no-association, no-effect, or opposite result is a 'no', not a 'maybe'. Use 'maybe' only for genuinely inconclusive findings; commit to yes/no when the abstract's conclusion answers the question. Put one or more short verbatim quotes from the excerpts into the evidence field, and give a one-sentence rationale. If the excerpts do not address the question, set the decision to 'unsupported' rather than guessing. Do not give medical advice or tell anyone what to do; only report what the evidence says."
+
+[[context.block]]
+kind = "retrieved"
+heading = "Relevant abstract excerpts (cite from these):"
+k = 8
+min_score = 0.0
+
+# Trim whole retrieved excerpts (last first) before overflowing the prompt; the literal instruction
+# is never named here, so it always survives.
+[context.budget]
+max_chars = 12000
+trim_order = ["retrieved"]

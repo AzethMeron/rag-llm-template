@@ -1,0 +1,25 @@
+# Coverage configuration.
+#
+# exclude_also ADDS to coverage's default exclusions (which already include "pragma: no cover"),
+# for lines that cannot be executed in a test or are meaningless to measure:
+#   - `raise AssertionError`      a defensive assertion that fires only if an invariant is already broken;
+#   - `if __name__ == .__main__.` the module-run entry guard (exercised by an integration invocation, not units);
+#   - `if TYPE_CHECKING:`         typing-only imports, never executed at runtime (the block exists purely for the type checker);
+#   - `class .*\(Protocol\):` and `...`  the bodies of typing-only Protocol methods, which are `...` and never called.
+[run]
+# branch = true here (not only via `run_tests.sh --branch`) so a bare `coverage run` still measures
+# branches: a 100% statement figure once hid four untaken branches, two of which were real defects.
+branch = true
+# `python -m <pkg>` entry shims are exercised by an integration invocation, not the unit suite.
+omit = */__main__.py
+
+[report]
+# The target is 100% statement AND branch on src/; gate it here so the claim is enforced by the
+# tooling, not left to convention. `coverage report` exits non-zero below this.
+fail_under = 100
+exclude_also =
+    raise AssertionError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    class .*\(Protocol\):
+    \.\.\.

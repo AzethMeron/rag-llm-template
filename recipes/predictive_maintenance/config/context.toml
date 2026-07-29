@@ -1,0 +1,17 @@
+# The prompt: the decision instruction, then this record's readings and fault codes, then the
+# retrieved manual excerpts the decision must be grounded in. The retrieved block is what the
+# evidence quotes have to come from -- the grounding validator re-checks them against it.
+[[context.block]]
+kind = "literal"
+text = "You are a maintenance decision assistant. Using ONLY the manual excerpts below, diagnose the reported problem, set a severity (normal, watch, or urgent), and recommend an action. Put one or more short verbatim quotes from the excerpts into the evidence field. If the excerpts do not cover the problem, say so rather than guessing."
+
+[[context.block]]
+kind = "readings"
+heading = "Reported sensor readings and fault codes:"
+keys = ["fault_codes", "egt", "core_speed", "fan_speed", "cycle"]
+
+[[context.block]]
+kind = "retrieved"
+heading = "Relevant manual excerpts (cite from these):"
+k = 5
+min_score = 0.0

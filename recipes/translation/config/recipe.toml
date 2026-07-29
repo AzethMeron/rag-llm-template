@@ -1,0 +1,30 @@
+# The translation task: what the producer generates, how a hit is shown, and the task-specific
+# validators. The reference corpus is the translation memory retrieved per line (built by
+# fetch.sh from Tatoeba, or the committed sample for tests).
+
+[task]
+output_schema = "json_field"
+input_label = "Line to translate:"
+use_memory = true   # feed already-translated neighbours to the `established` context block
+# Stand-in for a placeholder in a *context* line whose speaker is unknown (llm-translator's
+# anonymous_subject). A neighbour is shown in the SOURCE language, so use a source-language
+# third-person word ("they" for English, "sie"/"on" for German/French, ...).
+stand_in = "they"
+
+[task.output_schema_options]
+field = "translation"
+description = "the translation of the given line into the target language"
+
+# The untranslated-echo check: a whole-line verbatim copy of the source is untranslated. For a
+# different-script pair (ja/zh/ru -> en), replace this with the ScriptValidator, e.g.
+#   kind = "recipes.translation.plugins.validators:ScriptValidator"
+#   source_script = "japanese"
+[[validator]]
+kind = "recipes.translation.plugins.validators:EchoValidator"
+min_words = 2
+
+[reference]
+file = "../data/reference.jsonl"
+retriever = "lexical"
+index_field = "source"
+# display omitted -> "source -> target", the worked-example form the retrieved block shows.

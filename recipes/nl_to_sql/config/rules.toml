@@ -1,0 +1,13 @@
+# NL->SQL policy. A generous column budget (SQL lines are long) and advisory criteria for the
+# compliance reviewer. Safety is enforced mechanically by the SqlSafetyValidator, not here.
+[limits]
+max_line_columns = 400
+require_nonempty = true
+
+[[advisory]]
+id = "schema_faithful"
+description = "Every table and column used appears in the shown schema; nothing is invented."
+
+[[advisory]]
+id = "single_query"
+description = "The answer is one SELECT statement, not a script or an explanation."

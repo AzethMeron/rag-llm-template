@@ -1,0 +1,13 @@
+# The NL->SQL task: produce a `sql` field, checked by the generated-SQL safety validator. The
+# external database is a READ-ONLY binding (see storage.toml) -- the framework never writes it.
+[task]
+output_schema = "json_field"
+input_label = "Question:"
+
+[task.output_schema_options]
+field = "sql"
+description = "a single read-only SQL SELECT statement answering the question"
+
+[[validator]]
+kind = "recipes.nl_to_sql.plugins.validators:SqlSafetyValidator"
+explain = true

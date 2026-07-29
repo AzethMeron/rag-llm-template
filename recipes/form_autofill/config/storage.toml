@@ -1,0 +1,6 @@
+# The external Chinook database, opened READ-ONLY. fetch.sh writes data/chinook.sqlite; the
+# sql_rows context block reads sibling tracks from it. The framework never writes this database.
+[sql]
+driver = "sqlite"
+path = "../data/chinook.sqlite"
+read_only = true

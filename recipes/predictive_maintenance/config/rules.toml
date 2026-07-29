@@ -1,0 +1,16 @@
+# Predictive-maintenance policy. Grounding and severity legality are enforced mechanically by the
+# GroundedDecisionValidator; these advisory criteria are what the compliance reviewer judges.
+[limits]
+require_nonempty = true
+
+[[advisory]]
+id = "grounded_decision"
+description = "The diagnosis and action follow from the manual excerpts shown, and the evidence quotes are copied from them, not paraphrased or invented."
+
+[[advisory]]
+id = "calibrated_severity"
+description = "The severity matches how alarming the readings are: 'urgent' only for clear imminent-failure signs, 'normal' when readings are within expected ranges."
+
+[[advisory]]
+id = "no_overreach"
+description = "When the excerpts do not cover the reported problem, the decision says so rather than guessing a fault."
