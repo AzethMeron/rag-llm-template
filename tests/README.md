@@ -15,6 +15,7 @@ tools/run_tests.sh --coverage   # statement AND branch coverage, gated at 100% o
 |---|---|
 | `core/` | the contract: records & durability, the config loaders, the component registry (all three discovery paths, unknown-key rejection incl. third-party components, protocol conformance, collisions), the lexicon, display width (property tests), placeholders, rule violations, sampling params, and the structured error base |
 | `store/` | each driver's behaviour + failure modes, and a **conformance suite** that runs every implementation of each port (sqlite+duckdb; lancedb+qdrant+in-memory; fts5+in-memory) through identical operations, plus a config dotted-path custom driver |
+| `ingest/` | the indexing pipeline: the extractors (text/JSONL/HTML/Markdown), the chunkers and their provenance (fixed/sentence/structure), text normalisation, deduplication, and the corpus builder — plus `from_config` paths and empty/edge inputs |
 | `llm/` | the transport client (retry, error taxonomy, JSON-envelope recovery, RAII, a `UsageStats` concurrency-contention test), the backends, and the model pool + thrash guard |
 | `harness/` | personas/panel/rules loading, validators, the context blocks + budgeter, memory, output schemas, and the produce→check→panel→revise runner |
 | `retrieve/` | fusion (RRF/MMR property tests), rerank, embedding, the retrievers, and `retrieval.toml` parsing |

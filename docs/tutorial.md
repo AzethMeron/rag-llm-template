@@ -84,7 +84,7 @@ resident_max = 4
 [model.author]
 endpoint = "local"
 model_id = "Qwen3.5-2B-Instruct-Q4_K_M"
-backend  = "auto"           # json_schema | json_object | auto
+backend  = "auto"           # auto | generic | bielik | eurollm | gemma
 context_window = 8192
 
 [model.reviewer]

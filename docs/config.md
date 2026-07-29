@@ -17,6 +17,72 @@ subset it needs.
 
 ---
 
+## How to read these files
+
+These configs use five TOML table forms, and every section header below is one of them. Knowing
+which is which tells you whether a section is singular, repeatable, or something you name.
+
+| Form | Written | Means | Example |
+|---|---|---|---|
+| **Table** | `[limits]` | A single named section; appears at most once. | `[limits]`, `[revision]`, `[context.budget]` |
+| **Keyed table** | `[endpoint.<name>]` | A table whose last segment is a **name you choose**; repeat with different names, then reference the name elsewhere. | `[endpoint.local]`, `[model.author]` |
+| **Nested / sub-table** | `[parent.child]` | A table that belongs to its parent. For a keyed parent, `[model.author]` then `[persona.sampling]`. Attaches to the most recently opened parent. | `[retrieval.dense]`, `[persona.sampling]` |
+| **Array of tables** | `[[persona]]` | A **repeatable** entry; each `[[persona]]` block is one more item in an ordered list. **File order is meaningful** (e.g. reviewer consultation order). | `[[persona]]`, `[[forbidden]]`, `[[advisory]]`, `[[context.block]]`, `[[validator]]` |
+| **Inline table** | `leniency = {window = 20, max_bad = 2}` | A small table written on one line, for a value that is itself a few fields. | `leniency`, `output_schema_options` |
+
+Three conventions run through all of them:
+
+- **`<name>` is yours to pick.** In `[endpoint.<name>]` / `[model.<name>]`, the `<name>` is a label
+  you invent (`local`, `author`, `reviewer`); other files refer back to it (a persona's `model = "author"`
+  points at `[model.author]`; a model's `endpoint = "local"` points at `[endpoint.local]`).
+- **`kind` selects a component; the remaining keys are *its* options.** Wherever a section carries a
+  `kind` (context blocks) or `driver` (stores) or a bare validator `kind`, that value chooses a
+  registered component, and every other key in the section is validated against *that component's*
+  own option set — an unknown option is rejected naming the component. A dotted path
+  (`kind = "mypkg.blocks:MyBlock"`, `driver = "mypkg:MyStore"`) or an entry-point name selects a
+  third-party component the same way, with no framework change.
+- **Type notation in the tables below.** `int ≥ 1`, `float in [0,1]`, `array of strings`, and
+  `A \| B \| C` (one of a fixed set) are constraints the loader enforces; `required` means there is
+  no default. A range violation is refused whether the object is loaded from TOML or constructed
+  directly.
+
+The repeatable (`[[...]]`) tags read as ordered lists. A minimal shape for each:
+
+```toml
+# personas.toml — panel is consulted top-to-bottom, stopping at the first objection
+[[persona]]
+id = "author"
+kind = "producer"
+model = "author"
+instructions = "..."
+
+[[persona]]                     # a second block = the next panel member
+id = "grammar"
+kind = "reviewer"
+model = "reviewer"
+instructions = "..."
+
+# rules.toml — each block is one pattern / one prose criterion
+[[forbidden]]
+pattern = '^\s*Note:'
+reason  = "no translator's notes"
+
+[[advisory]]
+id          = "register"
+description = "keep the source's formality level"
+
+# context.toml — blocks render in the order written, subject to the budget
+[[context.block]]
+kind = "literal"
+text = "Translate the line below."
+
+[[context.block]]
+kind = "retrieved"
+k    = 5
+```
+
+---
+
 ## models.toml
 
 Logical models and the endpoints that serve them. The pool owns one connection per endpoint and
@@ -146,10 +212,10 @@ and passes the rest as that block's options; unknown options are refused per blo
 | kind | Options | Renders |
 |---|---|---|
 | `literal` | `text` (required), `heading` | A fixed instruction. |
-| `lexicon` | `heading` | Terminology entries matching the input. |
+| `lexicon` | `heading`, `limit` | Terminology entries matching the input (`limit` caps how many, default 12). |
 | `neighbours` | `before`, `after`, `heading` | Surrounding source lines as one passage. |
 | `retrieved` | `k` (≥1), `min_score` (`[0,1]`), `heading` | Reference examples from the wired retriever (the "memory"). |
-| `established` | `heading` | Already-produced outputs for neighbouring inputs (needs memory). |
+| `established` | `before`, `after`, `heading` | Already-produced outputs for neighbouring inputs (needs memory). |
 | `previous_attempt` | `heading` | On revision, the attempt being fixed and its issues. |
 | `sql_rows` | `query` (required), `param_keys`, `limit`, `heading` | Rows from the read-only external DB, `param_keys` bound positionally from `record.meta`. |
 | `schema` | `heading` | The introspected external-DB schema (needs an introspector). |
@@ -172,9 +238,9 @@ directory, so a config is portable.
 
 | Table | Driver (built-in) | Key options |
 |---|---|---|
-| `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only` (the external data source is `read_only = true`). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
-| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim`, ... . Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
-| `[lexical]` | `fts5` | `path` (SQLite FTS5 BM25). |
+| `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only`, `schema_sql` (the external data source is `read_only = true`; `schema_sql` initialises the framework's own writable store and is refused on a read-only binding). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
+| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
+| `[lexical]` | `fts5` | `path`, `tokenizer` (SQLite FTS5 BM25; `tokenizer` defaults to `unicode61`). |
 | `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
 
 Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a

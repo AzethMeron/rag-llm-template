@@ -44,6 +44,9 @@ This downloads the pairs and writes, under `data/`:
 - `gold.jsonl` — their real translations, for scoring.
 
 A tiny committed `sample/reference.jsonl` backs the recipe's own tests, so they need no download.
+Those tests also run the translation memory end-to-end over **both real vector indexes** (LanceDB
+and Qdrant), swapped by a one-line `storage.toml` driver edit, alongside the default `fts5` lexical
+path.
 
 ## Running
 
@@ -68,5 +71,5 @@ wording. It reads only the journal and gold.
 
 ```bash
 PYTHONPATH=src:. python -m recipes.translation.eval \
-    --journal work/out.jsonl --gold recipes/translation/data/gold.jsonl
+    --journal work/translation.jsonl --gold recipes/translation/data/gold.jsonl
 ```

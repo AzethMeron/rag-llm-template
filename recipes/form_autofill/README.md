@@ -32,7 +32,9 @@ writes under `data/`:
 - `heldout.jsonl` — the tracks to fill (each carrying its album/track ids in `meta`),
 - `gold.jsonl` — the true genre and price that were held out, for scoring.
 
-A tiny in-test SQLite fixture backs the recipe's own tests, so they need no download.
+A tiny in-test SQLite fixture backs the recipe's own tests, so they need no download; those tests
+also fill the form from **both real `SqlStore` drivers** (SQLite and DuckDB) via the `sql_rows`
+block, swapped by a one-line `storage.toml` driver edit.
 
 ## Running
 

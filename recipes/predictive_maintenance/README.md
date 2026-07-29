@@ -39,7 +39,9 @@ Two real sources:
   (`data/gold.jsonl`).
 
 The C-MAPSS download link is unstable, so pass `--cmapss` with a `train_FD001.txt` you have. Tiny
-in-test fixtures back the recipe's own tests, so they need no download or network.
+in-test fixtures back the recipe's own tests, so they need no download or network; those tests also
+retrieve the manuals memory over **both real vector indexes** (LanceDB and Qdrant), swapped by a
+one-line `storage.toml` driver edit, alongside the default `fts5` lexical path.
 
 ## Running
 

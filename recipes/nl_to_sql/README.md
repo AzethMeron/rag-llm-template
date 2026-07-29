@@ -49,7 +49,10 @@ straight at a downloaded `.sqlite` file. The script writes, under `data/`:
 - `heldout.jsonl` — the held-out questions to answer,
 - `gold.jsonl` — their gold SQL, for execution-accuracy scoring.
 
-The recipe's own unit tests build a tiny SQLite fixture in `tmp_path`, so they need no download.
+The recipe's own unit tests build a tiny SQLite fixture in `tmp_path`, so they need no download, and
+the end-to-end run is exercised against **both real `SqlStore` drivers** (SQLite and DuckDB) —
+swapped by a one-line `storage.toml` driver edit, no code change — proving the external database is
+interchangeable.
 
 ## Running
 
