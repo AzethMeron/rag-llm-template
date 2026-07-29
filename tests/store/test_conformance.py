@@ -18,7 +18,8 @@ from typing import Any
 
 import pytest
 
-from ragkit.core.ports import LexicalIndex, SqlStore, VectorIndex
+from ragkit.core.ports import DocumentStore, LexicalIndex, SqlStore, VectorIndex
+from ragkit.store.documents.sqlite import SqliteDocuments
 from ragkit.store.lexical.fts5 import Fts5Index
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore, SqlStoreError
@@ -83,6 +84,23 @@ class InMemoryLexicalIndex:
         self._docs.pop(chunk_id, None)
 
 
+class InMemoryDocuments:
+    """A minimal, dependency-free DocumentStore — the second implementation of that port."""
+
+    def __init__(self) -> None:
+        self._rows: dict[str, tuple[str, Mapping[str, Any]]] = {}
+
+    def add_documents(self, rows: Iterable[tuple[str, str, Mapping[str, Any]]]) -> None:
+        for chunk_id, display, meta in rows:
+            self._rows[chunk_id] = (display, dict(meta))
+
+    def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None:
+        return self._rows.get(chunk_id)
+
+    def count(self) -> int:
+        return len(self._rows)
+
+
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
@@ -100,6 +118,11 @@ VECTOR_FACTORIES: list[Callable[[Path], VectorIndex]] = [
 LEXICAL_FACTORIES: list[Callable[[Path], LexicalIndex]] = [
     lambda tmp: Fts5Index(),
     lambda tmp: InMemoryLexicalIndex(),
+]
+DOCUMENT_FACTORIES: list[Callable[[Path], DocumentStore]] = [
+    lambda tmp: SqliteDocuments(str(tmp / "rows.db")),
+    lambda tmp: SqliteDocuments(),  # in-memory SQLite
+    lambda tmp: InMemoryDocuments(),
 ]
 
 
@@ -145,6 +168,25 @@ class TestLexicalIndexConformance:
 
     def test_empty_query(self, factory: Callable[[Path], LexicalIndex], tmp_path: Path) -> None:
         assert factory(tmp_path).search("", k=5) == []
+
+
+@pytest.mark.parametrize("factory", DOCUMENT_FACTORIES)
+class TestDocumentStoreConformance:
+    def test_lifecycle(self, factory: Callable[[Path], DocumentStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        assert store.count() == 0
+        store.add_documents([("d1", "cat -> kot", {"n": 1}), ("d2", "dog -> pies", {})])
+        assert store.count() == 2
+        assert store.document("d1") == ("cat -> kot", {"n": 1})
+        assert store.document("d2") == ("dog -> pies", {})
+        assert store.document("missing") is None
+
+    def test_reinsert_replaces(self, factory: Callable[[Path], DocumentStore],
+                               tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_documents([("d1", "first", {})])
+        store.add_documents([("d1", "second", {"v": 2})])
+        assert store.count() == 1 and store.document("d1") == ("second", {"v": 2})
 
 
 # Two real SqlStore engines behind one port: swapping SQLite -> DuckDB is a config edit only.
