@@ -114,7 +114,8 @@ class TestGroundedEvidenceAcceptance:
             assert _grounded().validate(_rec(), _answer(evidence=[quote]), _ctx()) == []
 
     def test_multiple_quotes_all_grounded(self) -> None:
-        out = _answer(evidence=["randomised trial", "reduced the incidence of major cardiovascular"])
+        out = _answer(
+            evidence=["randomised trial", "reduced the incidence of major cardiovascular"])
         assert _grounded().validate(_rec(), out, _ctx()) == []
 
     def test_from_config(self) -> None:
@@ -192,7 +193,8 @@ class TestDecisionEval:
 
     def test_empty_report(self) -> None:
         empty = med_eval.Report(())
-        assert empty.accuracy == 0.0 and empty.abstain_rate == 0.0 and empty.answered_accuracy == 0.0
+        assert (empty.accuracy == 0.0 and empty.abstain_rate == 0.0
+                and empty.answered_accuracy == 0.0)
 
 
 class TestLoadGold:
@@ -381,9 +383,10 @@ def _vector_factory(decision: dict) -> Callable[[str, float], httpx.Client]:
 
 @pytest.mark.parametrize("vector_driver", ["lancedb", "qdrant"])
 class TestAbstractsMemoryOnEachVectorDB:
-    """The abstracts memory is retrieved through dense retrieval over EITHER real vector DB (lancedb,
-    qdrant); the grounded decision is checked against those retrieved abstracts and VERIFIES. Only a
-    storage.toml driver edit differs. (The default fts5 lexical path is covered by TestEndToEnd.)"""
+    """The abstracts memory is retrieved through dense retrieval over EITHER real vector DB
+    (lancedb, qdrant); the grounded decision is checked against those retrieved abstracts and
+    VERIFIES. Only a storage.toml driver edit differs. (The default fts5 lexical path is covered by
+    TestEndToEnd.)"""
 
     def test_a_grounded_decision_verifies(self, tmp_path: Path, vector_driver: str) -> None:
         config = _staged(tmp_path)

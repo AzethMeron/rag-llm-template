@@ -60,6 +60,20 @@ class TestAssembleAndRun:
         hits = assembled.retriever.retrieve("cat", k=1)
         assert hits and hits[0].text == "the cat -> kot"
 
+    def test_on_disk_reference_index_is_built_once_and_reused(self, tmp_path: Path) -> None:
+        # With an on-disk [lexical] index the corpus is streamed in on the first assemble and the
+        # persisted index is reused on the next — no re-ingest (the build-once path).
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF,
+                              reference=[{"source": "the cat sat", "target": "kot"}],
+                              storage='[lexical]\ndriver = "fts5"\npath = "lex.db"\n')
+        first = assemble(config, client_factory=scripted_factory())
+        assert first.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
+        # Overwrite the source corpus; a reuse (no re-ingest) still serves the original passage.
+        (config / "ref.jsonl").write_text('{"source": "a dog ran", "target": "pies"}\n',
+                                          encoding="utf-8")
+        second = assemble(config, client_factory=scripted_factory())
+        assert second.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
+
     def test_injected_retriever_overrides_the_config(self, tmp_path: Path) -> None:
         # The replace-without-editing-our-code seam for a corpus-stateful Retriever: a caller
         # passes one to assemble(), and it is used instead of whatever [reference] would build.

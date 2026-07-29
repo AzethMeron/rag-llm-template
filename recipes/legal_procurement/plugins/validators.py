@@ -8,15 +8,15 @@ accepted:
   ``"brak podstaw"`` by default), the ``citations`` field must be a non-empty list of passage ids;
   an answer that asserts a legal position while citing nothing is refused.
 * **Every citation must be grounded.** Each cited id is checked against the passages actually
-  retrieved for this question (re-retrieved here through the same deterministic retriever the context
-  block used, at a depth ``>=`` the block's, so anything the model was shown is in scope). A citation
-  to an id that is in no retrieved passage is a fabricated citation — a blocking violation.
+  retrieved for this question (re-retrieved here through the same deterministic retriever the
+  context block used, at a depth ``>=`` the block's, so anything the model was shown is in scope). A
+  citation to an id that is in no retrieved passage is a fabricated citation — a blocking violation.
 * **Abstention passes.** ``"brak podstaw"`` with no citations is a valid answer: the question's
   passages did not support one, and the model said so.
 
 If no retriever is wired, grounding cannot be verified; rather than pass silently the validator
-blocks and says so — a cite-from-memory recipe with no memory to check against is a misconfiguration,
-not a green light.
+blocks and says so — a cite-from-memory recipe with no memory to check against is a
+misconfiguration, not a green light.
 """
 from __future__ import annotations
 
@@ -104,6 +104,6 @@ class CitationGroundingValidator:
         for cited in citations:
             if cited not in retrieved_ids:
                 violations.append(_error(
-                    f"citation {cited!r} refers to no passage retrieved for this question; it looks "
-                    f"invented. Cite only ids of the passages shown"))
+                    f"citation {cited!r} refers to no passage retrieved for this question; it "
+                    f"looks invented. Cite only ids of the passages shown"))
         return violations

@@ -73,7 +73,7 @@ class Report:
     def ndcg(self) -> float:
         return self._mean(lambda s: s.ndcg)
 
-    def _mean(self, pick) -> float:  # noqa: ANN001 - local helper over QueryScore
+    def _mean(self, pick) -> float:
         return sum(pick(s) for s in self.scores) / self.queries if self.scores else 0.0
 
 
@@ -166,7 +166,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Legal-procurement retrieval quality vs gold.")
     parser.add_argument("--config", type=Path, required=True, help="recipe config directory")
     parser.add_argument("--heldout", type=Path, required=True, help="held-out questions (JSONL)")
-    parser.add_argument("--gold", type=Path, required=True, help="gold relevant passage ids (JSONL)")
+    parser.add_argument("--gold", type=Path, required=True,
+                        help="gold relevant passage ids (JSONL)")
     parser.add_argument("--k", type=int, default=20, help="Recall@k depth (default: 20)")
     parser.add_argument("--journal", type=Path, default=None,
                         help="optional run journal, to also report citation-grounding rate")

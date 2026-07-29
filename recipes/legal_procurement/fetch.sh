@@ -19,12 +19,15 @@
 #
 # Usage: recipes/legal_procurement/fetch.sh [--max-passages N] [--limit N]
 #   --max-passages N   how many of passages.jsonl's first lines to load as the memory (default:
-#                      200000). The full file is ~3.3 GB; this flag bounds it but can scale big.
+#                      0 = ALL ~7M passages, the full ~3.3 GB corpus). Loading all guarantees every
+#                      question's gold passage is present, so all questions are scorable; a bound
+#                      N loads a prefix and drops questions whose gold falls outside it. The index
+#                      is on-disk (storage.toml), so a large corpus streams to disk, not RAM.
 #   --limit N          cap on how many held-out questions to keep (default: 100000)
 
 source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/common.sh"
 
-max_passages=200000
+max_passages=0
 limit=100000
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -35,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ "$max_passages" =~ ^[1-9][0-9]*$ ]] || die "--max-passages must be a positive integer, got '${max_passages}'"
+[[ "$max_passages" =~ ^[0-9]+$ ]] || die "--max-passages must be a non-negative integer (0 = all), got '${max_passages}'"
 [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "--limit must be a positive integer, got '${limit}'"
 
 data_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data"
@@ -79,7 +82,7 @@ with (data_dir / "passages.jsonl").open("w", encoding="utf-8") as out:
         ref = f"ref-{written}"
         id_of[str(record["id"])] = ref
         out.write(json.dumps({"id": ref, "text": text}, ensure_ascii=False) + "\n")
-        if written >= max_passages:
+        if max_passages and written >= max_passages:  # max_passages == 0 means load the whole file
             break
 
 if written == 0:

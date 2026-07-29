@@ -10,8 +10,8 @@ The gold labels are always concrete (yes/no/maybe); the system may additionally 
 * **abstain_rate** — the fraction of records the system answered ``unsupported`` (declined to
   decide). A high abstain rate trades coverage for safety; read alongside answered_accuracy.
 * **answered_accuracy** — accuracy over only the records it actually decided (a concrete
-  non-abstained decision was produced). A miss or an abstention is excluded from this denominator, so
-  it measures how right the system is *when it commits*.
+  non-abstained decision was produced). A miss or an abstention is excluded from this denominator,
+  so it measures how right the system is *when it commits*.
 
 Run: ``PYTHONPATH=src:. python -m recipes.med_evidence.eval \\
         --journal work/med.jsonl --gold recipes/med_evidence/data/gold.jsonl``

@@ -1,0 +1,7 @@
+# The abstracts memory scales to the whole ClinicalTrials.gov registry (~600k studies), so the
+# lexical index lives ON DISK next to the fetched data, not in RAM. It is streamed in once
+# (build-once) and the persisted index is reused on later runs. Delete data/abstracts.fts5 to
+# force a rebuild after re-fetching a different corpus size.
+[lexical]
+driver = "fts5"
+path = "../data/abstracts.fts5"

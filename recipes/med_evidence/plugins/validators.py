@@ -6,11 +6,11 @@ decide them in code so a bad answer cannot slip through a lenient reviewer):
 
 * :class:`GroundedEvidenceValidator` — every quote in the ``evidence`` array must be *real*: it must
   appear verbatim (after whitespace/quote normalisation) in the abstracts actually retrieved for
-  this question. A quote that appears in no retrieved abstract is a hallucinated citation and blocks.
-  A non-abstaining decision (anything other than ``unsupported``) with no evidence at all is refused:
-  a confident yes/no/maybe with nothing to stand on is exactly what the "abstain unless there is
-  positive evidence" rule forbids. If no retriever is wired, grounding cannot be verified — the
-  validator blocks and says so rather than passing silently (a decide-from-memory recipe with no
+  this question. A quote that appears in no retrieved abstract is a hallucinated citation and
+  blocks. A non-abstaining decision (anything other than ``unsupported``) with no evidence at all is
+  refused: a confident yes/no/maybe with nothing to stand on is exactly what the "abstain unless
+  there is positive evidence" rule forbids. If no retriever is wired, grounding cannot be verified —
+  the validator blocks and says so rather than passing silently (a decide-from-memory recipe with no
   memory to check against is a misconfiguration, not a green light).
 
 * :class:`DecisionEnumValidator` — the ``decision`` must be one of the allowed labels
@@ -162,8 +162,8 @@ class DecisionEnumValidator:
             raise ValueError("DecisionEnumValidator needs a non-empty 'allowed' array")
         return cls(field=str(options.get("field", "decision")), allowed=[str(a) for a in allowed])
 
-    def validate(self, record: Record, output: str,
-                 context: Mapping[str, Any]) -> list[Violation]:
+    def validate(self, record: Record, output: str,  # noqa: ARG002
+                 context: Mapping[str, Any]) -> list[Violation]:  # noqa: ARG002
         decision, error = _parse(output, "invalid_decision")
         if decision is None:
             return [error]  # type: ignore[list-item]  # error is set when decision is None

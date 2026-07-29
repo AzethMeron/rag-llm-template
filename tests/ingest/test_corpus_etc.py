@@ -62,6 +62,44 @@ class TestCorpus:
         with pytest.raises(ValueError, match="no vector index"):
             Corpus(lexical=Fts5Index()).dense_retriever()
 
+    def test_batch_size_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="batch_size"):
+            Corpus(lexical=Fts5Index(), batch_size=0)
+
+    def test_streams_in_batches(self) -> None:
+        # batch_size smaller than the item count exercises the mid-loop flush and the empty final
+        # batch — the streaming path that keeps a multi-GB corpus off the heap.
+        corpus = Corpus(lexical=Fts5Index(), batch_size=2)
+        corpus.add_all([CorpusItem(str(i), f"passage {i} cat") for i in range(4)])
+        assert len(corpus) == 4
+        assert corpus.retriever().retrieve("cat", k=10).__len__() == 4
+
+    def test_plain_lexical_index_resolves_in_memory(self) -> None:
+        # A LexicalIndex without on-disk document storage: display/meta are kept in RAM and the
+        # per-item index() path is used (no index_many).
+        corpus = Corpus(lexical=_PlainLexicalIndex())
+        corpus.add_all([CorpusItem("1", "cat sat", "cat -> kot", meta={"n": 1})])
+        assert len(corpus) == 1
+        assert corpus.retriever().retrieve("cat", k=1)[0].text == "cat -> kot"
+        assert corpus.resolve("1") == "cat -> kot" and corpus.resolve_meta("1") == {"n": 1}
+
+
+class _PlainLexicalIndex:
+    """A minimal LexicalIndex with no ``document``/``index_many`` — forces the corpus onto its
+    in-memory resolution and per-item indexing paths."""
+
+    def __init__(self) -> None:
+        self._docs: dict[str, str] = {}
+
+    def index(self, chunk_id: str, text: str) -> None:
+        self._docs[chunk_id] = text
+
+    def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
+        return [(cid, 1.0) for cid, text in self._docs.items() if query in text][:k]
+
+    def delete(self, chunk_id: str) -> None:
+        self._docs.pop(chunk_id, None)
+
 
 class TestNormalise:
     def test_nfc_and_whitespace(self) -> None:

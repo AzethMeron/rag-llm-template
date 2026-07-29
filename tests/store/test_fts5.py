@@ -55,6 +55,30 @@ class TestMutation:
         assert all(chunk_id != "doc1" for chunk_id, _ in index.search("quick", k=5))
 
 
+class TestDocuments:
+    def test_index_many_stores_display_and_meta(self) -> None:
+        index = Fts5Index()
+        written = index.index_many([("a", "the quick fox", "fox -> lis", {"n": 1}),
+                                    ("b", "a lazy dog", "dog -> pies", {})])
+        assert written == 2
+        assert index.count() == 2
+        assert index.document("a") == ("fox -> lis", {"n": 1})
+        assert index.document("b") == ("dog -> pies", {})
+        assert index.search("fox", k=5)[0][0] == "a"  # bulk rows are searchable
+
+    def test_index_many_empty_writes_nothing(self) -> None:
+        assert Fts5Index().index_many([]) == 0
+
+    def test_document_of_unknown_id_is_none(self) -> None:
+        assert Fts5Index().document("missing") is None
+
+    def test_delete_removes_the_document_too(self) -> None:
+        index = Fts5Index()
+        index.index_many([("a", "the quick fox", "fox", {})])
+        index.delete("a")
+        assert index.document("a") is None and index.count() == 0
+
+
 class TestScoreTransform:
     def test_monotonic_higher_is_better(self) -> None:
         # More-negative bm25 (a better match) maps to a higher relevance.

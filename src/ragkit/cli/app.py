@@ -13,6 +13,7 @@ the whole run against an in-memory transport with no server.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -196,30 +197,41 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
 
 
 def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:
-    corpus = Corpus(lexical=storage.lexical or Fts5Index())
-    corpus.add_all(_corpus_items(path, recipe))
+    return _ingest(Corpus(lexical=storage.lexical or Fts5Index()), path, recipe)
+
+
+def _ingest(corpus: Corpus, path: Path, recipe: _Recipe) -> Corpus:
+    """Stream the reference JSONL into the corpus, unless its index is already populated. An on-disk
+    index (``storage.toml`` gave it a ``path``) persists across runs, so a large corpus is ingested
+    once and reused rather than re-read on every assemble; an in-memory index is always empty at
+    startup and so is (re)built. Ingest itself is streamed and batched — never held whole in RAM."""
+    if len(corpus) == 0:
+        corpus.add_all(_corpus_items(path, recipe))
     return corpus
 
 
-def _corpus_items(path: Path, recipe: _Recipe) -> list[CorpusItem]:
+def _corpus_items(path: Path, recipe: _Recipe) -> Iterator[CorpusItem]:
+    """Yield one :class:`CorpusItem` per non-blank JSONL line, read lazily so a multi-GB corpus
+    streams through rather than materialising. ``ref-<line>`` numbers raw lines (blanks included),
+    the same id the fetch scripts assign, so citations and gold line up."""
     import json
-    items: list[CorpusItem] = []
-    for line_no, line in enumerate(path.read_text("utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise CliError(f"line {line_no}: invalid JSON in reference corpus: {exc}",
-                           path=path) from exc
-        index_text = str(record.get(recipe.reference_index_field, ""))
-        if not index_text:
-            continue
-        display = (str(record[recipe.reference_display_field])
-                   if recipe.reference_display_field else _default_display(record))
-        items.append(CorpusItem(chunk_id=f"ref-{line_no}", index_text=index_text,
-                                display_text=display, meta=record))
-    return items
+    with path.open(encoding="utf-8") as handle:
+        for line_no, raw in enumerate(handle, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise CliError(f"line {line_no}: invalid JSON in reference corpus: {exc}",
+                               path=path) from exc
+            index_text = str(record.get(recipe.reference_index_field, ""))
+            if not index_text:
+                continue
+            display = (str(record[recipe.reference_display_field])
+                       if recipe.reference_display_field else _default_display(record))
+            yield CorpusItem(chunk_id=f"ref-{line_no}", index_text=index_text,
+                             display_text=display, meta=record)
 
 
 def _build_retrieval(settings: RetrievalSettings, recipe: _Recipe, config_dir: Path,
@@ -242,8 +254,8 @@ def _build_retrieval(settings: RetrievalSettings, recipe: _Recipe, config_dir: P
     if settings.needs_embedding and vector is None:
         raise CliError(f"retrieval.kind={settings.kind!r} needs a [vector] store in storage.toml "
                        f"(built with the embedding model's output dimension)")
-    corpus = Corpus(lexical=storage.lexical or Fts5Index(), vector=vector, embedder=embedder)
-    corpus.add_all(_corpus_items(path, recipe))
+    corpus = _ingest(Corpus(lexical=storage.lexical or Fts5Index(), vector=vector,
+                            embedder=embedder), path, recipe)
 
     if settings.kind == "lexical":
         return corpus.lexical_retriever()

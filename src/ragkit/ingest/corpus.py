@@ -49,25 +49,50 @@ class Corpus:
     """
 
     def __init__(self, *, lexical: LexicalIndex | None = None, vector: VectorIndex | None = None,
-                 embedder: EmbeddingClient | None = None) -> None:
+                 embedder: EmbeddingClient | None = None, batch_size: int = 1000) -> None:
         if vector is not None and embedder is None:
             raise ValueError("a vector index needs an embedder to build the corpus")
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
         self._lexical = lexical
         self._vector = vector
         self._embedder = embedder
+        self._batch_size = batch_size
+        # A lexical index that can store and resolve documents (Fts5Index) keeps display text and
+        # metadata on disk, so a large corpus is never held in RAM. Without one, resolution falls
+        # back to these in-memory maps (the vector-only path, and bare LexicalIndex port impls).
+        self._on_disk = lexical is not None and hasattr(lexical, "document")
         self._shown: dict[str, str] = {}
         self._meta: dict[str, Mapping[str, Any]] = {}
         self._embed_cache: dict[str, Sequence[float]] = {}
 
     def add_all(self, items: Iterable[CorpusItem]) -> int:
-        """Index every item; returns the count. Embeddings are batched and cached, so re-adding the
-        same index text (a duplicate across the corpus) is free."""
-        batch = list(items)
-        for item in batch:
-            self._shown[item.chunk_id] = item.shown
-            self._meta[item.chunk_id] = dict(item.meta)
-            if self._lexical is not None:
-                self._lexical.index(item.chunk_id, item.index_text)
+        """Index every item, streaming in batches so the source is never fully materialised in RAM;
+        returns the count. Embeddings are batched and cached, so re-adding the same index text (a
+        duplicate across the corpus) is free."""
+        total = 0
+        batch: list[CorpusItem] = []
+        for item in items:
+            batch.append(item)
+            if len(batch) >= self._batch_size:
+                total += self._flush(batch)
+                batch = []
+        if batch:
+            total += self._flush(batch)
+        return total
+
+    def _flush(self, batch: Sequence[CorpusItem]) -> int:
+        if self._lexical is not None:
+            index_many = getattr(self._lexical, "index_many", None)
+            if index_many is not None:
+                index_many((it.chunk_id, it.index_text, it.shown, it.meta) for it in batch)
+            else:
+                for item in batch:
+                    self._lexical.index(item.chunk_id, item.index_text)
+        if not self._on_disk:
+            for item in batch:
+                self._shown[item.chunk_id] = item.shown
+                self._meta[item.chunk_id] = dict(item.meta)
         if self._vector is not None and self._embedder is not None:
             self._embed_and_upsert(batch)
         return len(batch)
@@ -84,16 +109,24 @@ class Corpus:
                 self._embed_cache[_key(text)] = vector
         ids = [item.chunk_id for item in batch]
         vecs = [self._embed_cache[_key(item.index_text)] for item in batch]
-        metas = [self._meta[item.chunk_id] for item in batch]
+        metas = [dict(item.meta) for item in batch]
         self._vector.upsert(ids, vecs, metas)
 
     def resolve(self, chunk_id: str) -> str | None:
+        if self._on_disk:
+            doc = self._lexical.document(chunk_id)  # type: ignore[union-attr]
+            return doc[0] if doc is not None else None
         return self._shown.get(chunk_id)
 
     def resolve_meta(self, chunk_id: str) -> Mapping[str, Any]:
+        if self._on_disk:
+            doc = self._lexical.document(chunk_id)  # type: ignore[union-attr]
+            return doc[1] if doc is not None else {}
         return self._meta.get(chunk_id, {})
 
     def __len__(self) -> int:
+        if self._on_disk:
+            return self._lexical.count()  # type: ignore[union-attr]
         return len(self._shown)
 
     # -- retrievers ----------------------------------------------------------

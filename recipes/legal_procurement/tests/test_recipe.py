@@ -102,7 +102,8 @@ class TestCitationAcceptance:
         assert _validator().validate(_rec(), out, _ctx()) == []
 
     def test_abstention_marker_inside_a_sentence_passes(self) -> None:
-        # Abstention is detected by the marker anywhere in the answer, and no citations are required.
+        # Abstention is detected by the marker anywhere in the answer, and no citations are
+        # required.
         out = json.dumps({"answer": "Brak podstaw w przedstawionych przepisach.", "citations": []})
         assert _validator().validate(_rec(), out, _ctx()) == []
 

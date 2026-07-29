@@ -90,23 +90,23 @@ PY
 if [[ "$trials" -gt 0 ]]; then
     note "appending up to ${trials} ClinicalTrials.gov study summaries to the corpus (public domain)"
     "$python" - "$data_dir" "$trials" <<'PY' || die "fetching ClinicalTrials.gov summaries failed (see above)"
-import json, sys, time, urllib.error, urllib.parse, urllib.request
+import calendar, json, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 data_dir, want = Path(sys.argv[1]), int(sys.argv[2])
-# A stable sort key makes the nextPageToken chain deterministic and complete; without it the
-# API occasionally drops the token mid-traversal, silently truncating a deep fetch.
-base = ("https://clinicaltrials.gov/api/v2/studies?pageSize=1000"
-        "&sort=LastUpdatePostDate"
-        "&fields=NCTId,BriefTitle,BriefSummary,Condition")
 
-def fetch(token):
-    url = base + (f"&pageToken={urllib.parse.quote(token)}" if token else "")
+# The nextPageToken chain is unreliable past ~20-100k studies -- the API drops the token
+# mid-traversal, silently truncating a deep fetch. So the whole registry is fetched in monthly
+# shards over LastUpdatePostDate: every study has exactly one such date, so the shards partition
+# the ~596k studies with no overlap, and each shard is small enough (a few thousand) to paginate to
+# exhaustion reliably. Range covers 2000 (registry launch) to next year.
+
+def fetch(url):
     req = urllib.request.Request(url, headers={
         "User-Agent": "ragkit-med-evidence/1.0 (recipe corpus fetcher)"})
     for attempt in range(6):
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 -- fixed https host
+            with urllib.request.urlopen(req, timeout=90) as resp:  # noqa: S310 -- fixed https host
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
             if exc.code not in (429, 500, 502, 503) or attempt == 5:
@@ -116,27 +116,41 @@ def fetch(token):
             time.sleep(min(wait, 120))
     raise SystemExit("ClinicalTrials.gov kept failing after retries")
 
-written, token = 0, None
+def shard_urls():
+    for year in range(2000, 2028):
+        for month in range(1, 13):
+            last = calendar.monthrange(year, month)[1]
+            rng = (f"AREA[LastUpdatePostDate]RANGE"
+                   f"[{year}-{month:02d}-01,{year}-{month:02d}-{last:02d}]")
+            yield ("https://clinicaltrials.gov/api/v2/studies?pageSize=1000"
+                   "&sort=LastUpdatePostDate&fields=NCTId,BriefTitle,BriefSummary,Condition"
+                   f"&filter.advanced={urllib.parse.quote(rng)}")
+
+written = 0
 with (data_dir / "abstracts.jsonl").open("a", encoding="utf-8") as f:
-    while written < want:
-        page = fetch(token)
-        for study in page.get("studies", []):
-            section = study.get("protocolSection", {})
-            nct = section.get("identificationModule", {}).get("nctId")
-            title = section.get("identificationModule", {}).get("briefTitle", "")
-            summary = section.get("descriptionModule", {}).get("briefSummary", "")
-            conditions = section.get("conditionsModule", {}).get("conditions", []) or []
-            if not nct:
-                continue
-            text = f"{title}. {summary} Conditions: {', '.join(conditions)}".strip()
-            f.write(json.dumps({"id": str(nct), "text": text}, ensure_ascii=False) + "\n")
-            written += 1
-            if written >= want:
+    for base in shard_urls():
+        if written >= want:
+            break
+        token = None
+        while True:
+            page = fetch(base + (f"&pageToken={urllib.parse.quote(token)}" if token else ""))
+            for study in page.get("studies", []):
+                section = study.get("protocolSection", {})
+                nct = section.get("identificationModule", {}).get("nctId")
+                if not nct:
+                    continue
+                title = section.get("identificationModule", {}).get("briefTitle", "")
+                summary = section.get("descriptionModule", {}).get("briefSummary", "")
+                conditions = section.get("conditionsModule", {}).get("conditions", []) or []
+                text = f"{title}. {summary} Conditions: {', '.join(conditions)}".strip()
+                f.write(json.dumps({"id": str(nct), "text": text}, ensure_ascii=False) + "\n")
+                written += 1
+                if written >= want:
+                    break
+            token = page.get("nextPageToken")
+            if not token or written >= want:
                 break
-        token = page.get("nextPageToken")
-        if not token:
-            break  # ran out of studies before reaching the requested count
-        time.sleep(1)  # be a polite API citizen between pages
+            time.sleep(0.3)  # be a polite API citizen between pages
 print(f">> {written} ClinicalTrials.gov summaries appended to abstracts.jsonl")
 PY
 fi
