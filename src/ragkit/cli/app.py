@@ -197,7 +197,8 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
 
 
 def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:
-    return _ingest(Corpus(lexical=storage.lexical or Fts5Index()), path, recipe)
+    return _ingest(Corpus(lexical=storage.lexical or Fts5Index(), documents=storage.documents),
+                   path, recipe)
 
 
 def _ingest(corpus: Corpus, path: Path, recipe: _Recipe) -> Corpus:
@@ -255,7 +256,7 @@ def _build_retrieval(settings: RetrievalSettings, recipe: _Recipe, config_dir: P
         raise CliError(f"retrieval.kind={settings.kind!r} needs a [vector] store in storage.toml "
                        f"(built with the embedding model's output dimension)")
     corpus = _ingest(Corpus(lexical=storage.lexical or Fts5Index(), vector=vector,
-                            embedder=embedder), path, recipe)
+                            embedder=embedder, documents=storage.documents), path, recipe)
 
     if settings.kind == "lexical":
         return corpus.lexical_retriever()

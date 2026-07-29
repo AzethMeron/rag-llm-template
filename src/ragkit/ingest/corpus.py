@@ -4,25 +4,27 @@ retrievers over them.
 This is the ingest end of retrieval. Each item has a stable id, an **index text** (what matching
 happens on — a reference source line, a chunk body), an optional **display text** (what a retrieved
 hit shows — a worked ``source -> target`` example, a chunk with a citation), and metadata. The
-lexical index tokenises the index text; the vector index embeds it (through an embedding cache, so
-re-adding the same text costs nothing); the display text and metadata are what a hit resolves to.
+lexical index tokenises the index text and the vector index embeds it — both are search indexes
+that return ids. The display text + metadata are the *row*, held in the :class:`DocumentStore`
+(relational, on disk by default), so resolving a hit is a database lookup and a corpus of any size
+is never held in RAM.
 
 Deterministic and read-only once built, so one corpus is safely shared by a run's workers — the
 same guarantee the retrievers need.
 """
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ragkit.core.ports import LexicalIndex, Retriever, VectorIndex
+from ragkit.core.ports import DocumentStore, LexicalIndex, Retriever, VectorIndex
 
 from ..retrieve.embedding import EmbeddingClient
 from ..retrieve.hybrid import HybridRetriever
 from ..retrieve.rerank import RerankClient
 from ..retrieve.retrievers import DenseRetriever, LexicalRetriever
+from ..store.documents.sqlite import SqliteDocuments
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,13 +45,15 @@ class Corpus:
     """A built retrieval corpus over the storage indexes it is given.
 
     Pass a lexical index for BM25 retrieval, a vector index + embedder for dense retrieval, or both
-    for hybrid. Text and metadata for resolving hits are held in memory (a corpus is rebuilt per
-    run from its source, matching how a reference retriever is seeded); the heavy artefacts (the
-    inverted index, the vectors) live in the stores.
+    for hybrid. Every path resolves a hit's display text + metadata through the one
+    :class:`~ragkit.core.ports.DocumentStore` (relational; on disk when configured, in-memory
+    SQLite otherwise), so nothing is held in a RAM map. The heavy artefacts — the inverted index,
+    the vectors, the rows — all live in the stores.
     """
 
     def __init__(self, *, lexical: LexicalIndex | None = None, vector: VectorIndex | None = None,
-                 embedder: EmbeddingClient | None = None, batch_size: int = 1000) -> None:
+                 embedder: EmbeddingClient | None = None, documents: DocumentStore | None = None,
+                 batch_size: int = 1000) -> None:
         if vector is not None and embedder is None:
             raise ValueError("a vector index needs an embedder to build the corpus")
         if batch_size < 1:
@@ -58,18 +62,14 @@ class Corpus:
         self._vector = vector
         self._embedder = embedder
         self._batch_size = batch_size
-        # A lexical index that can store and resolve documents (Fts5Index) keeps display text and
-        # metadata on disk, so a large corpus is never held in RAM. Without one, resolution falls
-        # back to these in-memory maps (the vector-only path, and bare LexicalIndex port impls).
-        self._on_disk = lexical is not None and hasattr(lexical, "document")
-        self._shown: dict[str, str] = {}
-        self._meta: dict[str, Mapping[str, Any]] = {}
-        self._embed_cache: dict[str, Sequence[float]] = {}
+        # Resolution always goes through a document store; absent an explicit one, an in-memory
+        # SQLite store is used, so a hit still resolves through the database abstraction.
+        self._documents: DocumentStore = documents if documents is not None else SqliteDocuments()
 
     def add_all(self, items: Iterable[CorpusItem]) -> int:
         """Index every item, streaming in batches so the source is never fully materialised in RAM;
-        returns the count. Embeddings are batched and cached, so re-adding the same index text (a
-        duplicate across the corpus) is free."""
+        returns the count. Within a batch, identical index texts are embedded once; the rows,
+        vectors, and inverted index all live in the stores, not a RAM cache."""
         total = 0
         batch: list[CorpusItem] = []
         for item in items:
@@ -85,49 +85,36 @@ class Corpus:
         if self._lexical is not None:
             index_many = getattr(self._lexical, "index_many", None)
             if index_many is not None:
-                index_many((it.chunk_id, it.index_text, it.shown, it.meta) for it in batch)
+                index_many((it.chunk_id, it.index_text) for it in batch)
             else:
                 for item in batch:
                     self._lexical.index(item.chunk_id, item.index_text)
-        if not self._on_disk:
-            for item in batch:
-                self._shown[item.chunk_id] = item.shown
-                self._meta[item.chunk_id] = dict(item.meta)
         if self._vector is not None and self._embedder is not None:
             self._embed_and_upsert(batch)
+        self._documents.add_documents((it.chunk_id, it.shown, it.meta) for it in batch)
         return len(batch)
 
     def _embed_and_upsert(self, batch: Sequence[CorpusItem]) -> None:
         assert self._embedder is not None and self._vector is not None
-        # Only embed texts not already cached, then reuse the cache for the rest.
-        to_embed = [item.index_text for item in batch
-                    if _key(item.index_text) not in self._embed_cache]
-        unique = list(dict.fromkeys(to_embed))  # de-dup within the batch, preserve order
-        if unique:
-            vectors = self._embedder.embed(unique)
-            for text, vector in zip(unique, vectors, strict=True):
-                self._embed_cache[_key(text)] = vector
+        # De-dup identical index texts within the batch so each is embedded once (no cross-batch
+        # RAM cache — a rare cross-batch duplicate is simply re-embedded).
+        unique = list(dict.fromkeys(item.index_text for item in batch))
+        embedded = dict(zip(unique, self._embedder.embed(unique), strict=True))
         ids = [item.chunk_id for item in batch]
-        vecs = [self._embed_cache[_key(item.index_text)] for item in batch]
+        vecs = [embedded[item.index_text] for item in batch]
         metas = [dict(item.meta) for item in batch]
         self._vector.upsert(ids, vecs, metas)
 
     def resolve(self, chunk_id: str) -> str | None:
-        if self._on_disk:
-            doc = self._lexical.document(chunk_id)  # type: ignore[union-attr]
-            return doc[0] if doc is not None else None
-        return self._shown.get(chunk_id)
+        doc = self._documents.document(chunk_id)
+        return doc[0] if doc is not None else None
 
     def resolve_meta(self, chunk_id: str) -> Mapping[str, Any]:
-        if self._on_disk:
-            doc = self._lexical.document(chunk_id)  # type: ignore[union-attr]
-            return doc[1] if doc is not None else {}
-        return self._meta.get(chunk_id, {})
+        doc = self._documents.document(chunk_id)
+        return doc[1] if doc is not None else {}
 
     def __len__(self) -> int:
-        if self._on_disk:
-            return self._lexical.count()  # type: ignore[union-attr]
-        return len(self._shown)
+        return self._documents.count()
 
     # -- retrievers ----------------------------------------------------------
 
@@ -158,7 +145,3 @@ class Corpus:
         if self._vector is not None:
             return self.dense_retriever()
         return self.lexical_retriever()
-
-
-def _key(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()

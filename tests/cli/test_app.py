@@ -61,11 +61,13 @@ class TestAssembleAndRun:
         assert hits and hits[0].text == "the cat -> kot"
 
     def test_on_disk_reference_index_is_built_once_and_reused(self, tmp_path: Path) -> None:
-        # With an on-disk [lexical] index the corpus is streamed in on the first assemble and the
-        # persisted index is reused on the next — no re-ingest (the build-once path).
+        # With an on-disk document store the corpus is streamed in on the first assemble and the
+        # persisted rows are reused on the next — no re-ingest (the build-once path keys on the
+        # document store's count()).
         config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF,
                               reference=[{"source": "the cat sat", "target": "kot"}],
-                              storage='[lexical]\ndriver = "fts5"\npath = "lex.db"\n')
+                              storage='[lexical]\ndriver = "fts5"\npath = "lex.db"\n'
+                                      '[documents]\ndriver = "sqlite"\npath = "rows.db"\n')
         first = assemble(config, client_factory=scripted_factory())
         assert first.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
         # Overwrite the source corpus; a reuse (no re-ingest) still serves the original passage.

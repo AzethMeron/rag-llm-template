@@ -96,7 +96,7 @@ class TestCorpusEdges:
         assert corpus.add_all([CorpusItem("1", "a", meta={"k": "v"})]) == 1
         assert corpus.resolve_meta("1")["k"] == "v"
 
-    def test_second_add_reuses_the_embedding_cache(self, tmp_path: Path) -> None:
+    def test_dedup_is_within_batch_not_across_adds(self, tmp_path: Path) -> None:
         calls: list[int] = []
 
         def counting(request: httpx.Request) -> httpx.Response:
@@ -107,6 +107,9 @@ class TestCorpusEdges:
         embedder = EmbeddingClient(base_url="http://x/v1",
                                    client=httpx.Client(transport=httpx.MockTransport(counting)))
         corpus = Corpus(vector=LanceVectorIndex(str(tmp_path / "v"), dim=2), embedder=embedder)
-        corpus.add_all([CorpusItem("1", "same")])
-        corpus.add_all([CorpusItem("2", "same")])  # cached; no new embed call
+        # Identical texts in one batch embed once; a separate add re-embeds (no cross-batch RAM
+        # cache — the vectors live in the store, not the heap).
+        corpus.add_all([CorpusItem("1", "same"), CorpusItem("2", "same")])
         assert len(calls) == 1
+        corpus.add_all([CorpusItem("3", "same")])
+        assert len(calls) == 2

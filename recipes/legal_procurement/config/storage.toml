@@ -5,3 +5,9 @@
 [lexical]
 driver = "fts5"
 path = "../data/passages.fts5"
+
+# The chunk rows (the passage text a hit resolves to) — the relational store every retrieval path
+# resolves through, kept on disk next to the index so nothing is held in RAM.
+[documents]
+driver = "sqlite"
+path = "../data/passages.docs.db"

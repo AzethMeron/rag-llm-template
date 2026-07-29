@@ -248,6 +248,20 @@ class LexicalIndex(Protocol):
 
 
 @runtime_checkable
+class DocumentStore(Protocol):
+    """The relational home for chunk rows — the single store every retrieval path resolves a hit
+    through, so a corpus of any size lives in the database rather than a RAM map. A search index
+    (BM25, ANN) returns ids; this turns an id back into its display text + metadata. ``count`` is
+    the corpus size, used to skip re-ingesting an already-built store."""
+
+    def add_documents(self, rows: Iterable[tuple[str, str, Mapping[str, Any]]]) -> None: ...
+
+    def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None: ...
+
+    def count(self) -> int: ...
+
+
+@runtime_checkable
 class SqlStore(Protocol):
     """A relational store. ``read_only`` marks a binding the framework must not write through;
     a write attempt on one is refused at the port, before the database. ``query`` runs a

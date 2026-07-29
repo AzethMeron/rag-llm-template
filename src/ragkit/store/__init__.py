@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from ragkit.core.config import ConfigError, load_toml, reject_unknown
-from ragkit.core.ports import LexicalIndex, SchemaIntrospector, SqlStore, VectorIndex
+from ragkit.core.ports import (
+    DocumentStore, LexicalIndex, SchemaIntrospector, SqlStore, VectorIndex)
 from ragkit.core.registry import Registry
 
+from .documents.sqlite import DocumentStoreError, SqliteDocuments
 from .filters import FilterError, to_sql
 from .lexical.fts5 import Fts5Index, LexicalIndexError
 from .sql.duckdb import DuckDBIntrospector, DuckDBStore
@@ -34,6 +36,9 @@ VECTOR_INDEXES: Registry[VectorIndex] = Registry(
 LEXICAL_INDEXES: Registry[LexicalIndex] = Registry(
     "lexical index", LexicalIndex,  # type: ignore[type-abstract]
     entry_point_group="ragkit.lexical_indexes")
+DOCUMENT_STORES: Registry[DocumentStore] = Registry(
+    "document store", DocumentStore,  # type: ignore[type-abstract]
+    entry_point_group="ragkit.document_stores")
 SCHEMA_INTROSPECTORS: Registry[SchemaIntrospector] = Registry(
     "schema introspector", SchemaIntrospector,  # type: ignore[type-abstract]
     entry_point_group="ragkit.schema_introspectors")
@@ -43,6 +48,7 @@ SQL_STORES.register("duckdb", DuckDBStore)
 VECTOR_INDEXES.register("lancedb", LanceVectorIndex)
 VECTOR_INDEXES.register("qdrant", QdrantVectorIndex)
 LEXICAL_INDEXES.register("fts5", Fts5Index)
+DOCUMENT_STORES.register("sqlite", SqliteDocuments)
 SCHEMA_INTROSPECTORS.register("sqlite", SqliteIntrospector)
 SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 
@@ -55,6 +61,7 @@ class Storage:
     sql: SqlStore | None = None
     vector: VectorIndex | None = None
     lexical: LexicalIndex | None = None
+    documents: DocumentStore | None = None
     introspector: SchemaIntrospector | None = None
 
 
@@ -65,7 +72,7 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
     config directory), so a config is portable rather than tied to the caller's working directory;
     a ``:memory:`` path is left as-is."""
     data = load_toml(path, what="storage file")
-    reject_unknown(data, {"sql", "vector", "lexical", "introspector"},
+    reject_unknown(data, {"sql", "vector", "lexical", "documents", "introspector"},
                    label="the storage file", path=path)
     base = base_dir or path.parent
     return Storage(
@@ -73,6 +80,8 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
         vector=_build(VECTOR_INDEXES, data.get("vector"), label="[vector]", path=path, base=base),
         lexical=_build(LEXICAL_INDEXES, data.get("lexical"), label="[lexical]", path=path,
                        base=base),
+        documents=_build(DOCUMENT_STORES, data.get("documents"), label="[documents]", path=path,
+                         base=base),
         introspector=_build(SCHEMA_INTROSPECTORS, data.get("introspector"),
                             label="[introspector]", path=path, base=base))
 
@@ -95,8 +104,9 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path, 
 
 __all__ = [
     "Storage", "load_storage",
-    "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "SCHEMA_INTROSPECTORS",
+    "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "DOCUMENT_STORES", "SCHEMA_INTROSPECTORS",
     "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
-    "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex",
-    "SqlStoreError", "LexicalIndexError", "VectorIndexError", "FilterError", "to_sql",
+    "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex", "SqliteDocuments",
+    "SqlStoreError", "LexicalIndexError", "VectorIndexError", "DocumentStoreError",
+    "FilterError", "to_sql",
 ]
