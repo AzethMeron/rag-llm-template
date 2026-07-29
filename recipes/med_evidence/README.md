@@ -43,14 +43,31 @@ Two real sources:
   `data/gold.jsonl` (`{record_id, decision}` — the gold, written **only** here). `--limit N` caps
   the number of questions (default `0` = all, ~1000).
 - **Corpus scaling — ClinicalTrials.gov v2** (US-Gov **public domain**). `--trials N` (default `0` =
-  skip) appends `N` real study summaries (`NCT…` id, brief title + brief summary + conditions) to
-  `data/abstracts.jsonl`, paginating the API via its `nextPageToken`. This lets the retrieval corpus
-  scale to **many GB** of real trial text while the PubMedQA questions and gold stay fixed — a
-  realistic "small labelled eval set, huge unlabelled memory" setup.
+  skip) appends up to `N` real study summaries (`NCT…` id, brief title + brief summary + conditions)
+  to `data/abstracts.jsonl`. Because the API's `nextPageToken` chain silently truncates past
+  ~20–100k studies, the whole registry is fetched in **monthly `LastUpdatePostDate` shards** (2000
+  to next year): every study has exactly one such date, so the shards partition the **~596k studies**
+  with no overlap and each is small enough to page to exhaustion reliably. Pass a large `--trials`
+  to pull the **full registry**; the PubMedQA questions and gold stay fixed — a realistic "small
+  labelled eval set, huge unlabelled memory" setup.
 
 Tiny in-test fixtures back the recipe's own tests, so they need no download or network; those tests
 also retrieve the abstracts memory over **both real vector indexes** (LanceDB and Qdrant), swapped by
 a one-line `storage.toml` driver edit, alongside the default `fts5` lexical path.
+
+## Storage (on-disk, low-RAM)
+
+Because the corpus scales to the whole registry, `config/storage.toml` keeps both the search index
+and the chunk rows **on disk** next to the fetched data, never in RAM:
+
+- `[lexical]` (`fts5`, `path = ../data/abstracts.fts5`) — the BM25 search index; returns ids only.
+- `[documents]` (`sqlite`, `path = ../data/abstracts.docs.db`) — the relational chunk-row store
+  **every retrieval path resolves a hit through**, turning an id back into the abstract text +
+  metadata.
+
+The corpus is streamed in once and the persisted stores are **reused on later runs** (build-once).
+Delete `data/abstracts.fts5` and `data/abstracts.docs.db` to force a rebuild after re-fetching a
+different corpus size.
 
 ## Running
 
@@ -72,3 +89,19 @@ decision equals gold; a miss or an abstention counts as wrong), **abstain_rate**
 PYTHONPATH=src:. python -m recipes.med_evidence.eval \
     --journal work/med.jsonl --gold recipes/med_evidence/data/gold.jsonl
 ```
+
+### Measured baseline
+
+Over a **597k-doc corpus** (596,055 ClinicalTrials.gov studies + 1,000 PubMedQA abstracts), **60
+gold questions**, answered by **Qwen3-14B via llama.cpp**:
+
+| Metric | Value |
+|---|---|
+| decision accuracy | 0.300 |
+| abstain_rate | 0.033 |
+| answered_accuracy | 0.367 |
+
+51/60 outputs passed the grounding guard. These are honest baselines, not tuned results: the RAG
+framing — the model must first *retrieve the right abstract among ~600k distractors* and then
+decide — is materially harder than the classic PubMedQA setup where the gold abstract is handed to
+the model. Dense/hybrid retrieval and a stronger decoder would lift them.

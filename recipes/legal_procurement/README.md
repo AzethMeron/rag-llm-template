@@ -46,10 +46,11 @@ recipes/legal_procurement/fetch.sh [--max-passages N] [--limit N]
 ```
 
 - **Memory** — the **polqa** passage corpus (IPIPAN, **CC BY-SA**): Polish Wikipedia passages used as
-  a stand-in legal/encyclopaedic corpus. The full `passages.jsonl` is **~3.3 GB**, so
-  `--max-passages` (default **200000**) bounds how many of its first lines are loaded; it streams the
-  file line by line, so the corpus is never held whole in memory. Each kept passage is written to
-  `data/passages.jsonl` as `{id, text}`.
+  a stand-in legal/encyclopaedic corpus. The full `passages.jsonl` is **~3.3 GB / ~7.1M passages**.
+  `--max-passages` (default **0 = load the whole corpus**) bounds how many of its first lines are
+  loaded; it streams the file line by line, so the corpus is never held whole in memory. Loading all
+  passages guarantees every question's gold passage is present, so all questions are scorable. Each
+  kept passage is written to `data/passages.jsonl` as `{id, text}`.
 - **Questions + gold** — polqa's `test.csv` (columns:
   `question_id, passage_title, passage_text, passage_wiki, passage_id, duplicate, question, relevant,
   answers, ...`). Rows are grouped per question into `data/heldout.jsonl` (`{record_id, source,
@@ -67,6 +68,20 @@ corpus-agnostic; only `data/passages.jsonl` and the gold change.
 Tiny in-test fixtures back the recipe's own tests, so they need no download or network; those tests
 also retrieve the memory over **both real vector indexes** (LanceDB and Qdrant), swapped by a
 one-line `storage.toml` driver edit, alongside the default `fts5` lexical path.
+
+## Storage (on-disk, low-RAM)
+
+The corpus is millions of passages / gigabytes of text, so `config/storage.toml` keeps both the
+search index and the chunk rows **on disk** next to the fetched data, never in RAM:
+
+- `[lexical]` (`fts5`, `path = ../data/passages.fts5`) — the BM25 search index; returns ids only.
+- `[documents]` (`sqlite`, `path = ../data/passages.docs.db`) — the relational chunk-row store
+  **every retrieval path resolves a hit through**, turning an id back into the passage text +
+  metadata.
+
+The corpus is streamed in once and the persisted stores are **reused on later runs** (build-once).
+Delete `data/passages.fts5` and `data/passages.docs.db` to force a rebuild after re-fetching a
+different corpus size.
 
 ## Running
 
@@ -91,3 +106,21 @@ PYTHONPATH=src:. python -m recipes.legal_procurement.eval \
     --gold recipes/legal_procurement/data/gold.jsonl \
     --k 20 [--journal work/legal.jsonl]
 ```
+
+### Measured baseline
+
+Over the **full 7.1M real passages**, **956 gold questions**, lexical **BM25** (no GPU):
+
+| Metric | Value |
+|---|---|
+| Recall@20 | 0.332 |
+| MRR@10 | 0.393 |
+| NDCG@10 | 0.250 |
+
+This is a **zero-shot lexical baseline** — no dense or hybrid retrieval, no reranking — so it is a
+floor, not a ceiling: dense/hybrid would lift these numbers.
+
+**Low-RAM at scale (the concrete evidence).** The full **7.1M-passage** polqa corpus was **ingested
+and queried at ~37 MB process RSS**, because the search index and the chunk rows live on disk and a
+hit resolves through the `[documents]` store rather than a RAM map — the streaming, on-disk ingest
+holds no corpus-sized structure in memory.

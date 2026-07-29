@@ -13,7 +13,7 @@ server, GPU, or network**.
 
 ## What you can build
 
-A task is a directory of TOML config plus (optionally) a small plugin. Four are worked end-to-end,
+A task is a directory of TOML config plus (optionally) a small plugin. Six are worked end-to-end,
 each fetching real data on demand and none of which required a framework change:
 
 | Recipe | Task | Proves |
@@ -22,6 +22,8 @@ each fetching real data on demand and none of which required a framework change:
 | [`nl_to_sql`](recipes/nl_to_sql) | natural language → a safe SQL `SELECT` | the two-database split + a generated-SQL **safety** validator (adversarially tested) |
 | [`form_autofill`](recipes/form_autofill) | fill a record's missing fields from a relational DB | a multi-field `FormSchema` + retrieval from SQL rows |
 | [`predictive_maintenance`](recipes/predictive_maintenance) | decide from a manuals **memory** + sensor request | retrieval memory *and* a structured request, with a **grounding** validator |
+| [`med_evidence`](recipes/med_evidence) | grounded yes/no/maybe biomedical decision from retrieved abstracts | a **~600k-doc on-disk corpus** (ClinicalTrials.gov + PubMedQA gold) with a hallucination-blocking grounding validator |
+| [`legal_procurement`](recipes/legal_procurement) | Polish legal / procurement passage retrieval | the **retrieval-metrics eval** (Recall@20/MRR@10/NDCG@10) over the **full 7.1M-passage polqa corpus**, ingested and queried at ~37 MB RSS |
 
 New to the project? **Start with [`docs/tutorial.md`](docs/tutorial.md)** — it builds a pipeline
 from scratch and shows how to extend every seam.
@@ -51,19 +53,25 @@ PYTHONPATH=src python -m ragkit.cli --config recipes/translation/config \
 ```
 src/ragkit/
   core/      the contract: ports, records, registry, errors, config, width, placeholders, lexicon, jsonshape  [stdlib only]
-  store/     sql (sqlite | duckdb), vector (lancedb | qdrant), lexical (fts5)   [optional deps, lazily imported]
-  ingest/    extract, normalise, dedup, chunk, embed, corpus
+  store/     sql (sqlite | duckdb), vector (lancedb | qdrant), lexical (fts5), documents (sqlite chunk rows)   [optional deps, lazily imported]
+  ingest/    extract, normalise, dedup, chunk, embed, streaming corpus builder
   retrieve/  lexical, dense, fusion (RRF/MMR), rerank, hybrid, config-driven assembly (tuning)
   llm/       client, backends, model pool + thrash guard, serve-args
   harness/   personas, panel, validators, context blocks, memory, output schemas, runner
   eval/      retrieval metrics (Recall@k/MRR/MAP/NDCG) + a blinded A/B judge
   cli/       assemble a run from a config directory, and execute it
-recipes/     four fully-worked tasks, each with config/, plugins/, a hardened fetch.sh, eval.py, tests/
+recipes/     six fully-worked tasks, each with config/, plugins/, a hardened fetch.sh, eval.py, tests/
 docs/ tools/ tests/ license/ .audit/
 ```
 
 Two **real** drivers ship behind each database port (`sqlite`↔`duckdb`, `lancedb`↔`qdrant`), so
 swapping a database is a one-line config edit proven by the conformance suite — see the tutorial.
+
+Retrieval never holds the corpus in RAM: a search index (FTS5 BM25, or the vector ANN) returns
+only ids, and every hit resolves its text + metadata through one relational `DocumentStore` (the
+`[documents]` store). Ingest streams the source in batches to the on-disk stores and builds them
+once, so a multi-GB, multi-million-row corpus ingests and queries at a few tens of MB of RSS —
+`legal_procurement` does exactly this over the full 7.1M-passage polqa corpus.
 
 ## Documentation
 

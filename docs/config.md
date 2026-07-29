@@ -240,7 +240,8 @@ directory, so a config is portable.
 |---|---|---|
 | `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only`, `schema_sql` (the external data source is `read_only = true`; `schema_sql` initialises the framework's own writable store and is refused on a read-only binding). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
 | `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
-| `[lexical]` | `fts5` | `path`, `tokenizer` (SQLite FTS5 BM25; `tokenizer` defaults to `unicode61`). |
+| `[lexical]` | `fts5` | `path`, `tokenizer` (SQLite FTS5 BM25-only; `tokenizer` defaults to `unicode61`). A search index that returns ids only — a hit's display text is resolved through `[documents]`. |
+| `[documents]` | `sqlite` | `path` (default `:memory:`). The relational chunk-row store **every retrieval path resolves a hit through** — a search index (FTS5 BM25, or the vector ANN) returns ids, and this store turns an id back into its display text + metadata. Give it a `path` to keep the corpus on disk (required for a large corpus and for build-once reuse); with no `path` it is in-memory SQLite, the default for small corpora and tests. |
 | `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
 
 Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a
@@ -248,6 +249,13 @@ third-party driver — resolved through the registry, no framework change.
 
 The two database roles are kept apart: the framework's own writable store, and the external
 task data source (`read_only` — a write is refused at the port).
+
+**On-disk streaming ingest, built once.** Ingest streams the reference corpus line-by-line in
+batches, so a multi-GB corpus never materialises in RAM — the inverted index, the vectors, and the
+chunk rows all live in their stores. When `[lexical]` and `[documents]` are given a `path`, the
+on-disk stores persist across runs and are **built once**: assembly re-ingests only when the
+document store is empty (`count == 0`), so an already-populated on-disk corpus is read once and
+reused. An in-memory store (no `path`) is empty at every startup and so is rebuilt each run.
 
 ---
 

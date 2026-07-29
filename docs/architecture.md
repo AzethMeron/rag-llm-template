@@ -102,14 +102,32 @@ real, interchangeable drivers** — `SqlStore` = `sqlite` | `duckdb`, `VectorInd
 proven by a conformance suite that runs every implementation through identical operations. A third
 party's own driver is selected the same way, by dotted path.
 
+## Retrieval resolves through one relational store; ingest streams
+
+A search index answers only *which ids matched*: FTS5's BM25 index and the vector ANN each return
+`(chunk_id, score)`, never text. **Every retrieval path (lexical, dense, hybrid) resolves a hit's
+display text + metadata through one relational `DocumentStore`** (`store/documents/sqlite.py`,
+SQLite by default) — turning an id back into its row is an indexed primary-key lookup, so a corpus
+of any size lives in the database rather than a RAM map. The `DocumentStore` port
+(`add_documents` / `document` / `count`) is resolved through its own registry and bound by the
+`[documents]` table in `storage.toml`; a `path` puts it on disk, no `path` gives an in-memory
+SQLite store for small corpora and tests.
+
+Ingest is built to match: the corpus builder (`ingest/corpus.py`) streams items in batches and
+writes the inverted index, the vectors, and the rows straight to their stores, so the source is
+never fully materialised. When the on-disk stores already hold the corpus, assembly reuses them
+(built once, keyed on the document store being non-empty) rather than re-reading it. This is what
+lets the recipes below ingest and query a multi-GB, multi-million-row corpus at a few tens of MB of
+process RSS.
+
 ## Where to look next
 
 - **`docs/tutorial.md`** — build a pipeline from scratch and extend every seam, with runnable
   examples. Start here to *do* something.
 - **`docs/config.md`** — the per-file configuration reference (every key, its type, default, and
   meaning). Wrong types and unknown keys are errors, not silent defaults.
-- **`recipes/<task>/README.md`** — each of the four worked recipes (translation, NL→SQL, form
-  autofill, predictive-maintenance decisions), with the real dataset its `fetch.sh` pulls and the
-  eval it runs.
+- **`recipes/<task>/README.md`** — each of the worked recipes (translation, NL→SQL, form autofill,
+  predictive-maintenance decisions, and the two large-corpus retrieval recipes `med_evidence` and
+  `legal_procurement`), with the real dataset its `fetch.sh` pulls and the eval it runs.
 - **`.audit/`** — the design investigations kept across sessions, including the circular-metric
   lesson the evaluation layer encodes.

@@ -483,5 +483,5 @@ ever — that is the whole point.
 ---
 
 **Next:** [`docs/config.md`](config.md) for every key; [`docs/architecture.md`](architecture.md) for
-the layer boundaries, the durability model, and the evaluation layer; and the four
+the layer boundaries, the durability model, and the evaluation layer; and the six
 [`recipes/`](../recipes) for complete, real, worked examples.
