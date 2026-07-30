@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 
 from ragkit.core.errors import RagkitError
-from ragkit.harness import completed_ids, pending_records, run_batch
+from ragkit.core.records import read_journal
+from ragkit.harness import Harness, OutputMemory, completed_ids, pending_records, run_batch
 
 from .app import assemble
 
@@ -56,10 +57,20 @@ def _substitutions(pairs: list[str] | None) -> dict[str, str]:
     return result
 
 
+def _seed_memory(harness: Harness, journal: Path) -> None:
+    """Seed the harness's output memory from already-journalled results, so a resumed run's
+    "already-produced neighbouring lines" context (:class:`~ragkit.harness.context.blocks.
+    EstablishedBlock`) is reproducible rather than starting empty on every restart. A no-op when
+    the recipe has no memory wired, or the journal does not exist yet (a fresh run)."""
+    if harness.memory is not None:
+        harness.memory = OutputMemory.from_records(read_journal(journal))
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     import time
     substitutions = _substitutions(args.set)
     assembled = assemble(args.config, substitutions=substitutions)
+    _seed_memory(assembled.harness, args.journal)
     records = pending_records(args.catalog, args.journal)
     already_done = len(completed_ids(args.journal))
     if args.limit is not None:

@@ -29,6 +29,7 @@ from typing import Any
 from ragkit.core.ports import Retriever
 from ragkit.core.records import Record
 from ragkit.core.rules import Severity, Violation
+from ragkit.harness.capture import capture_retrieved
 
 _WHITESPACE = re.compile(r"\s+")
 # Quotation marks (straight and curly, single and double) are stripped before the grounding
@@ -125,6 +126,7 @@ class GroundedDecisionValidator:
             return [_error("grounding cannot be verified: no retriever (manuals memory) is wired "
                            "into the run, so a cited decision cannot be accepted")]
         hits = retriever.retrieve(record.source, k=self._k, min_score=self._min_score)
+        capture_retrieved(context, hits)
         corpus = _normalise(" ".join(hit.text for hit in hits))
 
         violations: list[Violation] = []

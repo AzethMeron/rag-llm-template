@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from ragkit.core.ports import Retrieved
 from ragkit.core.records import Record, Status
 from ragkit.harness import (
     Harness,
@@ -15,7 +16,7 @@ from ragkit.harness import (
     learn_memory,
 )
 from ragkit.harness.agents import Attempt, Outcome
-from ragkit.harness.context import ContextAssembler, LiteralBlock
+from ragkit.harness.context import ContextAssembler, LiteralBlock, RetrievedBlock
 from ragkit.harness.context.assembler import _PlacedBlock
 
 from .conftest import ACCEPT, build_harness, build_pool, ok, raw, refuse, truncated
@@ -189,6 +190,68 @@ class TestLearnMemory:
 
     def test_no_memory_is_a_no_op(self) -> None:
         learn_memory(None, Outcome(record=_record(), status=Status.VERIFIED, output="R"))
+
+
+class _StubRetriever:
+    def __init__(self, hits: list[Retrieved]) -> None:
+        self._hits = hits
+
+    def retrieve(self, query: str, *, k: int, min_score: float = 0.0) -> tuple[Retrieved, ...]:
+        return tuple(self._hits[:k])
+
+
+class TestCapture:
+    """Outcome.context_passage/retrieved: what actually produced the output, captured from the
+    calls RetrievedBlock and the harness's own prompt assembly already make -- never a second
+    retrieval (see ragkit.harness.capture)."""
+
+    def _harness_with_retriever(self, retriever: _StubRetriever) -> Harness:
+        pool = build_pool([ok({"output": "RESULT"})], [ACCEPT])
+        panel = Panel(producer=Persona("p", "producer", "prod", instructions="produce the output"),
+                     reviewers=(Persona("r", "reviewer", "rev", instructions="review it"),))
+        ruleset = RuleSet()
+        context = ContextAssembler([_PlacedBlock("retrieved", RetrievedBlock())])
+        return Harness(pool, panel, ruleset, JsonFieldSchema("output"),
+                       ValidatorPipeline(ruleset), context, retriever=retriever)
+
+    def test_retrieved_hits_and_passage_are_captured(self) -> None:
+        hit = Retrieved("c1", "an example", 0.9)
+        harness = self._harness_with_retriever(_StubRetriever([hit]))
+        outcome = harness.process(_record())
+        assert outcome.status is Status.VERIFIED
+        assert outcome.retrieved == (hit,)
+        assert "an example" in outcome.context_passage
+
+    def test_no_hits_leaves_retrieved_empty(self) -> None:
+        harness = self._harness_with_retriever(_StubRetriever([]))
+        outcome = harness.process(_record())
+        assert outcome.retrieved == ()
+
+    def test_skipped_record_captures_nothing(self) -> None:
+        harness = build_harness(produce=[], review=[])
+        outcome = harness.process(_record("   "))
+        assert outcome.context_passage == "" and outcome.retrieved == ()
+
+    def test_passage_captured_even_without_a_retriever(self) -> None:
+        # build_harness's fixed context is a literal-only block; capture still records the
+        # assembled passage even though nothing was retrieved.
+        harness = build_harness(produce=[ok({"output": "RESULT"})], review=[ACCEPT])
+        outcome = harness.process(_record())
+        assert outcome.context_passage == "Do the task." and outcome.retrieved == ()
+
+    def test_rejected_outcome_still_carries_its_capture(self) -> None:
+        # Force a rejection: empty output against a non-empty source, no reviewers to consult.
+        hit = Retrieved("c1", "an example", 0.9)
+        pool = build_pool([ok({"output": ""})] * 3, [])
+        panel = Panel(producer=Persona("p", "producer", "prod", instructions="x"),
+                     reviewers=(), max_repairs=2)
+        ruleset = RuleSet()
+        context = ContextAssembler([_PlacedBlock("retrieved", RetrievedBlock())])
+        harness = Harness(pool, panel, ruleset, JsonFieldSchema("output"),
+                          ValidatorPipeline(ruleset), context, retriever=_StubRetriever([hit]))
+        outcome = harness.process(_record())
+        assert outcome.status is Status.REJECTED
+        assert outcome.retrieved == (hit,)
 
 
 class TestAttempt:

@@ -7,6 +7,7 @@ from typing import Any
 from ragkit.core.lexicon import Entry
 from ragkit.core.records import Record
 from ragkit.core.rules import Severity, Violation
+from ragkit.harness.capture import Capture
 from ragkit.harness.rules import RuleSet
 from ragkit.harness.validators import (
     ValidatorPipeline,
@@ -101,6 +102,21 @@ class TestPipeline:
         pipeline = ValidatorPipeline(RuleSet(), extra=[Shouty()])
         assert "shout" in _ids(pipeline.check(_rec(), "LOUD"))
         assert "shout" not in _ids(pipeline.check(_rec(), "quiet"))
+
+    def test_passes_the_capture_sink_through_to_extra_validators(self) -> None:
+        seen: list[object] = []
+
+        class Spy:
+            def validate(self, record: Record, output: str,
+                         context: Mapping[str, Any]) -> list[Violation]:
+                seen.append(context.get("capture"))
+                return []
+
+        pipeline = ValidatorPipeline(RuleSet(), extra=[Spy()])
+        capture = Capture()
+        pipeline.check(_rec(), "x", capture=capture)
+        pipeline.check(_rec(), "x")
+        assert seen == [capture, None]
 
 
 class TestPartition:

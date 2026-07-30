@@ -13,7 +13,9 @@ The shared services a block may read from the ``context`` mapping (all optional)
 * ``retriever`` — a reference :class:`~ragkit.core.ports.Retriever` for worked examples;
 * ``sql_store`` — a read-only :class:`~ragkit.core.ports.SqlStore` for the form-autofill task;
 * ``previous_attempt`` — on revision, the attempt being fixed (``.target``, ``.issues``);
-* ``stand_in`` — a readable replacement for a placeholder shown in a *neighbour* line.
+* ``stand_in`` — a readable replacement for a placeholder shown in a *neighbour* line;
+* ``capture`` — the run's :class:`~ragkit.harness.capture.Capture` sink, if wired; a block that
+  already retrieves (``retrieved``) reports its hits there rather than the caller re-retrieving.
 
 A block that is configured but whose required service is absent **raises** rather than silently
 rendering nothing — a missing wiring is a misconfiguration, not an empty section.
@@ -29,6 +31,8 @@ from ragkit.core.lexicon import Entry, relevant_entries
 from ragkit.core.ports import ContextBlock, Retriever, SchemaIntrospector, SqlStore
 from ragkit.core.records import Record
 from ragkit.core.registry import Registry
+
+from ..capture import capture_retrieved
 
 _PLACEHOLDER = re.compile(r"\[\[\d+\]\]")
 
@@ -203,6 +207,7 @@ class RetrievedBlock:
         if not isinstance(retriever, Retriever):
             raise ContextBlockError("the wired 'retriever' does not satisfy the Retriever port")
         hits = retriever.retrieve(record.source, k=self._k, min_score=self._min_score)
+        capture_retrieved(context, hits)
         if not hits:
             return None
         return _section(self._heading, "\n".join(f"  {hit.text}" for hit in hits))

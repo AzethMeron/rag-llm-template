@@ -25,7 +25,14 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ragkit.core.placeholders import placeholder_indices
-from ragkit.core.ports import Message, OutputSchema, Retriever, SchemaIntrospector, SqlStore
+from ragkit.core.ports import (
+    Message,
+    OutputSchema,
+    Retrieved,
+    Retriever,
+    SchemaIntrospector,
+    SqlStore,
+)
 from ragkit.core.records import Record, Status
 from ragkit.core.rules import Violation
 from ragkit.llm.errors import (
@@ -36,6 +43,7 @@ from ragkit.llm.errors import (
 )
 from ragkit.llm.pool import ModelPool
 
+from .capture import Capture
 from .context import ContextAssembler
 from .memory import OutputMemory
 from .roles import Panel, Persona
@@ -95,7 +103,13 @@ class Attempt:
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
-    """Result of running one record through the full harness."""
+    """Result of running one record through the full harness.
+
+    ``context_passage`` and ``retrieved`` are diagnostic/reproducibility captures of what actually
+    produced ``output`` — the assembled prompt passage and the chunks a retriever returned along the
+    way (see :mod:`.capture`) — not part of the pass/fail verdict. Empty when the record was
+    skipped, no context block was configured, or nothing was retrieved.
+    """
 
     record: Record
     status: Status
@@ -104,6 +118,8 @@ class Outcome:
     reviews: tuple[Review, ...] = ()
     rounds: int = 0
     error: str | None = None
+    context_passage: str = ""
+    retrieved: tuple[Retrieved, ...] = ()
 
     def applied(self) -> Record:
         return self.applied_to(self.record)
@@ -159,11 +175,12 @@ class Harness:
 
     # -- prompt assembly -----------------------------------------------------
 
-    def _shared_context(self, previous: Attempt | None) -> dict[str, Any]:
+    def _shared_context(self, previous: Attempt | None, *,
+                        capture: Capture | None = None) -> dict[str, Any]:
         return {"lexicon": self.validators.lexicon, "memory": self.memory,
                 "retriever": self.retriever, "sql_store": self.sql_store,
                 "introspector": self.introspector, "previous_attempt": previous,
-                "stand_in": self.stand_in}
+                "stand_in": self.stand_in, "capture": capture}
 
     def _system_prompt(self, instructions: str, *, placeholders: bool) -> str:
         sections = [instructions]
@@ -175,22 +192,26 @@ class Harness:
         sections.append("Respond only with the requested JSON object.")
         return "\n\n".join(sections)
 
-    def _user_prompt(self, record: Record, previous: Attempt | None) -> str:
-        passage = self.context.assemble(record, self._shared_context(previous))
+    def _user_prompt(self, record: Record, previous: Attempt | None, *,
+                     capture: Capture | None = None) -> str:
+        passage = self.context.assemble(record, self._shared_context(previous, capture=capture))
+        if capture is not None:
+            capture.note_passage(passage)
         parts = [passage] if passage else []
         parts.append(f"{self.input_label}\n{record.source}")
         return "\n\n".join(parts)
 
     # -- roles ---------------------------------------------------------------
 
-    def produce(self, record: Record, previous: Attempt | None = None) -> str:
+    def produce(self, record: Record, previous: Attempt | None = None, *,
+               capture: Capture | None = None) -> str:
         persona = self.panel.producer
         client, model_id = self.pool.client_for(persona.model)
         has_placeholders = bool(placeholder_indices(record.source))
         reply = client.complete_json(
             [Message("system", self._system_prompt(persona.instructions,
                                                    placeholders=has_placeholders)),
-             Message("user", self._user_prompt(record, previous))],
+             Message("user", self._user_prompt(record, previous, capture=capture))],
             self.output_schema.json_schema(), role=persona.id, sampling=persona.sampling,
             max_tokens=self.panel.limits.produce_budget(len(record.source)), model=model_id)
         return self.sanitize(self.output_schema.extract(reply))
@@ -261,8 +282,8 @@ class Harness:
 
     # -- orchestration -------------------------------------------------------
 
-    def _generate(self, record: Record,
-                  feedback: Attempt | None) -> tuple[str, list[Violation], bool]:
+    def _generate(self, record: Record, feedback: Attempt | None, *,
+                  capture: Capture | None = None) -> tuple[str, list[Violation], bool]:
         """Produce and mechanically repair until the hard rules pass or the budget runs out.
 
         The third return value is ``True`` when the output came from a recovered (truncated) JSON
@@ -278,7 +299,7 @@ class Harness:
         for round_index in range(self.panel.max_repairs + 1):
             last_round = round_index == self.panel.max_repairs
             try:
-                target = self.produce(record, attempt)
+                target = self.produce(record, attempt, capture=capture)
             except (LlmRefusalError, LlmTruncationError):
                 raise
             except LlmIncompleteJsonError as exc:
@@ -289,7 +310,7 @@ class Harness:
                                       suggestions=suggestions)
                     continue
                 target = self.sanitize(self.output_schema.extract(exc.recovered))
-                violations = self.validators.check(record, target)
+                violations = self.validators.check(record, target, capture=capture)
                 if last_round:
                     return target, violations, True
                 attempt = Attempt(target=target, issues=(*carried, _RETRY_ENVELOPE),
@@ -301,7 +322,7 @@ class Harness:
                 attempt = Attempt(target=target, issues=(*carried, _RETRY_JSON),
                                   suggestions=suggestions)
                 continue
-            violations = self.validators.check(record, target)
+            violations = self.validators.check(record, target, capture=capture)
             hard = blocking(violations)
             if not hard:
                 return target, violations, False
@@ -320,45 +341,53 @@ class Harness:
         if record.status is Status.SKIPPED or not record.source.strip():
             return Outcome(record=record, status=Status.SKIPPED, output=None)
 
+        capture = Capture()
+
+        def captured(outcome: Outcome) -> Outcome:
+            return replace(outcome, context_passage=capture.passage,
+                           retrieved=tuple(capture.retrieved.values()))
+
         feedback: Attempt | None = None
         all_reviews: list[Review] = []
         try:
             for round_index in range(self.panel.max_revisions + 1):
-                target, violations, from_repair = self._generate(record, feedback)
+                target, violations, from_repair = self._generate(record, feedback, capture=capture)
                 reject, keep = partition_on_exhaustion(violations, self.ruleset)
                 if reject:
-                    return Outcome(record=record, status=Status.REJECTED, output=target,
-                                   violations=tuple(violations), reviews=tuple(all_reviews),
-                                   rounds=round_index + 1,
-                                   error="mechanical rules still violated after repairs")
+                    return captured(Outcome(
+                        record=record, status=Status.REJECTED, output=target,
+                        violations=tuple(violations), reviews=tuple(all_reviews),
+                        rounds=round_index + 1,
+                        error="mechanical rules still violated after repairs"))
                 if keep:
                     # Imperfect but the only alternative is showing nothing: keep and flag.
-                    return Outcome(record=record, status=Status.PRODUCED, output=target,
-                                   violations=tuple(violations), reviews=tuple(all_reviews),
-                                   rounds=round_index + 1,
-                                   error="kept despite a flagged rule (the alternative is showing "
-                                         "nothing)")
+                    return captured(Outcome(
+                        record=record, status=Status.PRODUCED, output=target,
+                        violations=tuple(violations), reviews=tuple(all_reviews),
+                        rounds=round_index + 1,
+                        error="kept despite a flagged rule (the alternative is showing nothing)"))
                 reviews = self.review_panel(record, target)
                 all_reviews.extend(reviews)
                 objections = [r for r in reviews if not r.acceptable]
                 if not objections:
-                    return self._settle(record, target, violations, all_reviews, round_index,
-                                        reviews, from_repair)
+                    return captured(self._settle(record, target, violations, all_reviews,
+                                                 round_index, reviews, from_repair))
                 if round_index == self.panel.max_revisions:
-                    return Outcome(record=record, status=Status.PRODUCED, output=target,
-                                   violations=tuple(violations), reviews=tuple(all_reviews),
-                                   rounds=round_index + 1,
-                                   error="review objections unresolved within budget")
+                    return captured(Outcome(
+                        record=record, status=Status.PRODUCED, output=target,
+                        violations=tuple(violations), reviews=tuple(all_reviews),
+                        rounds=round_index + 1,
+                        error="review objections unresolved within budget"))
                 feedback = Attempt(
                     target=target,
                     issues=tuple(f"{r.role}: {issue}" for r in objections for issue in r.issues),
                     suggestions=tuple(r.improved for r in objections if r.improved))
         except LlmRefusalError as exc:
-            return Outcome(record=record, status=Status.REJECTED, output=None,
-                           reviews=tuple(all_reviews), error=f"model refused: {exc}")
+            return captured(Outcome(record=record, status=Status.REJECTED, output=None,
+                           reviews=tuple(all_reviews), error=f"model refused: {exc}"))
         except LlmContentError as exc:
-            return Outcome(record=record, status=Status.REJECTED, output=None,
-                           reviews=tuple(all_reviews), error=str(exc))
+            return captured(Outcome(record=record, status=Status.REJECTED, output=None,
+                           reviews=tuple(all_reviews), error=str(exc)))
         raise AssertionError("unreachable: revision loop always returns")
 
     def _settle(self, record: Record, target: str, violations: list[Violation],

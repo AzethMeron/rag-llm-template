@@ -77,6 +77,44 @@ class TestMain:
         assert [r.output for r in read_journal(journal)] == ["RESULT"]
         assert "records queued" in capsys.readouterr().out
 
+    def test_seeds_memory_from_an_existing_journal_when_the_recipe_uses_it(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A recipe with use_memory=true, and a journal that already holds a verified result: the
+        # seeded harness.memory must carry it before the run starts (reproducible resume, not a
+        # RAM-only memory that forgets what an earlier run already produced).
+        import ragkit.cli.main as main_module
+        from ragkit.cli import app
+        from ragkit.core.records import Record, Status, write_catalog
+
+        recipe_with_memory = """
+[task]
+output_schema = "json_field"
+input_label = "Line:"
+use_memory = true
+[task.output_schema_options]
+field = "translation"
+"""
+        config = write_config(tmp_path / "cfg", recipe=recipe_with_memory)
+        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
+        write_catalog([Record(record_id="1", source="hello")], catalog)
+        journal.write_text(
+            Record(record_id="prev", source="prior line", output="PRIOR",
+                  status=Status.VERIFIED).to_json() + "\n", encoding="utf-8")
+
+        captured: dict[str, object] = {}
+
+        def patched_assemble(config_dir: Path, **_kwargs: object) -> app.Assembled:
+            assembled = app.assemble(config_dir, client_factory=scripted_factory())
+            captured["harness"] = assembled.harness
+            return assembled
+
+        monkeypatch.setattr(main_module, "assemble", patched_assemble)
+        code = main(["--config", str(config), "--catalog", str(catalog),
+                     "--journal", str(journal), "--concurrency", "1", "--no-log-file"])
+        assert code == 0
+        harness = captured["harness"]
+        assert harness.memory is not None and harness.memory.get("prior line") == "PRIOR"
+
 
 class TestLogging:
     def test_configures_a_file_handler(self, tmp_path: Path) -> None:
