@@ -115,6 +115,50 @@ class TestValidation:
         assert LanceVectorIndex(path, dim=3).count() == 1  # reopened, not recreated
 
 
+class TestCompact:
+    def test_compact_reduces_fragment_count_and_preserves_data(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        vectors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 1, 1]]
+        for i, vector in enumerate(vectors):  # a separate upsert call each -- its own fragment
+            index.upsert([f"c{i}"], [vector], [{"n": i}])
+        before_files = list((tmp_path / "vec.lance" / "chunks.lance" / "data").glob("*"))
+        assert len(before_files) >= 5
+
+        index.compact()
+
+        after_files = list((tmp_path / "vec.lance" / "chunks.lance" / "data").glob("*"))
+        assert len(after_files) < len(before_files)
+        assert index.count() == 5
+        assert index.indexed_ids() == {f"c{i}" for i in range(5)}
+        assert index.search([0, 0, 1], k=1)[0][0] == "c2"
+
+    def test_compact_on_an_empty_table_is_a_noop(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        index.compact()
+        assert index.count() == 0
+
+    def test_missing_pylance_is_a_structured_error(self, tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        index = _index(tmp_path)
+        monkeypatch.setitem(sys.modules, "lance", None)
+        with pytest.raises(VectorIndexError, match="needs 'pylance'"):
+            index.compact()
+
+    def test_optimize_failure_is_a_structured_error(self, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{}])
+
+        def flaky(**_kwargs: object) -> None:
+            raise RuntimeError("optimize boom")
+
+        monkeypatch.setattr(index._table, "optimize", flaky)
+        with pytest.raises(VectorIndexError, match="could not compact"):
+            index.compact()
+
+
 class TestConfig:
     def test_from_config(self, tmp_path: Path) -> None:
         index = LanceVectorIndex.from_config({"path": str(tmp_path / "v"), "dim": 4})

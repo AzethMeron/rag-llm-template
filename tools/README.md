@@ -16,6 +16,7 @@ script *is* its `--help` text.
 | `init_storage.sh` | create/open the stores a `storage.toml` describes (sqlite/duckdb SQL, lancedb/qdrant vector, sqlite/duckdb pairings, sqlite run/lexicon) |
 | `migrate_storage.sh` | fold a pre-storage-overhaul recipe's on-disk artifacts (a legacy row store, a `lexicon.jsonl`, a catalog+journal pair) into the current DB-native stores — the one-time bridge for data that predates `[pairings]`/`[run]`/`[lexicon]` |
 | `embed_reference.sh` | embed a `[pairings]` store's rows into its `[vector]` index (dense/hybrid retrieval needs this; import alone only builds the lexical/BM25 side) — resumable, only embeds what `VectorIndex.reconcile` reports missing |
+| `compact_vector_store.sh` | consolidate a LanceDB `[vector]` store's on-disk fragments (one accumulates per `upsert`/`delete` call) into a few large ones and prune old versions — not optional: an uncompacted table costs multiple GB of RSS per batch just to reconcile against once it has thousands of fragments. Run periodically on a long, repeatedly-resumed `embed_reference.sh` job, not just once at the end. A no-op on a `qdrant`-backed store. |
 | `lib/common.sh` | shared helpers, sourced by the others |
 
 ## Running a task

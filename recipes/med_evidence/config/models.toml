@@ -28,6 +28,10 @@ provider = "llamacpp-router"
 base_url = "http://127.0.0.1:8081/v1"
 resident_max = 1
 parallel = 4
+# Router mode auto-discovers a model per GGUF file, but not under the name "embed" below, and
+# without --embeddings enabled -- see tools/embed_presets.ini's own comment for why this is
+# required, not optional.
+server_args = ["--models-preset", "tools/embed_presets.ini"]
 
 [model.embedder]
 endpoint = "embed"

@@ -107,6 +107,7 @@ class TestTheDependencyDirectionHolds:
 # the four HTTP-client modules that wrap it, so it cannot leak into core, harness, store, or ingest.
 DRIVER_DEP_LOCATIONS = {
     "lancedb": ("store/vector/lancedb.py",),
+    "lance": ("store/vector/lancedb.py",),  # pylance: only compact()'s to_lance()/optimize() path
     "pyarrow": ("store/vector/lancedb.py",),
     "numpy": ("store/vector/", "retrieve/", "ingest/"),  # dense-vector math
     "usearch": ("store/vector/",),

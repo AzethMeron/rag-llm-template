@@ -31,13 +31,25 @@ typing_extensions==4.16.0
 # the core import path never pulls it, and tests/test_boundaries.py confines the allowance to
 # that module. numpy is the dense-vector math used by the retrieval layer. Both are only needed
 # for dense/vector retrieval; a pure-lexical (FTS5) run touches neither.
+#
+# pylance is a second, separate dependency of lancedb's own compaction path (Table.compact_files/
+# optimize call table.to_lance(), which raises ImportError without it): a table built from many
+# small incremental upserts (exactly reconcile_vector()'s write pattern on a long-running,
+# resumed-many-times embed job) accumulates one small on-disk fragment per upsert batch, and
+# without periodic compaction, every subsequent read/write against it re-opens/rescans the whole
+# growing fragment list -- confirmed directly: legal_procurement's table had accumulated 3,717
+# versions / 1,858 fragments for 2M rows, and simply *opening and reconciling against* that table
+# was costing multiple GB of RSS per batch, before compaction (see tools/compact_vector_store.sh)
+# brought it down to 2 fragments and fixed it. Not optional polish -- this repo's own vector
+# stores need it.
 lancedb==0.36.0
 numpy==2.5.1
+pylance==9.0.0
 # transitive
 annotated-types==0.8.0
 deprecation==2.1.0
-lance-namespace==0.9.0
-lance-namespace-urllib3-client==0.9.0
+lance-namespace==0.8.6
+lance-namespace-urllib3-client==0.8.6
 pyarrow==25.0.0
 pydantic==2.13.4
 pydantic_core==2.46.4

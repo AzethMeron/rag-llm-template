@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
 from ragkit.core.errors import RagkitError
@@ -123,6 +124,35 @@ class LanceVectorIndex:
         # LanceDB holds no long-lived handle that needs explicit release for a local table; the
         # method exists for interface symmetry with the other stores.
         return None
+
+    def compact(self) -> None:
+        """Consolidate the small fragments left by many incremental ``upsert()``/``delete()``
+        calls (each is a separate write transaction) into a few large ones, and prune old
+        versions. Not a LanceVectorIndex/VectorIndex-port method other drivers need to implement
+        (Qdrant's HNSW index has no on-disk fragment-file model to compact) — a driver-specific
+        maintenance operation, called explicitly by ``tools/compact_vector_store.sh``, not on any
+        read/write path.
+
+        Confirmed necessary, not speculative: a table reconciled/upserted in many small batches
+        over a long, repeatedly-resumed embedding job accumulates one fragment per batch without
+        bound. legal_procurement's table reached 3,717 versions / 1,858 fragments for 2M rows, at
+        which point simply *opening and reconciling against it* -- before embedding a single new
+        row -- cost multiple GB of RSS per subsequent batch, because every read/write re-scans the
+        whole growing fragment list. Compacting it to 2 fragments fixed that immediately.
+        """
+        try:
+            import lance  # noqa: F401 -- to_lance()/optimize() need pylance; fail with our own
+                          # message naming it, not a bare "No module named 'lance'" from deep
+                          # inside lancedb's internals.
+        except ImportError as exc:
+            raise VectorIndexError(
+                "compacting a LanceDB table needs 'pylance' (a separate package from 'lancedb'), "
+                "which is not installed (pip install pylance; it ships in requirements.txt)."
+            ) from exc
+        try:
+            self._table.optimize(cleanup_older_than=timedelta(0))
+        except Exception as exc:
+            raise VectorIndexError(f"could not compact the LanceDB table: {exc}") from exc
 
 
 def _distance_to_score(distance: float, metric: str) -> float:
