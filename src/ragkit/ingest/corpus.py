@@ -20,7 +20,7 @@ from typing import Any
 
 from ragkit.core.ports import DocumentStore, LexicalIndex, Retriever, VectorIndex
 
-from ..retrieve.embedding import EmbeddingClient
+from ..retrieve.embedding import EmbeddingClient, dedup_embed
 from ..retrieve.hybrid import HybridRetriever
 from ..retrieve.rerank import RerankClient
 from ..retrieve.retrievers import DenseRetriever, LexicalRetriever
@@ -106,10 +106,7 @@ class Corpus:
 
     def _embed_and_upsert(self, batch: Sequence[CorpusItem]) -> None:
         assert self._embedder is not None and self._vector is not None
-        # De-dup identical index texts within the batch so each is embedded once (no cross-batch
-        # RAM cache — a rare cross-batch duplicate is simply re-embedded).
-        unique = list(dict.fromkeys(item.index_text for item in batch))
-        embedded = dict(zip(unique, self._embedder.embed(unique), strict=True))
+        embedded = dedup_embed(self._embedder, [item.index_text for item in batch])
         ids = [item.chunk_id for item in batch]
         vecs = [embedded[item.index_text] for item in batch]
         metas = [dict(item.meta) for item in batch]

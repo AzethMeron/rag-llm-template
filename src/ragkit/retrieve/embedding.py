@@ -128,6 +128,15 @@ class EmbeddingClient:
             self._client.close()
 
 
+def dedup_embed(embedder: EmbeddingClient, texts: Sequence[str]) -> dict[str, Sequence[float]]:
+    """Embed the distinct texts in ``texts`` once each, keyed by text. A batch built from a real
+    corpus routinely repeats an index text (a duplicate line, a shared passage); embedding each
+    distinct value once rather than once per occurrence is a pure cost saving with no RAM-map
+    persisted across batches — a rare cross-batch duplicate is simply re-embedded."""
+    unique = list(dict.fromkeys(texts))
+    return dict(zip(unique, embedder.embed(unique), strict=True))
+
+
 def _is_transient(exc: httpx.HTTPError) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _TRANSIENT_STATUS

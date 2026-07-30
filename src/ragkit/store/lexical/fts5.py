@@ -20,19 +20,11 @@ from typing import Any
 
 from ragkit.core.errors import RagkitError
 
+from .bm25 import as_match, bm25_to_relevance
+
 
 class LexicalIndexError(RagkitError):
     """The lexical index could not be built or queried (FTS5 is likely not compiled in)."""
-
-
-def _bm25_to_relevance(bm25: float) -> float:
-    """Map FTS5's negative, lower-is-better ``bm25()`` to a higher-is-better score in ``[0, 1)``.
-
-    ``bm25`` is <= 0 for a match; more negative means a better match. ``1 - 2**bm25`` is monotone
-    increasing in the match quality: 0 for a marginal match, approaching 1 for a very strong one.
-    A bounded, order-preserving transform, which is all a relevance floor and a fuser need.
-    """
-    return 1.0 - 2.0 ** bm25
 
 
 class Fts5Index:
@@ -87,10 +79,10 @@ class Fts5Index:
             try:
                 rows = self._conn.execute(
                     "SELECT chunk_id, bm25(lex) AS score FROM lex WHERE lex MATCH ? "
-                    "ORDER BY score LIMIT ?", (_as_match(query), k)).fetchall()
+                    "ORDER BY score LIMIT ?", (as_match(query), k)).fetchall()
             except sqlite3.Error as exc:
                 raise LexicalIndexError(f"FTS5 query failed: {exc}", query=query) from exc
-        return [(chunk_id, _bm25_to_relevance(score)) for chunk_id, score in rows]
+        return [(chunk_id, bm25_to_relevance(score)) for chunk_id, score in rows]
 
     def delete(self, chunk_id: str) -> None:
         with self._lock:
@@ -103,11 +95,3 @@ class Fts5Index:
 
     def close(self) -> None:
         self._conn.close()
-
-
-def _as_match(query: str) -> str:
-    """Turn a free-text query into an FTS5 MATCH expression that treats every word as a term,
-    OR-combined, quoting each so punctuation cannot be read as FTS5 query syntax (which would raise
-    on an ordinary user query containing a quote, a colon, or a bare ``AND``)."""
-    words = [w.replace('"', '""') for w in query.split() if w]
-    return " OR ".join(f'"{w}"' for w in words) if words else '""'
