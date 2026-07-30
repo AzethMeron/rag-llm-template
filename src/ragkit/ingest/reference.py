@@ -89,7 +89,7 @@ def import_reference(path: Path, pairing_store: PairingStore, *, index_field: st
     if batch:
         total += _flush(batch, pairing_store, vector, embedder)
     if vector is not None and embedder is not None:
-        _reconcile_vector(pairing_store, vector, embedder)
+        reconcile_vector(pairing_store, vector, embedder)
     return total
 
 
@@ -97,12 +97,15 @@ def _flush(batch: Sequence[Pairing], pairing_store: PairingStore, vector: Vector
           embedder: EmbeddingClient | None) -> int:
     added = pairing_store.add(batch)
     if vector is not None and embedder is not None:
-        _embed_and_upsert(batch, vector, embedder)
+        embed_and_upsert(batch, vector, embedder)
     return added
 
 
-def _embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
-                      embedder: EmbeddingClient) -> None:
+def embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
+                     embedder: EmbeddingClient) -> None:
+    """Embed each pairing's source text (de-duplicated) and upsert into ``vector`` under its
+    ``chunk_id``. Shared by the importer's per-batch upsert and by :func:`reconcile_vector` (and
+    reused by :mod:`ragkit.ingest.writeback` for the same re-embed-what's-missing step)."""
     embedded = dedup_embed(embedder, [p.source for p in pairings])
     ids = [p.chunk_id for p in pairings]
     vecs = [embedded[p.source] for p in pairings]
@@ -110,14 +113,18 @@ def _embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
     vector.upsert(ids, vecs, metas)
 
 
-def _reconcile_vector(pairing_store: PairingStore, vector: VectorIndex,
-                      embedder: EmbeddingClient) -> None:
+def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex,
+                     embedder: EmbeddingClient) -> None:
+    """Close any gap between ``pairing_store`` (authoritative) and ``vector`` (derived): drop
+    orphan vectors and re-embed whatever the store has that the index is missing. Safe to call
+    even when nothing changed (an empty reconcile is a no-op) -- callers use it after any batch of
+    additions so a previous crash's gap is always eventually closed."""
     missing = vector.reconcile(pairing_store.all_ids())
     if not missing:
         return
     pairings = [p for chunk_id in missing if (p := pairing_store.get(chunk_id)) is not None]
     if pairings:
-        _embed_and_upsert(pairings, vector, embedder)
+        embed_and_upsert(pairings, vector, embedder)
 
 
 class PairingRetrievers:

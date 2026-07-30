@@ -18,9 +18,11 @@ from typing import Any
 
 import pytest
 
+from ragkit.core.lexicon import Entry
 from ragkit.core.ports import (
     DocumentStore,
     LexicalIndex,
+    LexiconStore,
     Pairing,
     PairingStore,
     RunResult,
@@ -31,6 +33,7 @@ from ragkit.core.ports import (
 from ragkit.core.records import Record, Status
 from ragkit.store.documents.sqlite import SqliteDocuments
 from ragkit.store.lexical.fts5 import Fts5Index
+from ragkit.store.lexicon.sqlite import SqliteLexicon
 from ragkit.store.pairings.duckdb import DuckDBPairings
 from ragkit.store.pairings.sqlite import SqlitePairings
 from ragkit.store.run.sqlite import SqliteRunStore
@@ -204,6 +207,26 @@ class InMemoryRunStore:
         return len(self._records)
 
 
+class InMemoryLexicon:
+    """A minimal, dependency-free LexiconStore -- the second implementation of that port. ``add``
+    upserts, keyed on ``(term, category)``, matching the shipped driver's update semantics."""
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, str], Entry] = {}
+
+    def entries(self) -> list[Entry]:
+        return list(self._rows.values())
+
+    def add(self, entries: Iterable[Entry]) -> int:
+        added = 0
+        for entry in entries:
+            key = (entry.term, entry.category)
+            if key not in self._rows:
+                added += 1
+            self._rows[key] = entry
+        return added
+
+
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
@@ -236,6 +259,11 @@ RUN_FACTORIES: list[Callable[[Path], RunStore]] = [
     lambda tmp: SqliteRunStore(str(tmp / "run.db")),
     lambda tmp: SqliteRunStore(),  # in-memory SQLite
     lambda tmp: InMemoryRunStore(),
+]
+LEXICON_FACTORIES: list[Callable[[Path], LexiconStore]] = [
+    lambda tmp: SqliteLexicon(str(tmp / "lex.db")),
+    lambda tmp: SqliteLexicon(),  # in-memory SQLite
+    lambda tmp: InMemoryLexicon(),
 ]
 
 
@@ -422,3 +450,22 @@ class TestRunStoreConformance:
             Record(record_id="2", source="   ", status=Status.SKIPPED),
         ])
         assert {r.record_id for r in store.pending()} == {"1"}
+
+
+@pytest.mark.parametrize("factory", LEXICON_FACTORIES)
+class TestLexiconStoreConformance:
+    def test_lifecycle(self, factory: Callable[[Path], LexiconStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        assert store.entries() == []
+        added = store.add([Entry(term="cat", rendering="kot"),
+                           Entry(term="dog", rendering="pies")])
+        assert added == 2
+        assert {e.term for e in store.entries()} == {"cat", "dog"}
+
+    def test_add_upserts_on_a_duplicate_key(
+            self, factory: Callable[[Path], LexiconStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add([Entry(term="cat", rendering="kot")])
+        assert store.add([Entry(term="cat", rendering="KOTEK")]) == 0
+        [entry] = store.entries()
+        assert entry.rendering == "KOTEK"

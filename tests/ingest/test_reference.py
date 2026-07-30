@@ -157,7 +157,7 @@ class TestImportReference:
     def test_reconcile_skips_an_id_that_vanished_before_get(self) -> None:
         # Defensive: reconcile() reports an id from all_ids() as missing, but get() no longer finds
         # it (a delete raced in between) -- must not crash and must not upsert an empty batch.
-        from ragkit.ingest.reference import _reconcile_vector
+        from ragkit.ingest.reference import reconcile_vector
 
         class _StubPairingStore:
             def all_ids(self) -> list[str]:
@@ -173,8 +173,8 @@ class TestImportReference:
             def upsert(self, *_args: object, **_kwargs: object) -> None:
                 raise AssertionError("must not upsert when nothing resolved")
 
-        _reconcile_vector(_StubPairingStore(), _StubVectorIndex(),  # type: ignore[arg-type]
-                          embedder=None)  # type: ignore[arg-type]
+        reconcile_vector(_StubPairingStore(), _StubVectorIndex(),  # type: ignore[arg-type]
+                         embedder=None)  # type: ignore[arg-type]
 
 
 class TestPairingRetrievers:

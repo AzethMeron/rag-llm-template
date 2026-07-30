@@ -38,6 +38,13 @@ class TestParser:
         assert args.journal == Path("work/journal.jsonl")
         assert args.run_db == Path("work/run.db")
 
+    def test_writeback_defaults(self) -> None:
+        args = build_parser().parse_args(["writeback"])
+        assert args.run_db == Path("work/run.db")
+        assert args.pairings_db == Path("work/pairings.db")
+        assert args.pairings_driver == "sqlite"
+        assert args.vector_path is None
+
 
 class TestSubstitutions:
     def test_parses_pairs(self) -> None:
@@ -93,6 +100,91 @@ class TestExport:
         assert "1 result(s) exported" in capsys.readouterr().out
         [record] = list(read_journal(journal))
         assert record.output == "HI" and record.status is Status.VERIFIED
+
+
+class TestWriteback:
+    def test_writes_verified_results_as_pairings(self, tmp_path: Path,
+                                                  capsys: pytest.CaptureFixture[str]) -> None:
+        from ragkit.core.ports import RunResult
+        from ragkit.store.pairings.sqlite import SqlitePairings
+
+        run_db = tmp_path / "run.db"
+        run_store = SqliteRunStore(str(run_db))
+        run_store.add_records([Record(record_id="1", source="q1")])
+        run_store.append_result(RunResult(
+            record=Record(record_id="1", source="q1", status=Status.VERIFIED, output="a1"),
+            context_passage="ctx"))
+
+        pairings_db = tmp_path / "pairings.db"
+        code = main(["writeback", "--run-db", str(run_db), "--pairings-db", str(pairings_db),
+                     "--no-log-file"])
+        assert code == 0
+        assert "1 pairing(s) written back" in capsys.readouterr().out
+
+        store = SqlitePairings(str(pairings_db))
+        assert store.count() == 1
+        [chunk_id] = list(store.all_ids())
+        pairing = store.get(chunk_id)
+        assert pairing is not None
+        assert pairing.source == "q1" and pairing.target == "a1" and pairing.context == "ctx"
+
+    def test_vector_path_without_embedding_url_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit, match="needs --embedding-url"):
+            main(["writeback", "--run-db", str(tmp_path / "run.db"),
+                 "--pairings-db", str(tmp_path / "p.db"),
+                 "--vector-path", str(tmp_path / "v.lance"), "--no-log-file"])
+
+    def test_vector_path_without_a_dim_is_the_drivers_own_structured_error(
+            self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # --vector-dim is optional at the CLI layer; a real vector driver still needs a positive
+        # dim, so omitting it surfaces the driver's own structured error rather than a silent
+        # default.
+        code = main(["writeback", "--run-db", str(tmp_path / "run.db"),
+                     "--pairings-db", str(tmp_path / "p.db"),
+                     "--vector-path", str(tmp_path / "v.lance"),
+                     "--embedding-url", "http://x/v1", "--no-log-file"])
+        assert code == 1 and "positive dim" in capsys.readouterr().err
+
+    def test_reconciles_the_vector_index_when_configured(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+
+        import httpx
+
+        import ragkit.cli.main as main_module
+        from ragkit.core.ports import RunResult
+        from ragkit.retrieve.embedding import EmbeddingClient
+        from ragkit.store.pairings.sqlite import SqlitePairings
+        from ragkit.store.vector.lancedb import LanceVectorIndex
+
+        run_db = tmp_path / "run.db"
+        run_store = SqliteRunStore(str(run_db))
+        run_store.add_records([Record(record_id="1", source="cat text")])
+        run_store.append_result(RunResult(
+            record=Record(record_id="1", source="cat text", status=Status.VERIFIED, output="a1")))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
+
+        def fake_embedding_client(*, base_url: str, model: str) -> EmbeddingClient:
+            return EmbeddingClient(base_url=base_url, model=model,
+                                   client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+        monkeypatch.setattr(main_module, "EmbeddingClient", fake_embedding_client)
+
+        pairings_db = tmp_path / "pairings.db"
+        vector_path = tmp_path / "v.lance"
+        code = main(["writeback", "--run-db", str(run_db), "--pairings-db", str(pairings_db),
+                     "--vector-path", str(vector_path), "--vector-dim", "2",
+                     "--embedding-url", "http://x/v1", "--no-log-file"])
+        assert code == 0
+
+        vector = LanceVectorIndex(str(vector_path), dim=2)
+        assert vector.count() == 1
+        pairings = SqlitePairings(str(pairings_db))
+        [chunk_id] = list(pairings.all_ids())
+        assert vector.search([1.0, 0.0], k=1)[0][0] == chunk_id
 
 
 class TestRun:

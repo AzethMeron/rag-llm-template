@@ -16,12 +16,21 @@ from typing import Any
 
 from ragkit.core.config import ConfigError, load_toml, reject_unknown
 from ragkit.core.ports import (
-    DocumentStore, LexicalIndex, PairingStore, RunStore, SchemaIntrospector, SqlStore, VectorIndex)
+    DocumentStore,
+    LexicalIndex,
+    LexiconStore,
+    PairingStore,
+    RunStore,
+    SchemaIntrospector,
+    SqlStore,
+    VectorIndex,
+)
 from ragkit.core.registry import Registry
 
 from .documents.sqlite import DocumentStoreError, SqliteDocuments
 from .filters import FilterError, to_sql
 from .lexical.fts5 import Fts5Index, LexicalIndexError
+from .lexicon.sqlite import LexiconStoreError, SqliteLexicon
 from .pairings.common import PairingStoreError
 from .pairings.duckdb import DuckDBPairings
 from .pairings.sqlite import SqlitePairings
@@ -49,6 +58,9 @@ PAIRING_STORES: Registry[PairingStore] = Registry(
 RUN_STORES: Registry[RunStore] = Registry(
     "run store", RunStore,  # type: ignore[type-abstract]
     entry_point_group="ragkit.run_stores")
+LEXICON_STORES: Registry[LexiconStore] = Registry(
+    "lexicon store", LexiconStore,  # type: ignore[type-abstract]
+    entry_point_group="ragkit.lexicon_stores")
 SCHEMA_INTROSPECTORS: Registry[SchemaIntrospector] = Registry(
     "schema introspector", SchemaIntrospector,  # type: ignore[type-abstract]
     entry_point_group="ragkit.schema_introspectors")
@@ -62,6 +74,7 @@ DOCUMENT_STORES.register("sqlite", SqliteDocuments)
 PAIRING_STORES.register("sqlite", SqlitePairings)
 PAIRING_STORES.register("duckdb", DuckDBPairings)
 RUN_STORES.register("sqlite", SqliteRunStore)
+LEXICON_STORES.register("sqlite", SqliteLexicon)
 SCHEMA_INTROSPECTORS.register("sqlite", SqliteIntrospector)
 SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 
@@ -80,6 +93,7 @@ class Storage:
     documents: DocumentStore | None = None
     pairings: PairingStore | None = None
     run: RunStore | None = None
+    lexicon: LexiconStore | None = None
     introspector: SchemaIntrospector | None = None
 
 
@@ -90,7 +104,7 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
     config directory), so a config is portable rather than tied to the caller's working directory;
     a ``:memory:`` path is left as-is."""
     data = load_toml(path, what="storage file")
-    reject_unknown(data, {"sql", "vector", "lexical", "documents", "pairings", "run",
+    reject_unknown(data, {"sql", "vector", "lexical", "documents", "pairings", "run", "lexicon",
                          "introspector"}, label="the storage file", path=path)
     base = base_dir or path.parent
     return Storage(
@@ -103,6 +117,8 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
         pairings=_build(PAIRING_STORES, data.get("pairings"), label="[pairings]", path=path,
                         base=base),
         run=_build(RUN_STORES, data.get("run"), label="[run]", path=path, base=base),
+        lexicon=_build(LEXICON_STORES, data.get("lexicon"), label="[lexicon]", path=path,
+                      base=base),
         introspector=_build(SCHEMA_INTROSPECTORS, data.get("introspector"),
                             label="[introspector]", path=path, base=base))
 
@@ -126,10 +142,10 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path, 
 __all__ = [
     "Storage", "load_storage",
     "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "DOCUMENT_STORES", "PAIRING_STORES",
-    "RUN_STORES", "SCHEMA_INTROSPECTORS",
+    "RUN_STORES", "LEXICON_STORES", "SCHEMA_INTROSPECTORS",
     "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
     "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex", "SqliteDocuments",
-    "SqlitePairings", "DuckDBPairings", "SqliteRunStore",
+    "SqlitePairings", "DuckDBPairings", "SqliteRunStore", "SqliteLexicon",
     "SqlStoreError", "LexicalIndexError", "VectorIndexError", "DocumentStoreError",
-    "PairingStoreError", "RunStoreError", "FilterError", "to_sql",
+    "PairingStoreError", "RunStoreError", "LexiconStoreError", "FilterError", "to_sql",
 ]

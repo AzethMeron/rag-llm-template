@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+from .lexicon import Entry
 from .records import Record
 from .rules import Violation
 
@@ -320,6 +321,22 @@ class PairingStore(Protocol):
         ...
 
     def count(self) -> int: ...
+
+
+@runtime_checkable
+class LexiconStore(Protocol):
+    """DB-native established terminology, replacing a JSONL lexicon file as the accumulating
+    source of truth for a project's terminology. ``entries()`` returns exactly what
+    :func:`~ragkit.core.lexicon.relevant_entries` and :class:`~ragkit.harness.context.blocks.
+    LexiconBlock` already consume from a JSONL-sourced ``list[Entry]``, so either source works
+    with the same downstream code."""
+
+    def entries(self) -> list[Entry]: ...
+
+    def add(self, entries: Iterable[Entry]) -> int:
+        """Add or update entries (keyed on ``(term, category)``); returns the number of rows
+        actually inserted (an update to an existing term's rendering does not count as added)."""
+        ...
 
 
 @runtime_checkable

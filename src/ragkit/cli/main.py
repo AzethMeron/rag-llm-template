@@ -1,6 +1,7 @@
-"""Command-line entry point: three subcommands over a run store — ``import`` loads a JSONL
+"""Command-line entry point: four subcommands over a run store — ``import`` loads a JSONL
 catalogue, ``run`` assembles a config and executes pending records, ``export`` writes the store's
-results back out as a ``journal.jsonl``-compatible file.
+results back out as a ``journal.jsonl``-compatible file, ``writeback`` folds a finished run's
+verified outputs into the reference memory as new pairings.
 
 Splitting execution from the JSONL catalogue this way is what makes the run durable in a real
 database (see :mod:`ragkit.store.run.sqlite`) rather than a flat file: ``import``/``export`` are the
@@ -17,9 +18,13 @@ import sys
 from pathlib import Path
 
 from ragkit.core.errors import RagkitError
-from ragkit.core.ports import RunStore
+from ragkit.core.ports import RunStore, VectorIndex
 from ragkit.core.records import export_jsonl, import_jsonl
 from ragkit.harness import Harness, OutputMemory, run_batch
+from ragkit.ingest.writeback import write_back
+from ragkit.retrieve.embedding import EmbeddingClient
+from ragkit.store import PAIRING_STORES, VECTOR_INDEXES
+from ragkit.store.pairings.sink import PairingSink
 from ragkit.store.run.sqlite import SqliteRunStore
 
 from .app import assemble
@@ -111,6 +116,33 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _writeback_vector(
+        args: argparse.Namespace) -> tuple[VectorIndex | None, EmbeddingClient | None]:
+    """Build the optional vector index + embedder write-back reconciles against, from the raw
+    endpoint flags (writeback is a standalone post-run step -- it does not load a recipe's
+    models.toml, so the embedding endpoint is named directly rather than resolved by model name)."""
+    if args.vector_path is None:
+        return None, None
+    if not args.embedding_url:
+        raise SystemExit("writeback: --vector-path needs --embedding-url too")
+    options: dict[str, object] = {"path": str(args.vector_path)}
+    if args.vector_dim is not None:
+        options["dim"] = args.vector_dim
+    vector = VECTOR_INDEXES.create(args.vector_driver, options)
+    embedder = EmbeddingClient(base_url=args.embedding_url, model=args.embedding_model)
+    return vector, embedder
+
+
+def cmd_writeback(args: argparse.Namespace) -> int:
+    run_store = SqliteRunStore(str(args.run_db))
+    pairing_store = PAIRING_STORES.create(args.pairings_driver, {"path": str(args.pairings_db)})
+    vector, embedder = _writeback_vector(args)
+    sink = PairingSink(pairing_store)
+    added = write_back(run_store, sink, pairing_store, vector=vector, embedder=embedder)
+    print(f"{added:,} pairing(s) written back to {args.pairings_db}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     logging_args = argparse.ArgumentParser(add_help=False)
     logging_args.add_argument("--log-file", type=Path, default=Path("work/ragkit.log"))
@@ -145,6 +177,22 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--run-db", type=Path, default=Path("work/run.db"))
     export_parser.add_argument("-j", "--journal", type=Path, default=Path("work/journal.jsonl"))
     export_parser.set_defaults(handler=cmd_export)
+
+    writeback_parser = subparsers.add_parser(
+        "writeback", parents=[logging_args],
+        help="fold a finished run's verified outputs into the reference memory as new pairings")
+    writeback_parser.add_argument("--run-db", type=Path, default=Path("work/run.db"))
+    writeback_parser.add_argument("--pairings-db", type=Path, default=Path("work/pairings.db"))
+    writeback_parser.add_argument("--pairings-driver", default="sqlite")
+    writeback_parser.add_argument(
+        "--vector-path", type=Path,
+        help="reconcile this vector index after write-back (needs --embedding-url too)")
+    writeback_parser.add_argument("--vector-driver", default="lancedb")
+    writeback_parser.add_argument("--vector-dim", type=int,
+                                  help="the vector index's dimension (with --vector-path)")
+    writeback_parser.add_argument("--embedding-url", help="the embedding endpoint's base URL")
+    writeback_parser.add_argument("--embedding-model", default="local")
+    writeback_parser.set_defaults(handler=cmd_writeback)
 
     return parser
 
