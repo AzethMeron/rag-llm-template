@@ -57,7 +57,7 @@ PYTHONPATH=src python -m ragkit.cli export --run-db work/translation.db -j work/
 src/ragkit/
   core/      the contract: ports, records, registry, errors, config, width, placeholders, lexicon, jsonshape  [stdlib only]
   store/     sql (sqlite | duckdb), vector (lancedb | qdrant), pairings (sqlite | duckdb, co-located rows + search index), run (sqlite), lexicon (sqlite)   [optional deps, lazily imported]
-  ingest/    extract, normalise, dedup, chunk, embed, streaming corpus builder
+  ingest/    extract, normalise, dedup, chunk, streaming reference-corpus import + embed, write-back into reference memory
   retrieve/  lexical, dense, fusion (RRF/MMR), rerank, hybrid, config-driven assembly (tuning)
   llm/       client, backends, model pool + thrash guard, serve-args
   harness/   personas, panel, validators, context blocks, memory, output schemas, runner
@@ -78,7 +78,9 @@ source in batches into the on-disk store and builds it once, so a multi-GB, mult
 corpus ingests and queries at a few tens of MB of RSS — `legal_procurement` does exactly this at
 the scale of a multi-million-passage polqa corpus. Run state is equally DB-native: `RunStore`
 (`[run]`, WAL SQLite) replaces a JSONL catalogue/journal as the thing a run actually reads and
-writes; `ragkit import`/`export` bridge to and from JSONL at the edges.
+writes; `ragkit import`/`export` bridge to and from JSONL at the edges, and `ragkit writeback`
+folds a finished run's verified outputs back into the reference memory as new pairings — the
+accumulating-memory use case, a deliberate, separate post-run step, never automatic.
 
 ## Documentation
 

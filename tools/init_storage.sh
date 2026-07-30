@@ -31,7 +31,8 @@ from pathlib import Path
 from ragkit.store import load_storage
 storage = load_storage(Path(sys.argv[1]) / "storage.toml")
 built = [name for name, value in (("sql", storage.sql), ("vector", storage.vector),
-                                  ("lexical", storage.lexical),
+                                  ("pairings", storage.pairings), ("run", storage.run),
+                                  ("lexicon", storage.lexicon),
                                   ("introspector", storage.introspector)) if value is not None]
 print(">> storage ready:", ", ".join(built) or "(nothing configured)")
 PY

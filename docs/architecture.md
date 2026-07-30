@@ -65,6 +65,11 @@ not the thing a run reads and writes while it executes. `write_catalog`/`read_jo
 process killed mid-write) but refuses a malformed one anywhere else, because skipping that would
 discard a completed result while reporting success.
 
+A fourth subcommand, `ragkit writeback`, is a deliberate, separate post-run step — never automatic
+— that reads a finished run's `VERIFIED` results and folds each `(source, context, target)` into a
+`PairingStore` as a new pairing (through the injectable `Sink` port, `ragkit.ingest.writeback`), so
+a later run's retrieval can see what an earlier one produced: the accumulating-memory use case.
+
 ## Where each LLM setting lives
 
 A decode setting is configured where it takes effect, so there is one obvious home for each:

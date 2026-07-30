@@ -46,7 +46,7 @@ recipes/legal_procurement/fetch.sh [--max-passages N] [--limit N]
 ```
 
 - **Memory** — the **polqa** passage corpus (IPIPAN, **CC BY-SA**): Polish Wikipedia passages used as
-  a stand-in legal/encyclopaedic corpus. The full `passages.jsonl` is **~3.3 GB / ~7.1M passages**.
+  a stand-in legal/encyclopaedic corpus. The full `passages.jsonl` is **~2.8 GB / ~7.1M passages**.
   `--max-passages` (default **0 = load the whole corpus**) bounds how many of its first lines are
   loaded; it streams the file line by line, so the corpus is never held whole in memory. Loading all
   passages guarantees every question's gold passage is present, so all questions are scorable. Each
@@ -131,13 +131,23 @@ retrieval is the real lever.** On an identical controlled 25k-passage set (100 q
 | **dense** (Qwen3-Embedding-0.6B) | **0.230** | 0.545 | 0.240 |
 | hybrid (RRF) | 0.215 | **0.568** | **0.242** |
 
-Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best. **To enable dense**
-(a one-time GPU cost to embed the corpus — kept out of the default so `eval.py` runs with no GPU),
-add an embedding model to `models.toml` (`[model.embedder]`, `kind = "embedding"`), a `[vector]`
-store to `storage.toml` (`driver = "lancedb"`, `dim` = the embedder's output dim), and a
-`retrieval.toml` with `[retrieval] kind = "dense"` / `[retrieval.dense] model = "embedder"`; for the
-best ranking use `kind = "hybrid"` with a reranker (the framework warns against equal-weight hybrid
-without one).
+Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best. **Dense is opt-in,
+not the default** (a one-time GPU cost to embed the corpus, kept out so `eval.py` runs with no
+GPU) — `models.toml` already has `[model.embedder]` (`kind = "embedding"`, pointed at a locally
+served embedding model) and `storage.toml` already has `[vector]` (`driver = "lancedb"`, `dim` =
+the embedder's output dim). The only step left to actually switch the recipe onto it is a
+`retrieval.toml` with `[retrieval] kind = "dense"` / `[retrieval.dense] model = "embedder"`; for
+the best ranking use `kind = "hybrid"` with a reranker (the framework warns against equal-weight
+hybrid without one). Embedding the full corpus into `data/passages.lance` is itself a real,
+multi-hour job at this scale:
+
+```bash
+tools/embed_reference.sh --config recipes/legal_procurement/config \
+    --embedding-url http://127.0.0.1:8081/v1 --embedding-model embed
+```
+
+Resumable/idempotent (`VectorIndex.reconcile` finds exactly what's still missing), so it is safe
+to interrupt and re-run.
 
 **Low-RAM at scale (the concrete evidence).** The full **7.1M-passage** polqa corpus was **ingested
 and queried at ~37 MB process RSS**, because the search index and the chunk rows live on disk and a

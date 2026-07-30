@@ -130,3 +130,19 @@ correct-but-spliced records. These remain honest baselines, not tuned results â€
 (retrieve the right abstract among ~600k distractors, *then* decide) is materially harder than
 classic PubMedQA where the abstract is handed to the model; further gains would come from
 dense/hybrid retrieval and a stronger decoder.
+
+### Enabling dense retrieval
+
+Like `legal_procurement`, dense is **opt-in, not the default** (a one-time GPU cost to embed the
+corpus, kept out so `eval.py` runs with no GPU) â€” `models.toml` already has `[model.embedder]`
+and `storage.toml` already has `[vector]` (`driver = "lancedb"`, `dim` = the embedder's output
+dim). The only step left to switch the recipe onto it is a `retrieval.toml` with `[retrieval]
+kind = "dense"` / `[retrieval.dense] model = "embedder"` (or `kind = "hybrid"` with a reranker).
+Embedding the ~600k-abstract corpus into `data/abstracts.lance`:
+
+```bash
+tools/embed_reference.sh --config recipes/med_evidence/config \
+    --embedding-url http://127.0.0.1:8081/v1 --embedding-model embed
+```
+
+Resumable/idempotent, safe to interrupt and re-run.
