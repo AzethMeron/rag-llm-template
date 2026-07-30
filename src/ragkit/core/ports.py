@@ -236,13 +236,22 @@ class VectorIndex(Protocol):
 
 
 @runtime_checkable
-class LexicalIndex(Protocol):
+class SearchIndex(Protocol):
+    """The read side of a keyword search index: maps a query to ``(chunk_id, score)`` best-first,
+    higher-is-better. This is the *narrow* interface a :class:`Retriever` built over a search index
+    actually depends on (never the write side) — every :class:`LexicalIndex` satisfies it, and so
+    does a :class:`PairingStore` (its rows and search index are co-located, but a retriever never
+    indexes or deletes through it directly)."""
+
+    def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
+
+
+@runtime_checkable
+class LexicalIndex(SearchIndex, Protocol):
     """A keyword/BM25 index. ``search`` returns ``(chunk_id, score)`` best-first, score
     higher-is-better (a driver over an inverted BM25 converts the native scale itself)."""
 
     def index(self, chunk_id: str, text: str) -> None: ...
-
-    def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
 
     def delete(self, chunk_id: str) -> None: ...
 

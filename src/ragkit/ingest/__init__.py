@@ -16,9 +16,16 @@ from .extract import (
     TextExtractor,
 )
 from .normalise import normalise
+from .reference import (
+    PairingRetrievers,
+    ReferenceImportError,
+    import_reference,
+    reference_pairings,
+)
 
 __all__ = [
     "Corpus", "CorpusItem",
+    "PairingRetrievers", "ReferenceImportError", "import_reference", "reference_pairings",
     "EXTRACTORS", "TextExtractor", "JsonlExtractor", "HtmlExtractor", "MarkdownExtractor",
     "ExtractError",
     "CHUNKERS", "FixedChunker", "SentenceChunker", "StructureChunker", "ChunkError",

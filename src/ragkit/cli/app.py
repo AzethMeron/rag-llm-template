@@ -20,7 +20,7 @@ from typing import Any
 
 from ragkit.core.config import ConfigError, load_toml, reject_unknown, tables
 from ragkit.core.lexicon import read_lexicon
-from ragkit.core.ports import Retriever, SqlStore
+from ragkit.core.ports import Retriever, SqlStore, VectorIndex
 from ragkit.harness import (
     Harness,
     OUTPUT_SCHEMAS,
@@ -32,6 +32,7 @@ from ragkit.harness import (
 )
 from ragkit.harness.memory import OutputMemory
 from ragkit.ingest.corpus import Corpus, CorpusItem
+from ragkit.ingest.reference import PairingRetrievers, ReferenceImportError, import_reference
 from ragkit.llm.pool import ClientFactory, ModelPool, load_models
 from ragkit.retrieve import (
     RETRIEVERS,
@@ -138,6 +139,7 @@ class _Recipe:
     reference_retriever: str
     reference_index_field: str
     reference_display_field: str
+    reference_target_field: str
     reference_options: dict[str, Any]
 
 
@@ -151,9 +153,10 @@ def _load_recipe(path: Path) -> _Recipe:
         (str(entry["kind"]), {k: v for k, v in entry.items() if k != "kind"})
         for entry in tables(data, "validator", path=path)
         if "kind" in entry or _missing_kind(path))
-    reference = reject_unknown(data.get("reference", {}),
-                               {"file", "retriever", "index_field", "display_field", "options"},
-                               label="[reference]", path=path)
+    reference = reject_unknown(
+        data.get("reference", {}),
+        {"file", "retriever", "index_field", "display_field", "target_field", "options"},
+        label="[reference]", path=path)
     return _Recipe(
         output_schema=str(task.get("output_schema", "json_field")),
         output_schema_options=dict(task.get("output_schema_options", {})),
@@ -165,6 +168,7 @@ def _load_recipe(path: Path) -> _Recipe:
         reference_retriever=str(reference.get("retriever", "lexical")),
         reference_index_field=str(reference.get("index_field", "source")),
         reference_display_field=str(reference.get("display_field", "")),
+        reference_target_field=str(reference.get("target_field", "target")),
         reference_options=dict(reference.get("options", {})))
 
 
@@ -178,7 +182,9 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
     ``RETRIEVERS`` registry and built without our corpus. The built-in ``"lexical"`` is built over a
     JSONL corpus (``index_field`` is what matching happens on, ``display_field`` what a hit shows).
     A custom retriever that must read *our* corpus is corpus-stateful — inject it via
-    ``assemble(retriever=...)`` instead."""
+    ``assemble(retriever=...)`` instead. When ``storage.pairings`` is configured, the corpus is
+    imported into it (DB-native, resumable) instead of the legacy split lexical index + document
+    store; either way the resulting retriever behaves identically."""
     spec = recipe.reference_retriever
     if ":" in spec or spec in RETRIEVERS.available():
         return RETRIEVERS.create(spec, recipe.reference_options)
@@ -187,9 +193,12 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
     path = (config_dir / recipe.reference_file).resolve()
     if not path.is_file():
         raise CliError("reference corpus not found", path=path)
-    corpus = _load_corpus(path, recipe, storage)
+    if storage.pairings is not None:
+        retrievers: Corpus | PairingRetrievers = _load_pairing_retrievers(recipe, path, storage)
+    else:
+        retrievers = _load_corpus(path, recipe, storage)
     if spec == "lexical":
-        return corpus.lexical_retriever()
+        return retrievers.lexical_retriever()
     raise CliError(
         f"reference.retriever={spec!r} is not built-in. Use 'lexical', a dotted path / entry point "
         f"to a corpus-free retriever, or inject a corpus-backed one via assemble(retriever=...). "
@@ -199,6 +208,21 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
 def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:
     return _ingest(Corpus(lexical=storage.lexical or Fts5Index(), documents=storage.documents),
                    path, recipe)
+
+
+def _load_pairing_retrievers(recipe: _Recipe, path: Path, storage: Storage, *,
+                             vector: VectorIndex | None = None,
+                             embedder: EmbeddingClient | None = None) -> PairingRetrievers:
+    """Import the reference JSONL into ``storage.pairings`` (resumable; a no-op past the first
+    call) and return the retriever-builder over it."""
+    assert storage.pairings is not None
+    try:
+        import_reference(path, storage.pairings, index_field=recipe.reference_index_field,
+                         target_field=recipe.reference_target_field, vector=vector,
+                         embedder=embedder)
+    except ReferenceImportError as exc:
+        raise CliError(exc.reason, path=path) from exc
+    return PairingRetrievers(storage.pairings, vector=vector, embedder=embedder)
 
 
 def _ingest(corpus: Corpus, path: Path, recipe: _Recipe) -> Corpus:
@@ -285,15 +309,21 @@ def _build_retrieval(settings: RetrievalSettings, recipe: _Recipe, config_dir: P
     if settings.needs_embedding and vector is None:
         raise CliError(f"retrieval.kind={settings.kind!r} needs a [vector] store in storage.toml "
                        f"(built with the embedding model's output dimension)")
-    corpus = _ingest(Corpus(lexical=storage.lexical or Fts5Index(), vector=vector,
-                            embedder=embedder, documents=storage.documents), path, recipe)
+
+    retrievers: Corpus | PairingRetrievers
+    if storage.pairings is not None:
+        retrievers = _load_pairing_retrievers(recipe, path, storage, vector=vector,
+                                              embedder=embedder)
+    else:
+        retrievers = _ingest(Corpus(lexical=storage.lexical or Fts5Index(), vector=vector,
+                                    embedder=embedder, documents=storage.documents), path, recipe)
 
     if settings.kind == "lexical":
-        return corpus.lexical_retriever()
+        return retrievers.lexical_retriever()
     if settings.kind == "dense":
-        return corpus.dense_retriever()
+        return retrievers.dense_retriever()
     reranker = _rerank_client(settings, pool, client_factory) if settings.rerank_enabled else None
-    return corpus.hybrid_retriever(
+    return retrievers.hybrid_retriever(
         reranker=reranker, candidate_pool=settings.candidate_pool, mmr_lambda=settings.mmr_lambda,
         lexical_min_score=settings.lexical_min_score, dense_min_score=settings.dense_min_score)
 

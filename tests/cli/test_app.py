@@ -344,3 +344,105 @@ class TestResumableIngest:
         assert Fts5Index(str(config / "lex.db")).count() == 5
         hit = assembled.retriever.retrieve("passage 5 cats", k=1)[0]
         assert hit.text == "passage 5 about cats -> t5"  # the real ref-5, the orphan discarded
+
+
+class TestPairingsStorage:
+    """The DB-native reference path ([pairings] in storage.toml, storage-overhaul P2): built once
+    and reused, resumable, and lexical/dense/hybrid retrieval all work identically to the legacy
+    split lexical-index + document-store path."""
+
+    def test_pairings_reference_index_is_built_once_and_reused(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF,
+                              reference=[{"source": "the cat sat", "target": "kot"}],
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n')
+        first = assemble(config, client_factory=scripted_factory())
+        assert first.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
+        # Overwrite the source corpus; a reuse (no re-ingest) still serves the original passage.
+        (config / "ref.jsonl").write_text('{"source": "a dog ran", "target": "pies"}\n',
+                                          encoding="utf-8")
+        second = assemble(config, client_factory=scripted_factory())
+        assert second.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
+
+    def test_pairings_resumes_from_the_durable_floor(self, tmp_path: Path) -> None:
+        from ragkit.store.pairings.sqlite import SqlitePairings
+
+        def refs(n: int) -> list[dict]:
+            return [{"source": f"passage {i} about cats", "target": f"t{i}"}
+                    for i in range(1, n + 1)]
+
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=refs(3),
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n')
+        assemble(config, client_factory=scripted_factory())
+        assert SqlitePairings(str(config / "p.db")).count() == 3
+
+        (config / "ref.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in refs(5)), encoding="utf-8")
+        assembled = assemble(config, client_factory=scripted_factory())  # resume, not restart
+        assert SqlitePairings(str(config / "p.db")).count() == 5
+        hit = assembled.retriever.retrieve("passage 5 cats", k=1)[0]
+        assert hit.text == "passage 5 about cats -> t5"
+
+    def test_pairings_lexical_stack_from_config(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=_REF,
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n',
+                              retrieval='[retrieval]\nkind = "lexical"\n[retrieval.lexical]\n'
+                                        'min_score = 0.1\n')
+        assembled = assemble(config, client_factory=scripted_factory())
+        from ragkit.retrieve.retrievers import LexicalRetriever
+        assert isinstance(assembled.retriever, LexicalRetriever)
+        hits = assembled.retriever.retrieve("cat", k=2)
+        assert any("cat" in hit.text for hit in hits)
+
+    def test_pairings_dense_stack_from_config(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF,
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n'
+                                      + _VECTOR_STORAGE,
+                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n')
+        assembled = assemble(config, client_factory=retrieval_factory())
+        from ragkit.retrieve.retrievers import DenseRetriever
+        assert isinstance(assembled.retriever, DenseRetriever)
+
+    def test_pairings_hybrid_stack_from_config_assembles_and_retrieves(
+            self, tmp_path: Path) -> None:
+        retrieval = ('[retrieval]\nkind = "hybrid"\ncandidate_pool = 10\n'
+                     '[retrieval.dense]\nmodel = "embedder"\n'
+                     '[retrieval.rerank]\nenabled = true\nmodel = "reranker"\n')
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF,
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n'
+                                      + _VECTOR_STORAGE,
+                              retrieval=retrieval)
+        assembled = assemble(config, client_factory=retrieval_factory())
+        from ragkit.retrieve.hybrid import HybridRetriever
+        assert isinstance(assembled.retriever, HybridRetriever)
+        hits = assembled.retriever.retrieve("cat", k=2, min_score=0.0)
+        assert any("cat" in hit.text for hit in hits)
+
+    def test_swap_driver_sqlite_to_duckdb_retrieves_identically(self, tmp_path: Path) -> None:
+        for driver in ("sqlite", "duckdb"):
+            config = write_config(
+                tmp_path / f"cfg-{driver}", recipe=_RECIPE_WITH_REF,
+                reference=[{"source": "the cat sat", "target": "kot"}],
+                storage=f'[pairings]\ndriver = "{driver}"\npath = "p.db"\n')
+            assembled = assemble(config, client_factory=scripted_factory())
+            assert assembled.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
+
+    def test_invalid_json_in_reference_is_reported(self, tmp_path: Path) -> None:
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF,
+                              reference=[{"source": "a", "target": "b"}],
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n')
+        ref = config / "ref.jsonl"
+        ref.write_text(ref.read_text() + "\n{not json", encoding="utf-8")
+        with pytest.raises(ConfigError, match="invalid JSON in reference"):
+            assemble(config, client_factory=scripted_factory())
+
+    def test_unsupported_retriever_spec_is_refused(self, tmp_path: Path) -> None:
+        recipe = ('[task]\noutput_schema = "json_field"\n'
+                  '[reference]\nfile = "ref.jsonl"\nretriever = "dense"\n')
+        config = write_config(tmp_path / "cfg", recipe=recipe,
+                              reference=[{"source": "a", "target": "b"}],
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n')
+        with pytest.raises(ConfigError, match="not built-in"):
+            assemble(config, client_factory=scripted_factory())
