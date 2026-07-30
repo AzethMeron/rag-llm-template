@@ -343,6 +343,74 @@ class SchemaIntrospector(Protocol):
     def schema(self) -> Mapping[str, Sequence[tuple[str, str]]]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievedRef:
+    """A JSON-safe projection of a :class:`Retrieved` hit, for persistence in a :class:`RunResult`:
+    ``(chunk_id, text, score)`` only, no ``meta`` — meta need not be JSON-safe, and is reference
+    data the pairing store already holds, keyed by ``chunk_id``, so there is nothing to duplicate
+    into the run store."""
+
+    chunk_id: str
+    text: str
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class RunResult:
+    """One completed attempt at a record, as a :class:`RunStore` persists it.
+
+    ``record`` already carries its verdict — the status/output/notes an ``Outcome`` applies to it
+    (see ``harness.agents.Outcome.applied_to``) — while the fields here are what the legacy JSONL
+    journal could not hold: the structured violations (never flattened to strings), and the context
+    that actually produced the output (see ``harness.capture``). ``reviews`` is a tuple of plain,
+    already-JSON-safe mappings rather than the harness's own ``Review`` type, so this port need not
+    import the harness layer (a lower layer never depends on one above it).
+    """
+
+    record: Record
+    context_passage: str = ""
+    retrieved: tuple[RetrievedRef, ...] = ()
+    reviews: tuple[Mapping[str, Any], ...] = ()
+    violations: tuple[Violation, ...] = ()
+    rounds: int = 0
+    error: str | None = None
+
+
+@runtime_checkable
+class RunStore(Protocol):
+    """The framework's own run-state store: the record catalogue and the append-only result
+    history, replacing the JSONL catalogue+journal pair (see docs/storage-overhaul-plan.md). A
+    result write is one transaction, so a torn/partial row is impossible — the durability the JSONL
+    journal approximated with a per-line fsync and a reader tolerant of a torn *final* line only."""
+
+    def add_records(self, records: Iterable[Record]) -> int:
+        """Add records to the catalogue (idempotent on an already-present ``record_id``, so
+        re-running an import is safe). Returns the number actually added."""
+        ...
+
+    def append_result(self, result: RunResult) -> None:
+        """Persist one completed attempt in a single transaction. Never overwrites an earlier
+        attempt at the same record — each call adds a new result, and :meth:`results` /
+        :meth:`completed_ids` resolve to the latest by write order."""
+        ...
+
+    def completed_ids(self) -> set[str]:
+        """Ids of every record with at least one result — what a resumed run must skip."""
+        ...
+
+    def pending(self) -> Iterator[Record]:
+        """Records with no result yet, in the store's stable catalogue order (by provenance:
+        ``rel_path`` then ``line_no``) — a streamed cursor, never materialising the whole
+        catalogue in memory."""
+        ...
+
+    def results(self) -> Iterator[RunResult]:
+        """The latest result for every record that has one."""
+        ...
+
+    def count_records(self) -> int: ...
+
+
 # --- retrieval ----------------------------------------------------------------
 
 

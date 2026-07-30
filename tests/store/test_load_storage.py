@@ -9,11 +9,13 @@ from ragkit.core.config import ConfigError
 from ragkit.store import (
     LEXICAL_INDEXES,
     PAIRING_STORES,
+    RUN_STORES,
     SQL_STORES,
     VECTOR_INDEXES,
     Fts5Index,
     LanceVectorIndex,
     SqlitePairings,
+    SqliteRunStore,
     SqliteStore,
     load_storage,
 )
@@ -44,6 +46,10 @@ driver = "fts5"
 driver = "sqlite"
 path = ":memory:"
 
+[run]
+driver = "sqlite"
+path = ":memory:"
+
 [introspector]
 driver = "sqlite"
 path = ":memory:"
@@ -53,11 +59,13 @@ path = ":memory:"
         assert isinstance(storage.vector, LanceVectorIndex)
         assert isinstance(storage.lexical, Fts5Index)
         assert isinstance(storage.pairings, SqlitePairings)
+        assert isinstance(storage.run, SqliteRunStore)
         assert storage.introspector is not None
 
     def test_absent_sections_are_none(self, tmp_path: Path) -> None:
         storage = load_storage(_write(tmp_path, '[lexical]\ndriver = "fts5"\n'))
         assert storage.sql is None and storage.vector is None and storage.pairings is None
+        assert storage.run is None
         assert isinstance(storage.lexical, Fts5Index)
 
     def test_missing_file(self, tmp_path: Path) -> None:
@@ -94,6 +102,7 @@ class TestRegistries:
         assert "lancedb" in VECTOR_INDEXES.available()
         assert "fts5" in LEXICAL_INDEXES.available()
         assert {"sqlite", "duckdb"} <= set(PAIRING_STORES.available())
+        assert "sqlite" in RUN_STORES.available()
 
     def test_a_custom_driver_resolves_by_dotted_path(self, tmp_path: Path) -> None:
         # The swap property: a third-party driver is selected by dotted path, no framework change.

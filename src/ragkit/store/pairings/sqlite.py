@@ -9,6 +9,7 @@ aborted write leaves neither behind. This is what the two-database predecessor (
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -80,17 +81,24 @@ class SqlitePairings:
         if not rows:
             return 0
         with self._lock:
-            before = self._count_locked()
             try:
+                before = self._count_locked()
                 self._conn.executemany(
                     "INSERT OR IGNORE INTO pairings"
                     "(chunk_id, source, context, target, meta, verified, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
                 self._conn.commit()
+                return self._count_locked() - before
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                self._safe_rollback()
                 raise PairingStoreError(f"could not add pairings: {exc}") from exc
-            return self._count_locked() - before
+
+    def _safe_rollback(self) -> None:
+        """Roll back, unless the connection itself is unusable (already closed) -- in which case
+        there is nothing to roll back, and letting that failure replace the real one would mask
+        the actual cause behind a confusing 'closed database' error."""
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.rollback()
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
         if k <= 0 or not query.strip():

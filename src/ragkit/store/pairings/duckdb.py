@@ -14,6 +14,7 @@ directly, never the search index.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from collections.abc import Iterable, Iterator, Mapping
@@ -106,19 +107,29 @@ class DuckDBPairings:
         if not rows:
             return 0
         with self._lock:
-            before = self._count_locked()
             try:
+                before = self._count_locked()
                 self._conn.executemany(
                     "INSERT INTO pairings"
                     "(chunk_id, source, context, target, meta, verified, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", rows)
             except Exception as exc:
-                raise PairingStoreError(f"could not add pairings: {exc}") from exc
-            finally:
                 # Rebuilt even after a partial-batch failure, so search reflects whatever the base
-                # table actually holds rather than lagging it (see the module docstring).
+                # table actually holds rather than lagging it (see the module docstring) -- but a
+                # rebuild failure here (e.g. the connection is also closed) must not replace and
+                # mask the add failure actually being reported.
+                self._safe_rebuild_fts()
+                raise PairingStoreError(f"could not add pairings: {exc}") from exc
+            try:
                 self._rebuild_fts()
-            return self._count_locked() - before
+                return self._count_locked() - before
+            except Exception as exc:
+                raise PairingStoreError(f"could not add pairings: {exc}") from exc
+
+    def _safe_rebuild_fts(self) -> None:
+        # An add() failure is already being reported; a rebuild failure here must not replace it.
+        with contextlib.suppress(Exception):
+            self._rebuild_fts()
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
         if k <= 0 or not query.strip():

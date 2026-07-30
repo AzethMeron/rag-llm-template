@@ -16,7 +16,7 @@ from typing import Any
 
 from ragkit.core.config import ConfigError, load_toml, reject_unknown
 from ragkit.core.ports import (
-    DocumentStore, LexicalIndex, PairingStore, SchemaIntrospector, SqlStore, VectorIndex)
+    DocumentStore, LexicalIndex, PairingStore, RunStore, SchemaIntrospector, SqlStore, VectorIndex)
 from ragkit.core.registry import Registry
 
 from .documents.sqlite import DocumentStoreError, SqliteDocuments
@@ -25,6 +25,7 @@ from .lexical.fts5 import Fts5Index, LexicalIndexError
 from .pairings.common import PairingStoreError
 from .pairings.duckdb import DuckDBPairings
 from .pairings.sqlite import SqlitePairings
+from .run.sqlite import RunStoreError, SqliteRunStore
 from .sql.duckdb import DuckDBIntrospector, DuckDBStore
 from .sql.sqlite import SqliteIntrospector, SqliteStore, SqlStoreError
 from .vector.lancedb import LanceVectorIndex, VectorIndexError
@@ -45,6 +46,9 @@ DOCUMENT_STORES: Registry[DocumentStore] = Registry(
 PAIRING_STORES: Registry[PairingStore] = Registry(
     "pairing store", PairingStore,  # type: ignore[type-abstract]
     entry_point_group="ragkit.pairing_stores")
+RUN_STORES: Registry[RunStore] = Registry(
+    "run store", RunStore,  # type: ignore[type-abstract]
+    entry_point_group="ragkit.run_stores")
 SCHEMA_INTROSPECTORS: Registry[SchemaIntrospector] = Registry(
     "schema introspector", SchemaIntrospector,  # type: ignore[type-abstract]
     entry_point_group="ragkit.schema_introspectors")
@@ -57,6 +61,7 @@ LEXICAL_INDEXES.register("fts5", Fts5Index)
 DOCUMENT_STORES.register("sqlite", SqliteDocuments)
 PAIRING_STORES.register("sqlite", SqlitePairings)
 PAIRING_STORES.register("duckdb", DuckDBPairings)
+RUN_STORES.register("sqlite", SqliteRunStore)
 SCHEMA_INTROSPECTORS.register("sqlite", SqliteIntrospector)
 SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 
@@ -74,6 +79,7 @@ class Storage:
     lexical: LexicalIndex | None = None
     documents: DocumentStore | None = None
     pairings: PairingStore | None = None
+    run: RunStore | None = None
     introspector: SchemaIntrospector | None = None
 
 
@@ -84,8 +90,8 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
     config directory), so a config is portable rather than tied to the caller's working directory;
     a ``:memory:`` path is left as-is."""
     data = load_toml(path, what="storage file")
-    reject_unknown(data, {"sql", "vector", "lexical", "documents", "pairings", "introspector"},
-                   label="the storage file", path=path)
+    reject_unknown(data, {"sql", "vector", "lexical", "documents", "pairings", "run",
+                         "introspector"}, label="the storage file", path=path)
     base = base_dir or path.parent
     return Storage(
         sql=_build(SQL_STORES, data.get("sql"), label="[sql]", path=path, base=base),
@@ -96,6 +102,7 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
                          base=base),
         pairings=_build(PAIRING_STORES, data.get("pairings"), label="[pairings]", path=path,
                         base=base),
+        run=_build(RUN_STORES, data.get("run"), label="[run]", path=path, base=base),
         introspector=_build(SCHEMA_INTROSPECTORS, data.get("introspector"),
                             label="[introspector]", path=path, base=base))
 
@@ -119,10 +126,10 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path, 
 __all__ = [
     "Storage", "load_storage",
     "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "DOCUMENT_STORES", "PAIRING_STORES",
-    "SCHEMA_INTROSPECTORS",
+    "RUN_STORES", "SCHEMA_INTROSPECTORS",
     "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
     "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex", "SqliteDocuments",
-    "SqlitePairings", "DuckDBPairings",
+    "SqlitePairings", "DuckDBPairings", "SqliteRunStore",
     "SqlStoreError", "LexicalIndexError", "VectorIndexError", "DocumentStoreError",
-    "PairingStoreError", "FilterError", "to_sql",
+    "PairingStoreError", "RunStoreError", "FilterError", "to_sql",
 ]

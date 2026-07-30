@@ -23,13 +23,17 @@ from ragkit.core.ports import (
     LexicalIndex,
     Pairing,
     PairingStore,
+    RunResult,
+    RunStore,
     SqlStore,
     VectorIndex,
 )
+from ragkit.core.records import Record, Status
 from ragkit.store.documents.sqlite import SqliteDocuments
 from ragkit.store.lexical.fts5 import Fts5Index
 from ragkit.store.pairings.duckdb import DuckDBPairings
 from ragkit.store.pairings.sqlite import SqlitePairings
+from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore, SqlStoreError
 from ragkit.store.vector.lancedb import LanceVectorIndex
@@ -156,6 +160,50 @@ class InMemoryPairings:
         return len(self._rows)
 
 
+class InMemoryRunStore:
+    """A minimal, dependency-free RunStore — the second implementation of that port. ``_results``
+    is append-only in call order, exactly like the SQL driver's ``seq``, so ordering derives from
+    it the same way: :meth:`results` returns the latest result per record, ordered by the *index*
+    (≈ ``seq``) of that latest write."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, Record] = {}
+        self._results: list[RunResult] = []
+
+    def add_records(self, records: Iterable[Record]) -> int:
+        added = 0
+        for record in records:
+            if record.record_id not in self._records:
+                self._records[record.record_id] = record
+                added += 1
+        return added
+
+    def append_result(self, result: RunResult) -> None:
+        record_id = result.record.record_id
+        if record_id not in self._records:
+            raise ValueError(f"no record {record_id!r} in the catalogue")
+        self._results.append(result)
+
+    def completed_ids(self) -> set[str]:
+        return {result.record.record_id for result in self._results}
+
+    def pending(self) -> Iterator[Record]:
+        done = self.completed_ids()
+        waiting = [r for r in self._records.values()
+                  if r.status is Status.PENDING and r.record_id not in done]
+        waiting.sort(key=lambda r: (r.rel_path, r.line_no))
+        return iter(waiting)
+
+    def results(self) -> Iterator[RunResult]:
+        latest_index: dict[str, int] = {}
+        for index, result in enumerate(self._results):
+            latest_index[result.record.record_id] = index
+        return (self._results[i] for i in sorted(latest_index.values()))
+
+    def count_records(self) -> int:
+        return len(self._records)
+
+
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
@@ -183,6 +231,11 @@ PAIRING_FACTORIES: list[Callable[[Path], PairingStore]] = [
     lambda tmp: SqlitePairings(str(tmp / "p.sqlite")),
     lambda tmp: DuckDBPairings(str(tmp / "p.duckdb")),  # a second REAL co-located store
     lambda tmp: InMemoryPairings(),
+]
+RUN_FACTORIES: list[Callable[[Path], RunStore]] = [
+    lambda tmp: SqliteRunStore(str(tmp / "run.db")),
+    lambda tmp: SqliteRunStore(),  # in-memory SQLite
+    lambda tmp: InMemoryRunStore(),
 ]
 
 
@@ -323,3 +376,49 @@ class TestSqlStoreConformance:
         with pytest.raises(SqlStoreError, match="query failed"):
             store.query("SELECT * FROM no_such_table")
         store.close()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("factory", RUN_FACTORIES)
+class TestRunStoreConformance:
+    def test_lifecycle(self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        assert store.count_records() == 0
+        added = store.add_records([Record(record_id="1", source="a"),
+                                   Record(record_id="2", source="b")])
+        assert added == 2
+        assert store.count_records() == 2
+        assert {r.record_id for r in store.pending()} == {"1", "2"}
+
+        applied = Record(record_id="1", source="a", status=Status.VERIFIED, output="A")
+        store.append_result(RunResult(record=applied))
+        assert store.completed_ids() == {"1"}
+        assert {r.record_id for r in store.pending()} == {"2"}
+        [result] = list(store.results())
+        assert result.record.record_id == "1" and result.record.output == "A"
+
+    def test_add_records_is_idempotent_on_a_duplicate_id(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([Record(record_id="1", source="a")])
+        assert store.add_records([Record(record_id="1", source="a")]) == 0
+        assert store.count_records() == 1
+
+    def test_results_returns_the_latest_by_write_order(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([Record(record_id="1", source="a")])
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.PRODUCED, output="first")))
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.VERIFIED, output="second")))
+        [result] = list(store.results())
+        assert result.record.output == "second"
+
+    def test_pending_excludes_skipped_and_completed_records(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([
+            Record(record_id="1", source="a"),
+            Record(record_id="2", source="   ", status=Status.SKIPPED),
+        ])
+        assert {r.record_id for r in store.pending()} == {"1"}

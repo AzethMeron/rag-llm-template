@@ -116,6 +116,16 @@ class TestLifecycle:
         with pytest.raises(PairingStoreError, match="query failed"):
             store.search("hello", k=5)
 
+    def test_add_on_a_closed_store_is_structured(self, driver: type[Any], filename: str,
+                                                  tmp_path: Path) -> None:
+        # Regression: rolling back / rebuilding on an already-closed connection used to raise the
+        # driver's raw exception instead of the intended structured error, masking the real cause.
+        store = driver(str(tmp_path / filename))
+        store.add([Pairing(chunk_id="c1", source="hello world")])
+        store.close()
+        with pytest.raises(PairingStoreError, match="could not add pairings"):
+            store.add([Pairing(chunk_id="c2", source="more")])
+
 
 class TestSqliteCoLocationInvariant:
     """The property the co-located schema exists for: a write to the row and its search entry
@@ -146,6 +156,19 @@ class TestDuckDBWeakerAtomicity:
         assert store.get("ok") is not None
         # The index is still rebuilt over whatever survived, so it is never stale either.
         assert store.search("alpha", k=5)
+
+
+class TestDuckDBRebuildFailure:
+    def test_a_rebuild_failure_after_a_successful_write_is_structured(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = DuckDBPairings()
+
+        def flaky() -> None:
+            raise RuntimeError("rebuild boom")
+
+        monkeypatch.setattr(store, "_rebuild_fts", flaky)
+        with pytest.raises(PairingStoreError, match="could not add pairings"):
+            store.add([Pairing(chunk_id="c1", source="a")])
 
 
 class TestDuckDBErrors:
