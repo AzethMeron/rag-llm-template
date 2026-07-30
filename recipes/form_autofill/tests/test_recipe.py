@@ -11,8 +11,10 @@ import httpx
 import pytest
 
 from ragkit.cli.app import assemble
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.core.rules import Violation
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore
 
@@ -44,7 +46,7 @@ def _rec() -> Record:
     return Record(record_id="track-1", source="Track 'Song A'")
 
 
-def _validate(form: dict) -> list:
+def _validate(form: dict[str, object]) -> list[Violation]:
     return FieldTypesValidator(GENRE_PRICE).validate(_rec(), json.dumps(form), {})
 
 
@@ -217,23 +219,22 @@ def _staged(tmp_path: Path) -> Path:
     return config
 
 
-def _heldout(tmp_path: Path) -> Path:
-    catalog = tmp_path / "heldout.jsonl"
-    write_catalog([Record(record_id="track-1", source="Track 'Song A' from 'High Voltage'",
-                          meta={"album_id": 1, "track_id": 1})], catalog)
-    return catalog
+def _heldout(tmp_path: Path) -> SqliteRunStore:
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="track-1", source="Track 'Song A' from 'High Voltage'",
+                              meta={"album_id": 1, "track_id": 1})])
+    return store
 
 
 class TestEndToEnd:
     def test_a_grounded_fill_verifies(self, tmp_path: Path) -> None:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory("Rock", 0.99))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
-        assert json.loads(result.output or "{}") == {"genre": "Rock", "unit_price": 0.99}
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
+        assert json.loads(result.record.output or "{}") == {"genre": "Rock", "unit_price": 0.99}
 
     def test_the_sibling_rows_reach_the_prompt(self, tmp_path: Path) -> None:
         # The sql_rows block must query the album's other tracks (2 and 3), excluding track 1.
@@ -253,9 +254,8 @@ class TestEndToEnd:
             return httpx.Client(transport=httpx.MockTransport(handler))
 
         assembled = assemble(config, client_factory=factory)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
         producer_prompt = seen[0]
         assert "Song B" in producer_prompt and "Song C" in producer_prompt
         assert "Song A" not in producer_prompt.split("Track to fill:")[0]  # the held-out track
@@ -264,11 +264,10 @@ class TestEndToEnd:
         # A non-positive price violates the FieldTypesValidator every attempt -> REJECTED.
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory("Rock", 0))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
 
 
 class TestEvalMain:
@@ -281,13 +280,13 @@ class TestEvalMain:
                                     "unit_price": 0.99}) + "\n", encoding="utf-8")
         return journal, gold
 
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, gold = self._setup(tmp_path, json.dumps({"genre": "Rock", "unit_price": 0.99}))
         code = fill_eval.main(["--journal", str(journal), "--gold", str(gold)])
         out = capsys.readouterr().out
         assert code == 0 and "both 1.000" in out
 
-    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, _ = self._setup(tmp_path, json.dumps({"genre": "Rock", "unit_price": 0.99}))
         code = fill_eval.main(["--journal", str(journal), "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
@@ -300,7 +299,8 @@ class TestDatabaseSwap:
     """The recipe fills a form from historical records held in EITHER real SqlStore driver (sqlite
     and duckdb) via the sql_rows block -- a one-line storage.toml edit, no code change."""
 
-    def _staged(self, tmp_path: Path, store_cls, driver: str, filename: str) -> Path:
+    def _staged(self, tmp_path: Path, store_cls: type[SqliteStore] | type[DuckDBStore],
+               driver: str, filename: str) -> Path:
         config = tmp_path / "config"
         shutil.copytree(CONFIG, config)
         (tmp_path / "data").mkdir()
@@ -310,13 +310,13 @@ class TestDatabaseSwap:
             encoding="utf-8")
         return config
 
-    def test_a_grounded_fill_verifies(self, tmp_path: Path, store_cls, driver: str,
-                                      filename: str) -> None:
+    def test_a_grounded_fill_verifies(self, tmp_path: Path,
+                                      store_cls: type[SqliteStore] | type[DuckDBStore],
+                                      driver: str, filename: str) -> None:
         config = self._staged(tmp_path, store_cls, driver, filename)
         assembled = assemble(config, client_factory=_factory("Rock", 0.99))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
-        assert json.loads(result.output or "{}") == {"genre": "Rock", "unit_price": 0.99}
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
+        assert json.loads(result.record.output or "{}") == {"genre": "Rock", "unit_price": 0.99}

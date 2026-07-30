@@ -46,5 +46,14 @@ note "installing pinned dependencies"
 
 has_module "$venv_python" pytest || die "pytest did not install; the environment is incomplete"
 
+note "pre-fetching the DuckDB 'fts' extension (used by the [pairings] duckdb driver)"
+"$venv_python" -c "
+import duckdb
+con = duckdb.connect(':memory:')
+con.execute('INSTALL fts')
+con.execute('LOAD fts')
+" 2>/dev/null || note "could not pre-fetch the DuckDB 'fts' extension (offline?); the duckdb" \
+    "pairings driver will install it on first use instead, or use the sqlite driver"
+
 note "done. Activate with:  source ${VENV_DIR}/bin/activate"
 note "or just run the tools, which use ${VENV_DIR} automatically."

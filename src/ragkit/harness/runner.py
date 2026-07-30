@@ -1,40 +1,32 @@
-"""Resumable batch execution over a catalogue of records.
+"""Resumable batch execution over a run store.
 
 A full run can be tens of thousands of records, each several sequential model calls, so it spans
-hours and will be interrupted. Durability is a design requirement: results are appended to a JSONL
-journal as each record completes, restarting reads the journal and skips what is recorded, and the
-journal is separate from the catalogue so a crashed run can never truncate the catalogue itself.
+hours and will be interrupted. Durability is a design requirement: each result is appended to the
+injected :class:`~ragkit.core.ports.RunStore` as it completes, in one transaction — restarting
+reads the store's own :meth:`~ragkit.core.ports.RunStore.pending` and skips what already has a
+result, and a crash mid-write leaves a complete result or none at all (the store's job, not this
+module's — see :mod:`ragkit.store.run.sqlite`).
 
-Work order is injectable — the default is catalogue order, but a caller can translate the most
-valuable records first — because "most valuable first" depends on the task, and baking one task's
-answer in is what makes a runner task-specific. Duplicate inputs are grouped so identical text is
-produced once and shared, and only this thread touches the journal or the progress counters, so
-the append-per-result durability needs no locking even under concurrent workers.
+Duplicate inputs are grouped so identical text is produced once and shared, and only this thread
+appends results or touches the progress counters, so the append-per-result durability needs no
+locking even under concurrent workers.
 """
 from __future__ import annotations
 
-import os
 import signal
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ragkit.core.errors import RagkitError
-from ragkit.core.records import Record, Status, read_catalog, read_journal
+from ragkit.core.ports import RetrievedRef, RunResult, RunStore
+from ragkit.core.records import Record, Status
 
 from .agents import Harness, Outcome, learn_memory
 
-PriorityKey = Callable[[Record], Any]
-
 # Injected so a test can drive time deterministically; defaults to the monotonic wall clock.
 Clock = Callable[[], float]
-
-
-def catalog_order(record: Record) -> tuple[str, int]:
-    """Stable default sort key: the record's position in its source."""
-    return (record.rel_path, record.line_no)
 
 
 class RunnerError(RagkitError):
@@ -93,21 +85,6 @@ class Progress:
                 f"rejected {self.rejected:,})")
 
 
-def completed_ids(journal: Path) -> set[str]:
-    """Record ids already recorded in the journal."""
-    return {record.record_id for record in read_journal(journal)}
-
-
-def pending_records(catalog: Path, journal: Path, *,
-                    key: PriorityKey = catalog_order) -> list[Record]:
-    """Records still needing work, in ``key`` order, excluding journalled results."""
-    done = completed_ids(journal)
-    records = [r for r in read_catalog(catalog)
-               if r.status is Status.PENDING and r.record_id not in done]
-    records.sort(key=key)
-    return records
-
-
 def group_duplicates(records: Iterable[Record]) -> list[tuple[Record, tuple[Record, ...]]]:
     """Group records that should receive one output, keeping input order. Keyed on
     ``(source, discriminator)`` where the discriminator is ``meta['speaker']`` if present, so two
@@ -120,9 +97,25 @@ def group_duplicates(records: Iterable[Record]) -> list[tuple[Record, tuple[Reco
     return [(members[0], tuple(members)) for members in groups.values()]
 
 
+def _as_run_result(outcome: Outcome, record: Record) -> RunResult:
+    """The RunStore-persisted projection of an Outcome applied to one member of its duplicate
+    group: the record carrying its verdict (see ``Outcome.applied_to``), plus the structured
+    reviews/violations/capture the legacy JSONL journal could not hold. ``reviews`` is flattened to
+    plain dicts (via ``dataclasses.asdict``) because ``Review`` is a harness type and the run-store
+    port must not depend on this layer."""
+    return RunResult(
+        record=outcome.applied_to(record),
+        context_passage=outcome.context_passage,
+        retrieved=tuple(RetrievedRef(r.chunk_id, r.text, r.score) for r in outcome.retrieved),
+        reviews=tuple(asdict(review) for review in outcome.reviews),
+        violations=outcome.violations,
+        rounds=outcome.rounds,
+        error=outcome.error)
+
+
 class _Interruptible:
     """Turn SIGINT/SIGTERM into a cooperative stop flag: the first signal asks the loop to finish
-    the current record and exit cleanly, rather than tearing down an open journal mid-write."""
+    the current record and exit cleanly, rather than tearing down mid-write."""
 
     def __init__(self) -> None:
         self.stop = False
@@ -139,19 +132,19 @@ class _Interruptible:
 
     def __exit__(self, *_: object) -> None:
         for number, handler in self._previous.items():
-            signal.signal(number, handler)  # type: ignore[arg-type]
+            signal.signal(number, handler)
 
 
-def run_batch(harness: Harness, records: Iterable[Record], journal: Path, *,
+def run_batch(harness: Harness, records: Iterable[Record], run_store: RunStore, *,
               total: int | None = None, already_done: int = 0,
               on_progress: Callable[[Progress], None] | None = None, report_every: int = 25,
               concurrency: int = 1, clock: Clock = lambda: 0.0,
               install_signal_handlers: bool = True) -> Progress:
-    """Produce for ``records``, appending each result to ``journal`` as it completes.
+    """Produce for ``records``, appending each result to ``run_store`` as it completes.
 
     ``concurrency`` records are produced at once against the same pool; the personas within one
-    record still run in sequence. Only this thread touches the journal or the counters. Raises
-    whatever a worker raised, once results already in flight have been journalled, so an
+    record still run in sequence. Only this thread appends results or touches the counters. Raises
+    whatever a worker raised, once results already in flight have been appended, so an
     infrastructure failure never discards completed work. ``clock`` is injectable for
     deterministic tests; ``install_signal_handlers`` is off in a worker thread where signals
     cannot be caught.
@@ -164,13 +157,11 @@ def run_batch(harness: Harness, records: Iterable[Record], journal: Path, *,
     records = list(records)
     progress = Progress(total=total if total is not None else len(records) + already_done,
                         already_done=already_done, started_at=clock(), _clock=clock)
-    journal.parent.mkdir(parents=True, exist_ok=True)
     queued = iter(group_duplicates(records))
     failure: BaseException | None = None
 
     interrupt = _Interruptible() if install_signal_handlers else _NullInterrupt()
-    with interrupt, journal.open("a", encoding="utf-8") as handle, \
-            ThreadPoolExecutor(max_workers=concurrency) as pool:
+    with interrupt, ThreadPoolExecutor(max_workers=concurrency) as pool:
 
         def submit_next() -> bool:
             group = next(queued, None)
@@ -194,11 +185,8 @@ def run_batch(harness: Harness, records: Iterable[Record], journal: Path, *,
                     failure = failure or exc
                     continue
                 for member in members:
-                    handle.write(outcome.applied_to(member).to_json())
-                    handle.write("\n")
+                    run_store.append_result(_as_run_result(outcome, member))
                     progress.record(outcome)
-                handle.flush()
-                os.fsync(handle.fileno())
                 learn_memory(harness.memory, outcome)
                 if on_progress and progress.done % report_every == 0:
                     on_progress(progress)

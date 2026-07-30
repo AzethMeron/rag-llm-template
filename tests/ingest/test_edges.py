@@ -1,27 +1,9 @@
 """Remaining branch coverage for the ingest layer: from_config paths and empty/edge inputs."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-import httpx
-import pytest
-
 from ragkit.core.ports import Document
 from ragkit.ingest.chunk import CHUNKERS, FixedChunker, SentenceChunker, StructureChunker
-from ragkit.ingest.corpus import Corpus, CorpusItem
 from ragkit.ingest.extract import HtmlExtractor, JsonlExtractor, MarkdownExtractor, TextExtractor
-from ragkit.retrieve.embedding import EmbeddingClient
-from ragkit.store.lexical.fts5 import Fts5Index
-from ragkit.store.vector.lancedb import LanceVectorIndex
-
-
-def _embedder() -> EmbeddingClient:
-    def handler(request: httpx.Request) -> httpx.Response:
-        inputs = json.loads(request.content)["input"]
-        return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
-    return EmbeddingClient(base_url="http://x/v1",
-                           client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
 class TestFromConfig:
@@ -77,39 +59,3 @@ class TestChunkEdges:
 
     def test_structure_registered(self) -> None:
         assert CHUNKERS.create("fixed", {"size": 100, "overlap": 0}) is not None
-
-
-class TestCorpusEdges:
-    def test_no_lexical_index_refuses_lexical_retriever(self, tmp_path: Path) -> None:
-        corpus = Corpus(vector=LanceVectorIndex(str(tmp_path / "v"), dim=2), embedder=_embedder())
-        with pytest.raises(ValueError, match="no lexical index"):
-            corpus.lexical_retriever()
-
-    def test_vector_only_retriever_is_dense(self, tmp_path: Path) -> None:
-        from ragkit.retrieve.retrievers import DenseRetriever
-        corpus = Corpus(vector=LanceVectorIndex(str(tmp_path / "v"), dim=2), embedder=_embedder())
-        corpus.add_all([CorpusItem("1", "text")])
-        assert isinstance(corpus.retriever(), DenseRetriever)
-
-    def test_lexical_only_add_without_vector(self) -> None:
-        corpus = Corpus(lexical=Fts5Index())
-        assert corpus.add_all([CorpusItem("1", "a", meta={"k": "v"})]) == 1
-        assert corpus.resolve_meta("1")["k"] == "v"
-
-    def test_dedup_is_within_batch_not_across_adds(self, tmp_path: Path) -> None:
-        calls: list[int] = []
-
-        def counting(request: httpx.Request) -> httpx.Response:
-            inputs = json.loads(request.content)["input"]
-            calls.extend([1] * len(inputs))
-            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
-
-        embedder = EmbeddingClient(base_url="http://x/v1",
-                                   client=httpx.Client(transport=httpx.MockTransport(counting)))
-        corpus = Corpus(vector=LanceVectorIndex(str(tmp_path / "v"), dim=2), embedder=embedder)
-        # Identical texts in one batch embed once; a separate add re-embeds (no cross-batch RAM
-        # cache — the vectors live in the store, not the heap).
-        corpus.add_all([CorpusItem("1", "same"), CorpusItem("2", "same")])
-        assert len(calls) == 1
-        corpus.add_all([CorpusItem("3", "same")])
-        assert len(calls) == 2

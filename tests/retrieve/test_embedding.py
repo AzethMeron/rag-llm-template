@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from ragkit.retrieve.embedding import EmbeddingClient, EmbeddingError, _clean
+from ragkit.retrieve.embedding import EmbeddingClient, EmbeddingError, _clean, dedup_embed
 
 from .conftest import embedding_client, fake_embedder
 
@@ -50,6 +50,48 @@ class TestEmbed:
         assert "[[0]]" not in seen[0]
 
 
+class TestDedupEmbed:
+    def test_a_repeated_text_is_embedded_once(self) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            calls.extend(inputs)
+            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+
+        client = embedding_client(handler)
+        result = dedup_embed(client, ["same", "same", "different"])
+        assert calls == ["same", "different"]  # embedded once each, not three times
+        assert set(result) == {"same", "different"}
+
+    def test_every_result_maps_back_to_its_own_text(self) -> None:
+        # Distinct directions, not just magnitudes -- embed() L2-normalises, so same-direction
+        # vectors of different magnitude would collapse to the same normalised result.
+        client = fake_embedder(lambda t: [1.0, 0.0] if t == "a" else [0.0, 1.0])
+        result = dedup_embed(client, ["a", "bb"])
+        assert result["a"] == pytest.approx([1.0, 0.0])
+        assert result["bb"] == pytest.approx([0.0, 1.0])
+
+    def test_no_cache_persists_across_separate_calls(self) -> None:
+        # Deduplication is scoped to one call's batch, not a RAM-map remembered across calls -- a
+        # rare cross-call duplicate is simply re-embedded, by design (see the docstring).
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            calls.extend(inputs)
+            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+
+        client = embedding_client(handler)
+        dedup_embed(client, ["same"])
+        dedup_embed(client, ["same"])
+        assert calls == ["same", "same"]
+
+    def test_empty_input(self) -> None:
+        client = fake_embedder(lambda t: [1.0])
+        assert dedup_embed(client, []) == {}
+
+
 class TestErrors:
     def test_http_error(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
@@ -69,6 +111,14 @@ class TestErrors:
         with pytest.raises(EmbeddingError, match="no 'embedding'"):
             embedding_client(handler).embed(["x"])
 
+    def test_data_is_not_a_list(self) -> None:
+        # 'data' present but the wrong shape (e.g. an error object instead of a result array) --
+        # distinct from a missing key entirely, and from a per-item shape problem.
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": {"error": "unexpected"}})
+        with pytest.raises(EmbeddingError, match="'data' is dict, not a list"):
+            embedding_client(handler).embed(["x"])
+
     def test_no_data_key(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"nope": 1})
@@ -82,6 +132,34 @@ class TestErrors:
                                                       {"embedding": [1.0]}][:len(inputs)]})
         with pytest.raises(EmbeddingError, match="uniform numeric matrix"):
             embedding_client(handler).embed(["a", "b"])
+
+    def test_nan_in_response_is_rejected_not_silently_normalised(self) -> None:
+        # Regression: NaN is a numerically valid float32 value, so np.asarray accepts it and the
+        # L2-normalise step (dividing by a NaN norm) used to turn it into a silent all-NaN vector
+        # instead of raising -- corrupting the vector store with no error anywhere. NaN/Infinity
+        # aren't standard JSON, but Python's json (both sides) permissively round-trips the literal
+        # token by default, so a real server can and does emit exactly this over the wire; raw
+        # `content=`, not the `json=` kwarg, is used here since httpx's own encoder for `json=`
+        # refuses to produce them.
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": [{"embedding": [1.0, NaN]}]}')
+        with pytest.raises(EmbeddingError, match="non-finite values"):
+            embedding_client(handler).embed(["x"])
+
+    def test_infinity_in_response_is_rejected_not_silently_normalised(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": [{"embedding": [1.0, Infinity]}]}')
+        with pytest.raises(EmbeddingError, match="non-finite values"):
+            embedding_client(handler).embed(["x"])
+
+    def test_one_poisoned_row_among_several_is_still_caught(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": ['
+                                                b'{"embedding": [1.0, 0.0]}, '
+                                                b'{"embedding": [NaN, 0.0]}, '
+                                                b'{"embedding": [0.0, 1.0]}]}')
+        with pytest.raises(EmbeddingError, match=r"1 of 3 row\(s\)"):
+            embedding_client(handler).embed(["a", "b", "c"])
 
     def test_bad_batch_size(self) -> None:
         with pytest.raises(ValueError, match="batch_size"):

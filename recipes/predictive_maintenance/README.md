@@ -41,15 +41,18 @@ Two real sources:
 The C-MAPSS download link is unstable, so pass `--cmapss` with a `train_FD001.txt` you have. Tiny
 in-test fixtures back the recipe's own tests, so they need no download or network; those tests also
 retrieve the manuals memory over **both real vector indexes** (LanceDB and Qdrant), swapped by a
-one-line `storage.toml` driver edit, alongside the default `fts5` lexical path.
+one-line `storage.toml` driver edit, alongside the default `sqlite` pairing-store path.
 
 ## Running
 
 ```bash
 tools/serve_models.sh --config recipes/predictive_maintenance/config/models.toml \
     --endpoint local --models-dir models
-PYTHONPATH=src:. python -m ragkit.cli --config recipes/predictive_maintenance/config \
-    -c recipes/predictive_maintenance/data/heldout.jsonl -j work/pdm.jsonl
+PYTHONPATH=src:. python -m ragkit.cli import \
+    --catalog recipes/predictive_maintenance/data/heldout.jsonl --run-db work/pdm.db
+PYTHONPATH=src:. python -m ragkit.cli run --config recipes/predictive_maintenance/config \
+    --run-db work/pdm.db
+PYTHONPATH=src:. python -m ragkit.cli export --run-db work/pdm.db -j work/pdm.jsonl
 ```
 
 ## Evaluation

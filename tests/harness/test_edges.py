@@ -28,6 +28,7 @@ from ragkit.harness.context.blocks import (
 )
 from ragkit.harness.schemas import OUTPUT_SCHEMAS, FormField, FormSchema, JsonFieldSchema as JFS
 from ragkit.harness.roles import load_panel
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from .conftest import ACCEPT, build_harness, build_pool, ok, raw
 
@@ -322,11 +323,13 @@ class TestRunnerExtras:
         progress = Progress(total=1, started_at=next(ticks), _clock=lambda: next(ticks))
         assert progress.elapsed == 75.0
 
-    def test_signal_handlers_install_and_restore(self, tmp_path: Path) -> None:
+    def test_signal_handlers_install_and_restore(self) -> None:
         # Runs on the main thread, so the real _Interruptible installs and restores handlers.
         harness = build_harness(produce=[ok({"output": "R"})], review=[ACCEPT])
-        progress = run_batch(harness, [Record(record_id="1", source="s")], tmp_path / "j.jsonl",
-                             install_signal_handlers=True)
+        records = [Record(record_id="1", source="s")]
+        store = SqliteRunStore()
+        store.add_records(records)
+        progress = run_batch(harness, records, store, install_signal_handlers=True)
         assert progress.done == 1
 
     def test_interrupt_handler_sets_the_stop_flag(self) -> None:
@@ -336,9 +339,12 @@ class TestRunnerExtras:
         interrupt._handle()  # what a SIGINT would call
         assert interrupt.stop
 
-    def test_fewer_records_than_concurrency(self, tmp_path: Path) -> None:
+    def test_fewer_records_than_concurrency(self) -> None:
         # One record, four workers: the initial submit loop runs out of work and breaks early.
         harness = build_harness(produce=[ok({"output": "R"})], review=[ACCEPT])
-        progress = run_batch(harness, [Record(record_id="1", source="s")], tmp_path / "j.jsonl",
-                             concurrency=4, install_signal_handlers=False)
+        records = [Record(record_id="1", source="s")]
+        store = SqliteRunStore()
+        store.add_records(records)
+        progress = run_batch(harness, records, store, concurrency=4,
+                             install_signal_handlers=False)
         assert progress.done == 1

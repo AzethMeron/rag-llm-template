@@ -24,7 +24,6 @@ description = "ids of the passages actually used to support the answer (empty wh
 file = "../data/passages.jsonl"
 retriever = "lexical"
 index_field = "text"
-display_field = "text"
 
 [[validator]]
 kind = "recipes.legal_procurement.plugins.validators:CitationGroundingValidator"

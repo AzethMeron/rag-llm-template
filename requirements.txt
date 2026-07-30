@@ -31,7 +31,7 @@ typing_extensions==4.16.0
 # the core import path never pulls it, and tests/test_boundaries.py confines the allowance to
 # that module. numpy is the dense-vector math used by the retrieval layer. Both are only needed
 # for dense/vector retrieval; a pure-lexical (FTS5) run touches neither.
-lancedb==0.34.0
+lancedb==0.36.0
 numpy==2.5.1
 # transitive
 annotated-types==0.8.0
@@ -77,7 +77,7 @@ coverage==7.15.2
 # Property-based and fuzz testing (tests use hypothesis). Test-only: nothing under src/
 # imports it. Justified over hand-rolled seeded randomness by shrinking -- it reduces a
 # failing case to a minimal counterexample, which is what makes a fuzz finding actionable.
-hypothesis==6.163.0
+hypothesis==6.164.0
 # transitive
 Pygments==2.20.0
 iniconfig==2.3.0

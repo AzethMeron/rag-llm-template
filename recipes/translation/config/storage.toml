@@ -1,0 +1,8 @@
+# The translation memory (reference.jsonl) is imported into a pairing store (rows + its FTS5
+# search index, co-located in one database) on disk next to the fetched data. Import is
+# streamed/resumable/idempotent: `[reference].file` is folded in once and the persisted store is
+# reused on later runs. Delete data/reference.pairings.db to force a re-import after re-fetching a
+# different corpus.
+[pairings]
+driver = "sqlite"
+path = "../data/reference.pairings.db"

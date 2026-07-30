@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+from .lexicon import Entry
 from .records import Record
 from .rules import Violation
 
@@ -236,29 +237,80 @@ class VectorIndex(Protocol):
 
 
 @runtime_checkable
-class LexicalIndex(Protocol):
-    """A keyword/BM25 index. ``search`` returns ``(chunk_id, score)`` best-first, score
-    higher-is-better (a driver over an inverted BM25 converts the native scale itself)."""
-
-    def index(self, chunk_id: str, text: str) -> None: ...
+class SearchIndex(Protocol):
+    """The read side of a keyword search index: maps a query to ``(chunk_id, score)`` best-first,
+    higher-is-better. This is the *narrow* interface a :class:`Retriever` built over a search index
+    actually depends on (never the write side) — a :class:`PairingStore` satisfies it (its rows and
+    search index are co-located, but a retriever never indexes or deletes through it directly)."""
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
 
-    def delete(self, chunk_id: str) -> None: ...
+
+@dataclass(frozen=True, slots=True)
+class Pairing:
+    """One reference example held in a :class:`PairingStore`: an input, the target it pairs with
+    (empty for a lexical-only reference entry), and the context it was produced with. This is the
+    ``(source, context, target)`` triple the reference memory stores and a write-back step
+    produces. ``verified``/``created_at`` are write-back provenance (was this machine-produced and
+    accepted, and when); an imported reference entry leaves them at their defaults."""
+
+    chunk_id: str
+    source: str
+    target: str = ""
+    context: str = ""
+    meta: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
+    verified: bool = False
+    created_at: float = 0.0
 
 
 @runtime_checkable
-class DocumentStore(Protocol):
-    """The relational home for chunk rows — the single store every retrieval path resolves a hit
-    through, so a corpus of any size lives in the database rather than a RAM map. A search index
-    (BM25, ANN) returns ids; this turns an id back into its display text + metadata. ``count`` is
-    the corpus size, used to skip re-ingesting an already-built store."""
+class PairingStore(Protocol):
+    """The reference-memory store: rows and a keyword search index co-located in one durable store,
+    so a hit and its display text can never drift apart the way two separately-written stores can.
 
-    def add_documents(self, rows: Iterable[tuple[str, str, Mapping[str, Any]]]) -> None: ...
+    ``search`` satisfies :class:`SearchIndex`, and ``document`` resolves a hit's display text +
+    metadata the same way, so the lexical/dense/hybrid retriever stack (:mod:`ragkit.retrieve.
+    retrievers`) runs over a pairing store with no parallel retrieval code path to keep in sync.
+    """
+
+    def add(self, pairings: Iterable[Pairing]) -> int:
+        """Add pairings in one transaction (their search entries included); returns the number of
+        rows actually added (a pairing whose ``chunk_id`` already exists is left untouched, not
+        overwritten, so re-adding the same write-back result twice is idempotent)."""
+        ...
+
+    def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
 
     def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None: ...
 
+    def get(self, chunk_id: str) -> Pairing | None:
+        """The full pairing for ``chunk_id`` (source, target, context, meta, verification,
+        provenance), or ``None`` if absent. Unlike ``document``, which flattens a pairing to display
+        text for a retriever, this is the write-back / inspection path that needs the whole row."""
+        ...
+
+    def all_ids(self) -> Iterator[str]:
+        """Every chunk id currently stored, for a caller reconciling a separate vector index
+        against this store's authoritative rows (:meth:`VectorIndex.reconcile`)."""
+        ...
+
     def count(self) -> int: ...
+
+
+@runtime_checkable
+class LexiconStore(Protocol):
+    """DB-native established terminology, replacing a JSONL lexicon file as the accumulating
+    source of truth for a project's terminology. ``entries()`` returns exactly what
+    :func:`~ragkit.core.lexicon.relevant_entries` and :class:`~ragkit.harness.context.blocks.
+    LexiconBlock` already consume from a JSONL-sourced ``list[Entry]``, so either source works
+    with the same downstream code."""
+
+    def entries(self) -> list[Entry]: ...
+
+    def add(self, entries: Iterable[Entry]) -> int:
+        """Add or update entries (keyed on ``(term, category)``); returns the number of rows
+        actually inserted (an update to an existing term's rendering does not count as added)."""
+        ...
 
 
 @runtime_checkable
@@ -280,6 +332,80 @@ class SchemaIntrospector(Protocol):
     Returns a mapping of table name to its ordered column ``(name, type)`` pairs."""
 
     def schema(self) -> Mapping[str, Sequence[tuple[str, str]]]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievedRef:
+    """A JSON-safe projection of a :class:`Retrieved` hit, for persistence in a :class:`RunResult`:
+    ``(chunk_id, text, score)`` only, no ``meta`` — meta need not be JSON-safe, and is reference
+    data the pairing store already holds, keyed by ``chunk_id``, so there is nothing to duplicate
+    into the run store."""
+
+    chunk_id: str
+    text: str
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class RunResult:
+    """One completed attempt at a record, as a :class:`RunStore` persists it.
+
+    ``record`` already carries its verdict — the status/output/notes an ``Outcome`` applies to it
+    (see ``harness.agents.Outcome.applied_to``) — while the fields here are what the legacy JSONL
+    journal could not hold: the structured violations (never flattened to strings), and the context
+    that actually produced the output (see ``harness.capture``). ``reviews`` is a tuple of plain,
+    already-JSON-safe mappings rather than the harness's own ``Review`` type, so this port need not
+    import the harness layer (a lower layer never depends on one above it).
+    """
+
+    record: Record
+    context_passage: str = ""
+    retrieved: tuple[RetrievedRef, ...] = ()
+    reviews: tuple[Mapping[str, Any], ...] = ()
+    violations: tuple[Violation, ...] = ()
+    rounds: int = 0
+    error: str | None = None
+
+
+@runtime_checkable
+class RunStore(Protocol):
+    """The framework's own run-state store: the record catalogue and the append-only result
+    history, replacing the JSONL catalogue+journal pair (see docs/storage-overhaul-plan.md). A
+    result write is one transaction, so a torn/partial row is impossible — the durability the JSONL
+    journal approximated with a per-line fsync and a reader tolerant of a torn *final* line only."""
+
+    def add_records(self, records: Iterable[Record]) -> int:
+        """Add records to the catalogue (idempotent on an already-present ``record_id``, so
+        re-running an import is safe). Returns the number actually added."""
+        ...
+
+    def append_result(self, result: RunResult) -> None:
+        """Persist one completed attempt in a single transaction. Never overwrites an earlier
+        attempt at the same record — each call adds a new result, and :meth:`results` /
+        :meth:`completed_ids` resolve to the latest by write order."""
+        ...
+
+    def completed_ids(self) -> set[str]:
+        """Ids of every record with at least one result — what a resumed run must skip."""
+        ...
+
+    def pending(self) -> Iterator[Record]:
+        """Records with no result yet, in the store's stable catalogue order (by provenance:
+        ``rel_path`` then ``line_no``) — a streamed cursor, never materialising the whole
+        catalogue in memory."""
+        ...
+
+    def results(self) -> Iterator[RunResult]:
+        """The latest result for every record that has one."""
+        ...
+
+    def latest_records(self) -> Iterator[Record]:
+        """Like :meth:`results`, but yields the finished ``Record`` alone rather than the full
+        ``RunResult`` -- for a caller that only needs what a record produced (its output, status,
+        meta), not the retrieval/review/violation detail behind how it got there."""
+        ...
+
+    def count_records(self) -> int: ...
 
 
 # --- retrieval ----------------------------------------------------------------

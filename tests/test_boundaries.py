@@ -114,7 +114,7 @@ DRIVER_DEP_LOCATIONS = {
     "sqlite_vec": ("store/vector/",),
     "psycopg": ("store/",),
     "chromadb": ("store/vector/",),
-    "duckdb": ("store/sql/duckdb.py",),
+    "duckdb": ("store/sql/duckdb.py", "store/pairings/duckdb.py"),
     "httpx": ("llm/client.py", "llm/pool.py", "retrieve/embedding.py", "retrieve/rerank.py"),
 }
 

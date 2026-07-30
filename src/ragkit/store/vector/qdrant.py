@@ -158,7 +158,7 @@ class QdrantVectorIndex:
 def _require_qdrant() -> tuple[Any, Any]:
     try:
         from qdrant_client import QdrantClient, models
-    except ImportError as exc:  # pragma: no cover - exercised only where qdrant-client is absent
+    except ImportError as exc:
         raise VectorIndexError(
             "the Qdrant vector index needs 'qdrant-client', which is not installed "
             "(pip install qdrant-client; it ships in requirements.txt). Use the 'lancedb' driver, "

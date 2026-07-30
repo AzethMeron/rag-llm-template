@@ -27,6 +27,7 @@ from typing import Any
 from ragkit.core.ports import Retriever
 from ragkit.core.records import Record
 from ragkit.core.rules import Severity, Violation
+from ragkit.harness.capture import capture_retrieved
 
 
 def _error(message: str) -> Violation:
@@ -98,6 +99,7 @@ class CitationGroundingValidator:
             return [_error("grounding cannot be verified: no retriever (legal-passage memory) is "
                            "wired into the run, so a cited answer cannot be accepted")]
         hits = retriever.retrieve(record.source, k=self._k, min_score=self._min_score)
+        capture_retrieved(context, hits)
         retrieved_ids = {hit.chunk_id for hit in hits}
 
         violations: list[Violation] = []

@@ -10,9 +10,10 @@ import httpx
 import pytest
 
 from ragkit.cli.app import assemble
-from ragkit.core.records import Record, Status, read_journal, write_catalog
+from ragkit.core.records import Record, Status
 from ragkit.core.rules import Severity
-from ragkit.harness import pending_records, run_batch
+from ragkit.harness import Harness, run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.translation.plugins.validators import (
     EchoValidator,
@@ -103,12 +104,11 @@ class TestEndToEnd:
         assembled = assemble(config, substitutions={"source_language": "English",
                                                     "target_language": "Polish"},
                              client_factory=_factory(json.dumps({"translation": "Kot śpi."})))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="The cat is sleeping.")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED and result.output == "Kot śpi."
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat is sleeping.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED and result.record.output == "Kot śpi."
 
     def test_an_untranslated_echo_is_rejected(self, tmp_path: Path) -> None:
         config = _staged_config(tmp_path)
@@ -118,12 +118,11 @@ class TestEndToEnd:
         assembled = assemble(config, substitutions={"source_language": "English",
                                                     "target_language": "Polish"},
                              client_factory=_factory(json.dumps({"translation": source})))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source=source)], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source=source)])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
 
     def test_reference_examples_are_retrieved(self, tmp_path: Path) -> None:
         config = _staged_config(tmp_path)
@@ -135,10 +134,37 @@ class TestEndToEnd:
         assert hits and "Kot śpi na kanapie." in hits[0].text
 
 
+@pytest.mark.parametrize("pairings_driver", ["sqlite", "duckdb"])
+class TestReferenceMemoryOnEachPairingsDriver:
+    """The translation memory (config/storage.toml's [pairings]) retrieves identically whether the
+    driver is sqlite or duckdb -- only a storage.toml driver edit differs, proving the swap
+    property end-to-end over a real recipe (the unit-level conformance suite proves the same thing
+    at the driver level; this is the recipe-level guarantee storage-overhaul-plan.md asks for)."""
+
+    def test_translates_with_either_pairings_driver(self, tmp_path: Path,
+                                                     pairings_driver: str) -> None:
+        config = _staged_config(tmp_path)
+        (config / "storage.toml").write_text(
+            f'[pairings]\ndriver = "{pairings_driver}"\n'
+            f'path = "../data/reference.pairings.{pairings_driver}"\n', encoding="utf-8")
+        assembled = assemble(config, substitutions={"source_language": "English",
+                                                    "target_language": "Polish"},
+                             client_factory=_factory(json.dumps({"translation": "Kot śpi."})))
+        assert assembled.retriever is not None
+        hits = assembled.retriever.retrieve("The cat is sleeping on the sofa.", k=1)
+        assert hits and "Kot śpi na kanapie." in hits[0].text
+
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat is sleeping.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED and result.record.output == "Kot śpi."
+
+
 class TestFaithfulToLlmTranslator:
     """The recipe reproduces llm-translator's panel, rules, prompts and context building."""
 
-    def _harness(self, tmp_path: Path):
+    def _harness(self, tmp_path: Path) -> Harness:
         return assemble(_staged_config(tmp_path),
                         substitutions={"source_language": "English", "target_language": "Polish"},
                         client_factory=_factory("{}")).harness
@@ -185,12 +211,11 @@ class TestFaithfulToLlmTranslator:
         assembled = assemble(config, substitutions={"source_language": "English",
                                                     "target_language": "Polish"},
                              client_factory=_factory(json.dumps({"translation": "Sure! Kot śpi."})))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="The cat sleeps.")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat sleeps.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
 
 
 # --- retrieval memory over each real vector DB (lancedb, qdrant) + the default fts5 lexical -------
@@ -238,14 +263,16 @@ def _vector_factory() -> Callable[[str, float], httpx.Client]:
 class TestRetrievalMemoryOnEachVectorDB:
     """The translation memory is retrieved through dense retrieval over EITHER real vector DB
     (lancedb, qdrant), assembled from retrieval.toml -- the recipe runs end-to-end on each with only
-    a storage.toml driver edit. (The default fts5 lexical path is covered by TestEndToEnd.)"""
+    a storage.toml driver edit. (The default sqlite pairing-store path is covered by
+    TestEndToEnd.)"""
 
     def test_translates_with_a_vector_backed_memory(self, tmp_path: Path,
                                                     vector_driver: str) -> None:
         config = _staged_config(tmp_path)
         (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
         (config / "storage.toml").write_text(
-            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n'
+            f'[pairings]\ndriver = "sqlite"\npath = "../data/reference.pairings.db"\n',
             encoding="utf-8")
         (config / "retrieval.toml").write_text(
             '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',
@@ -255,12 +282,11 @@ class TestRetrievalMemoryOnEachVectorDB:
                              client_factory=_vector_factory())
         from ragkit.retrieve.retrievers import DenseRetriever
         assert isinstance(assembled.retriever, DenseRetriever)
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="The cat is sleeping.")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED and result.output == "Kot śpi."
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat is sleeping.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED and result.record.output == "Kot śpi."
 
 
 from recipes.translation import eval as tr_eval  # noqa: E402
@@ -306,7 +332,7 @@ class TestEvalGoldAndMain:
         with pytest.raises(tr_eval.EvalError, match="empty"):
             tr_eval.load_gold(self._gold(tmp_path, "\n"))
 
-    def test_main_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_main_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal = tmp_path / "j.jsonl"
         rec = Record(record_id="a", source="x", output="Kot śpi.", status=Status.VERIFIED)
         journal.write_text(rec.to_json() + "\n", encoding="utf-8")
@@ -314,7 +340,7 @@ class TestEvalGoldAndMain:
         code = tr_eval.main(["--journal", str(journal), "--gold", str(gold)])
         assert code == 0 and "exact match 1.000" in capsys.readouterr().out
 
-    def test_main_missing_gold(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_main_missing_gold(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         code = tr_eval.main(["--journal", str(tmp_path / "j.jsonl"),
                              "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err

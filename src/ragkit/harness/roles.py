@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+from typing import Any
 
 from ragkit.core.config import (
     ConfigError,
@@ -237,7 +239,7 @@ def _limits(section: object, *, path: Path) -> Limits:
         raise ConfigError(f"[limits]: {exc}", path=path) from exc
 
 
-def _personas(data: dict, fill, *, default_leniency: Leniency,
+def _personas(data: dict[str, Any], fill: Callable[..., str], *, default_leniency: Leniency,
               path: Path) -> tuple[Persona, tuple[Persona, ...]]:
     producers: list[Persona] = []
     reviewers: list[Persona] = []
@@ -265,8 +267,8 @@ def _personas(data: dict, fill, *, default_leniency: Leniency,
     return producers[0], tuple(reviewers)
 
 
-def _one_persona(entry: dict, identifier: str, fill, *, default_leniency: Leniency,
-                 path: Path) -> Persona:
+def _one_persona(entry: dict[str, Any], identifier: str, fill: Callable[..., str], *,
+                 default_leniency: Leniency, path: Path) -> Persona:
     kind = entry.get("kind")
     if kind not in _PERSONA_KINDS:
         raise ConfigError(

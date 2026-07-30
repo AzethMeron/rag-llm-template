@@ -43,9 +43,12 @@ against real models:
 ```bash
 recipes/translation/fetch.sh                                  # download the real dataset (git-ignored)
 tools/serve_models.sh --config recipes/translation/config/models.toml --endpoint local --models-dir models
-PYTHONPATH=src python -m ragkit.cli --config recipes/translation/config \
-    -c recipes/translation/data/heldout.jsonl -j work/out.jsonl \
-    --set source_language=English --set target_language=Polish
+PYTHONPATH=src python -m ragkit.cli import --catalog recipes/translation/data/heldout.jsonl \
+    --run-db work/translation.db                               # load the catalogue once
+PYTHONPATH=src python -m ragkit.cli run --config recipes/translation/config \
+    --run-db work/translation.db \
+    --set source_language=English --set target_language=Polish  # execute pending records
+PYTHONPATH=src python -m ragkit.cli export --run-db work/translation.db -j work/out.jsonl
 ```
 
 ## Layout
@@ -53,8 +56,8 @@ PYTHONPATH=src python -m ragkit.cli --config recipes/translation/config \
 ```
 src/ragkit/
   core/      the contract: ports, records, registry, errors, config, width, placeholders, lexicon, jsonshape  [stdlib only]
-  store/     sql (sqlite | duckdb), vector (lancedb | qdrant), lexical (fts5), documents (sqlite chunk rows)   [optional deps, lazily imported]
-  ingest/    extract, normalise, dedup, chunk, embed, streaming corpus builder
+  store/     sql (sqlite | duckdb), vector (lancedb | qdrant), pairings (sqlite | duckdb, co-located rows + search index), run (sqlite), lexicon (sqlite)   [optional deps, lazily imported]
+  ingest/    extract, normalise, dedup, chunk, streaming reference-corpus import + embed, write-back into reference memory
   retrieve/  lexical, dense, fusion (RRF/MMR), rerank, hybrid, config-driven assembly (tuning)
   llm/       client, backends, model pool + thrash guard, serve-args
   harness/   personas, panel, validators, context blocks, memory, output schemas, runner
@@ -68,10 +71,16 @@ Two **real** drivers ship behind each database port (`sqlite`↔`duckdb`, `lance
 swapping a database is a one-line config edit proven by the conformance suite — see the tutorial.
 
 Retrieval never holds the corpus in RAM: a search index (FTS5 BM25, or the vector ANN) returns
-only ids, and every hit resolves its text + metadata through one relational `DocumentStore` (the
-`[documents]` store). Ingest streams the source in batches to the on-disk stores and builds them
-once, so a multi-GB, multi-million-row corpus ingests and queries at a few tens of MB of RSS —
-`legal_procurement` does exactly this over the full 7.1M-passage polqa corpus.
+only ids, and every hit resolves its text + metadata through the `PairingStore` (the `[pairings]`
+store) that owns it — its rows and its FTS5 search index are co-located in one database, kept in
+sync by triggers inside the same transaction, so they cannot drift apart. Import streams the
+source in batches into the on-disk store and builds it once, so a multi-GB, multi-million-row
+corpus ingests and queries at a few tens of MB of RSS — `legal_procurement` does exactly this at
+the scale of a multi-million-passage polqa corpus. Run state is equally DB-native: `RunStore`
+(`[run]`, WAL SQLite) replaces a JSONL catalogue/journal as the thing a run actually reads and
+writes; `ragkit import`/`export` bridge to and from JSONL at the edges, and `ragkit writeback`
+folds a finished run's verified outputs back into the reference memory as new pairings — the
+accumulating-memory use case, a deliberate, separate post-run step, never automatic.
 
 ## Documentation
 

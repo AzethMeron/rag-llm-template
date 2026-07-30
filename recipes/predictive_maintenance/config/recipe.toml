@@ -29,7 +29,6 @@ description = "one or more short quotes copied verbatim from the manual excerpts
 file = "../data/manuals.jsonl"
 retriever = "lexical"
 index_field = "text"
-display_field = "text"
 
 [[validator]]
 kind = "recipes.predictive_maintenance.plugins.validators:GroundedDecisionValidator"

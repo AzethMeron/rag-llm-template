@@ -58,8 +58,11 @@ interchangeable.
 
 ```bash
 tools/serve_models.sh --models-dir models
-PYTHONPATH=src:. python -m ragkit.cli --config recipes/nl_to_sql/config \
-    -c recipes/nl_to_sql/data/heldout.jsonl -j work/nl_to_sql.jsonl
+PYTHONPATH=src:. python -m ragkit.cli import --catalog recipes/nl_to_sql/data/heldout.jsonl \
+    --run-db work/nl_to_sql.db
+PYTHONPATH=src:. python -m ragkit.cli run --config recipes/nl_to_sql/config \
+    --run-db work/nl_to_sql.db
+PYTHONPATH=src:. python -m ragkit.cli export --run-db work/nl_to_sql.db -j work/nl_to_sql.jsonl
 ```
 
 `storage.toml` already points at `data/database.sqlite` (relative to the config directory), so no

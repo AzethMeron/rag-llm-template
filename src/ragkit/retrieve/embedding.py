@@ -88,6 +88,17 @@ class EmbeddingClient:
         if matrix.ndim != 2:
             raise EmbeddingError(f"expected 2-D embeddings, got shape {matrix.shape}",
                                  url=self._url)
+        # A NaN/Inf slipped through as a numerically valid float -- np.asarray above only rejects
+        # non-numeric/ragged data. Left unchecked, normalising a poisoned row below produces a
+        # silent all-NaN vector (NaN/NaN or Inf/Inf is NaN) that upserts into the vector store
+        # without ever raising -- a search against it then silently returns no/wrong hits instead
+        # of failing loud, in direct violation of "never allow failures to be silent."
+        non_finite_rows = int(np.count_nonzero(~np.isfinite(matrix).all(axis=1)))
+        if non_finite_rows:
+            raise EmbeddingError(
+                f"embedding response contains non-finite values (NaN/Inf) in {non_finite_rows} "
+                f"of {matrix.shape[0]} row(s) -- the endpoint returned a malformed embedding",
+                url=self._url)
         matrix /= np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9
         return matrix
 
@@ -100,7 +111,12 @@ class EmbeddingClient:
                 response = self._client.post(
                     self._url, json={"model": self._model, "input": chunk})
                 response.raise_for_status()
-                return response.json()["data"]
+                data = response.json()["data"]
+                if not isinstance(data, list):
+                    raise EmbeddingError(
+                        f"malformed embedding response: 'data' is {type(data).__name__}, "
+                        f"not a list", url=self._url)
+                return data
             except (KeyError, ValueError) as exc:
                 raise EmbeddingError(f"malformed embedding response: {exc}", url=self._url) from exc
             except httpx.HTTPError as exc:
@@ -126,6 +142,15 @@ class EmbeddingClient:
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+
+
+def dedup_embed(embedder: EmbeddingClient, texts: Sequence[str]) -> dict[str, Sequence[float]]:
+    """Embed the distinct texts in ``texts`` once each, keyed by text. A batch built from a real
+    corpus routinely repeats an index text (a duplicate line, a shared passage); embedding each
+    distinct value once rather than once per occurrence is a pure cost saving with no RAM-map
+    persisted across batches — a rare cross-batch duplicate is simply re-embedded."""
+    unique = list(dict.fromkeys(texts))
+    return dict(zip(unique, embedder.embed(unique), strict=True))
 
 
 def _is_transient(exc: httpx.HTTPError) -> bool:

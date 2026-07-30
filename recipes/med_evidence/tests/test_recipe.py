@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import httpx
@@ -13,8 +13,9 @@ import pytest
 
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retrieved
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.med_evidence import eval as med_eval
 from recipes.med_evidence import reader_eval
@@ -55,12 +56,12 @@ def _answer(**over: object) -> str:
     return json.dumps(base)
 
 
-def _ctx(texts: list[str] | None = None) -> dict:
+def _ctx(texts: list[str] | None = None) -> dict[str, object]:
     return {"retriever": _StubRetriever([ABSTRACT] if texts is None else texts)}
 
 
 class TestGroundedEvidenceRefusals:
-    def _refused(self, output: str, ctx: dict | None = None) -> bool:
+    def _refused(self, output: str, ctx: dict[str, object] | None = None) -> bool:
         vs = _grounded().validate(_rec(), output, ctx if ctx is not None else _ctx())
         return any(v.rule_id == "ungrounded_evidence" and v.blocking for v in vs)
 
@@ -236,7 +237,7 @@ class TestLoadGold:
             med_eval.load_gold(self._write(tmp_path, "\n"))
 
 
-def _factory(decision: dict) -> Callable[[str, float], httpx.Client]:
+def _factory(decision: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         props = body.get("response_format", {}).get("json_schema", {}).get(
@@ -262,21 +263,20 @@ def _staged(tmp_path: Path) -> Path:
     return config
 
 
-def _catalog(tmp_path: Path) -> Path:
-    path = tmp_path / "heldout.jsonl"
-    write_catalog([Record(record_id="q1", source=QUESTION, meta={"pmid": "q1"})], path)
-    return path
+def _catalog(tmp_path: Path) -> SqliteRunStore:
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="q1", source=QUESTION, meta={"pmid": "q1"})])
+    return store
 
 
 class TestEndToEnd:
-    def _run(self, tmp_path: Path, decision: dict) -> Record:
+    def _run(self, tmp_path: Path, decision: dict[str, object]) -> Record:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory(decision))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        return result
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        return result.record
 
     def test_a_grounded_decision_verifies(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, {
@@ -306,9 +306,8 @@ class TestEndToEnd:
             return httpx.Client(transport=httpx.MockTransport(handler))
 
         assembled = assemble(config, client_factory=factory)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
         prompt = seen[0]
         assert "cardiovascular events" in prompt          # the retrieved abstract
         assert "abstract excerpts" in prompt              # the retrieved block heading rendered
@@ -343,12 +342,12 @@ class TestEvalMain:
         gold.write_text(json.dumps({"record_id": "q1", "decision": "yes"}) + "\n", encoding="utf-8")
         return journal, gold
 
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, gold = self._setup(tmp_path, "yes")
         code = med_eval.main(["--journal", str(journal), "--gold", str(gold)])
         assert code == 0 and "accuracy 1.000" in capsys.readouterr().out
 
-    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, _ = self._setup(tmp_path, "yes")
         code = med_eval.main(["--journal", str(journal), "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
@@ -375,7 +374,7 @@ def _embed(text: str) -> list[float]:
     return [1.0, (len(text) % 5) / 5.0, (sum(map(ord, text)) % 7) / 7.0]
 
 
-def _vector_factory(decision: dict) -> Callable[[str, float], httpx.Client]:
+def _vector_factory(decision: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):
@@ -397,14 +396,15 @@ def _vector_factory(decision: dict) -> Callable[[str, float], httpx.Client]:
 class TestAbstractsMemoryOnEachVectorDB:
     """The abstracts memory is retrieved through dense retrieval over EITHER real vector DB
     (lancedb, qdrant); the grounded decision is checked against those retrieved abstracts and
-    VERIFIES. Only a storage.toml driver edit differs. (The default fts5 lexical path is covered by
-    TestEndToEnd.)"""
+    VERIFIES. Only a storage.toml driver edit differs. (The default sqlite pairing-store path is
+    covered by TestEndToEnd.)"""
 
     def test_a_grounded_decision_verifies(self, tmp_path: Path, vector_driver: str) -> None:
         config = _staged(tmp_path)
         (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
         (config / "storage.toml").write_text(
-            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n'
+            f'[pairings]\ndriver = "sqlite"\npath = "../data/abstracts.pairings.db"\n',
             encoding="utf-8")
         (config / "retrieval.toml").write_text(
             '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',
@@ -416,11 +416,10 @@ class TestAbstractsMemoryOnEachVectorDB:
         assembled = assemble(config, client_factory=_vector_factory(decision))
         from ragkit.retrieve.retrievers import DenseRetriever
         assert isinstance(assembled.retriever, DenseRetriever)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
 
 
 class TestReaderEval:
@@ -469,7 +468,7 @@ class TestReaderEval:
         return config
 
     def test_reader_main_runs_against_the_gold_abstract_and_scores(
-            self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+            self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config = self._write_set(tmp_path, gold="yes")
         decision = {"decision": "yes", "rationale": "A significant reduction is reported.",
                     "evidence": ["statin therapy significantly reduced the incidence of major "
@@ -482,8 +481,8 @@ class TestReaderEval:
         out = capsys.readouterr().out
         assert "reader / gold-context" in out and "accuracy 1.000" in out
 
-    def test_reader_main_reports_an_error_for_missing_gold(self, tmp_path: Path,
-                                                           capsys: pytest.CaptureFixture) -> None:
+    def test_reader_main_reports_an_error_for_missing_gold(
+            self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config = self._write_set(tmp_path)
         rc = reader_eval.main(
             ["--config", str(config), "--abstracts", str(tmp_path / "abstracts.jsonl"),

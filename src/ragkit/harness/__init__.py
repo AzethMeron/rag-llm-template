@@ -13,15 +13,7 @@ from .context import ContextAssembler, load_context
 from .memory import OutputMemory
 from .roles import Leniency, Limits, Panel, Persona, load_panel
 from .rules import RuleSet
-from .runner import (
-    Progress,
-    RunnerError,
-    catalog_order,
-    completed_ids,
-    group_duplicates,
-    pending_records,
-    run_batch,
-)
+from .runner import Progress, RunnerError, group_duplicates, run_batch
 from .schemas import OUTPUT_SCHEMAS, FormField, FormSchema, JsonFieldSchema
 from .validators import VALIDATORS, ValidatorPipeline, blocking, check_mechanical
 
@@ -39,6 +31,5 @@ __all__ = [
     # memory
     "OutputMemory",
     # runner
-    "run_batch", "Progress", "RunnerError", "pending_records", "completed_ids",
-    "group_duplicates", "catalog_order",
+    "run_batch", "Progress", "RunnerError", "group_duplicates",
 ]

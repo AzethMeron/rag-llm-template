@@ -27,6 +27,7 @@ from ragkit.core.registry import Registry
 from ragkit.core.rules import Severity, Violation
 from ragkit.core.width import display_columns
 
+from .capture import Capture
 from .rules import RuleSet
 
 # Genuinely unrenderable control characters. Tab (09), line feed (0a) and carriage return (0d) are
@@ -131,7 +132,8 @@ class ValidatorPipeline:
     to appear); the pluggables are task-specific components. ``lexicon_limit`` caps how many
     established terms a single output is required to carry, so a long input cannot demand an
     unbounded set. The shared context handed to each pluggable carries the ruleset, the required
-    terms, and the record's column budget, so a validator need not recompute them.
+    terms, the record's column budget, and (when the caller passes one) the run's ``capture`` sink,
+    so a validator need not recompute them.
     """
 
     def __init__(self, ruleset: RuleSet, lexicon: list[Entry] | None = None, *,
@@ -146,15 +148,16 @@ class ValidatorPipeline:
         # into every validator's context; a validator ignores what it does not use.
         self.shared = dict(shared or {})
 
-    def check(self, record: Record, output: str) -> list[Violation]:
+    def check(self, record: Record, output: str, *,
+             capture: Capture | None = None) -> list[Violation]:
         required = tuple(entry.rendering for entry in
                          relevant_entries(record.source, self.lexicon, limit=self.lexicon_limit))
         raw_budget = record.meta.get("max_columns")
         max_columns = raw_budget if isinstance(raw_budget, int) and raw_budget > 0 else None
         violations = check_mechanical(record, output, self.ruleset,
                                       required_terms=required, max_columns=max_columns)
-        context = {**self.shared, "ruleset": self.ruleset, "required_terms": required,
-                   "max_columns": max_columns}
+        context = {**self.shared, "capture": capture, "ruleset": self.ruleset,
+                   "required_terms": required, "max_columns": max_columns}
         for validator in self.extra:
             violations.extend(validator.validate(record, output, context))
         return violations

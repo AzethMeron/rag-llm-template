@@ -53,29 +53,30 @@ Two real sources:
 
 Tiny in-test fixtures back the recipe's own tests, so they need no download or network; those tests
 also retrieve the abstracts memory over **both real vector indexes** (LanceDB and Qdrant), swapped by
-a one-line `storage.toml` driver edit, alongside the default `fts5` lexical path.
+a one-line `storage.toml` driver edit, alongside the default `sqlite` pairing-store path.
 
 ## Storage (on-disk, low-RAM)
 
-Because the corpus scales to the whole registry, `config/storage.toml` keeps both the search index
-and the chunk rows **on disk** next to the fetched data, never in RAM:
+Because the corpus scales to the whole registry, `config/storage.toml` keeps the pairing store — the
+abstract rows and the FTS5 search index that resolves a hit's text + metadata, co-located in one
+database so they can never drift apart — **on disk** next to the fetched data, never in RAM:
 
-- `[lexical]` (`fts5`, `path = ../data/abstracts.fts5`) — the BM25 search index; returns ids only.
-- `[documents]` (`sqlite`, `path = ../data/abstracts.docs.db`) — the relational chunk-row store
-  **every retrieval path resolves a hit through**, turning an id back into the abstract text +
-  metadata.
+- `[pairings]` (`sqlite`, `path = ../data/abstracts.pairings.db`).
 
-The corpus is streamed in once and the persisted stores are **reused on later runs** (build-once).
-Delete `data/abstracts.fts5` and `data/abstracts.docs.db` to force a rebuild after re-fetching a
-different corpus size.
+`[reference].file` (`data/abstracts.jsonl`) is streamed into it once and the persisted store is
+**reused on later runs** (build-once, resumable). Delete `data/abstracts.pairings.db` to force a
+re-import after re-fetching a different corpus size.
 
 ## Running
 
 ```bash
 tools/serve_models.sh --config recipes/med_evidence/config/models.toml \
     --endpoint local --models-dir models
-PYTHONPATH=src:. python -m ragkit.cli --config recipes/med_evidence/config \
-    -c recipes/med_evidence/data/heldout.jsonl -j work/med.jsonl
+PYTHONPATH=src:. python -m ragkit.cli import --catalog recipes/med_evidence/data/heldout.jsonl \
+    --run-db work/med_evidence.db
+PYTHONPATH=src:. python -m ragkit.cli run --config recipes/med_evidence/config \
+    --run-db work/med_evidence.db
+PYTHONPATH=src:. python -m ragkit.cli export --run-db work/med_evidence.db -j work/med.jsonl
 ```
 
 ## Evaluation
@@ -129,3 +130,19 @@ correct-but-spliced records. These remain honest baselines, not tuned results �
 (retrieve the right abstract among ~600k distractors, *then* decide) is materially harder than
 classic PubMedQA where the abstract is handed to the model; further gains would come from
 dense/hybrid retrieval and a stronger decoder.
+
+### Enabling dense retrieval
+
+Like `legal_procurement`, dense is **opt-in, not the default** (a one-time GPU cost to embed the
+corpus, kept out so `eval.py` runs with no GPU) — `models.toml` already has `[model.embedder]`
+and `storage.toml` already has `[vector]` (`driver = "lancedb"`, `dim` = the embedder's output
+dim). The only step left to switch the recipe onto it is a `retrieval.toml` with `[retrieval]
+kind = "dense"` / `[retrieval.dense] model = "embedder"` (or `kind = "hybrid"` with a reranker).
+Embedding the ~600k-abstract corpus into `data/abstracts.lance`:
+
+```bash
+tools/embed_reference.sh --config recipes/med_evidence/config \
+    --embedding-url http://127.0.0.1:8081/v1 --embedding-model embed
+```
+
+Resumable/idempotent, safe to interrupt and re-run.

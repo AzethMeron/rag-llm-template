@@ -27,9 +27,14 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .errors import RagkitError
+
+if TYPE_CHECKING:
+    # Deferred: ports.py imports Record from this module, so a module-level import here would be
+    # circular. Only needed for the type hint below, never evaluated at runtime.
+    from .ports import RunStore
 
 
 class Status(str, Enum):
@@ -321,3 +326,19 @@ def merge_journal(catalog: Path, journal: Path, output: Path) -> tuple[int, int]
             f"journal holds {len(orphans)} result(s) with no matching record in the catalogue "
             f"(e.g. {sample}); merging would silently discard them", path=journal)
     return write_catalog(merged, output), updated
+
+
+def import_jsonl(store: RunStore, path: Path) -> int:
+    """Import a JSON Lines catalogue into a :class:`~ragkit.core.ports.RunStore`'s record
+    catalogue — the bridge from a fetch script's unchanged JSONL output to a DB-native run.
+    Idempotent on a ``record_id`` already present (see ``RunStore.add_records``), so re-running an
+    import is safe. Returns the number of records actually added."""
+    return store.add_records(read_catalog(path))
+
+
+def export_jsonl(store: RunStore, path: Path) -> int:
+    """Export a :class:`~ragkit.core.ports.RunStore`'s results as a ``journal.jsonl``-compatible
+    file, atomically (reuses :func:`write_catalog`'s temp-then-rename write) — so a script written
+    against the legacy journal format (:func:`read_journal`, a recipe's ``eval.py``) keeps working
+    unchanged over a DB-native run. Returns the number of results written."""
+    return write_catalog(store.latest_records(), path)

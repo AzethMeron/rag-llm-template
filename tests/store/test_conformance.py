@@ -12,15 +12,27 @@ dependency and are not a production default.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from ragkit.core.ports import DocumentStore, LexicalIndex, SqlStore, VectorIndex
-from ragkit.store.documents.sqlite import SqliteDocuments
-from ragkit.store.lexical.fts5 import Fts5Index
+from ragkit.core.lexicon import Entry
+from ragkit.core.ports import (
+    LexiconStore,
+    Pairing,
+    PairingStore,
+    RunResult,
+    RunStore,
+    SqlStore,
+    VectorIndex,
+)
+from ragkit.core.records import Record, Status
+from ragkit.store.lexicon.sqlite import SqliteLexicon
+from ragkit.store.pairings.duckdb import DuckDBPairings
+from ragkit.store.pairings.sqlite import SqlitePairings
+from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore, SqlStoreError
 from ragkit.store.vector.lancedb import LanceVectorIndex
@@ -62,43 +74,117 @@ class InMemoryVectorIndex:
         return wanted - set(self._vectors)
 
 
-class InMemoryLexicalIndex:
-    """A minimal, dependency-free LexicalIndex — the second implementation of that port."""
+class InMemoryPairings:
+    """A minimal, dependency-free PairingStore — the second implementation of that port, combining
+    a simple word-overlap search with a dict-backed row store. ``add`` mirrors the shipped drivers'
+    idempotent-on-duplicate contract."""
 
     def __init__(self) -> None:
-        self._docs: dict[str, set[str]] = {}
+        self._rows: dict[str, Pairing] = {}
 
-    def index(self, chunk_id: str, text: str) -> None:
-        self._docs[chunk_id] = set(text.lower().split())
+    def add(self, pairings: Iterable[Pairing]) -> int:
+        added = 0
+        for pairing in pairings:
+            if pairing.chunk_id not in self._rows:
+                self._rows[pairing.chunk_id] = pairing
+                added += 1
+        return added
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
         terms = set(query.lower().split())
-        if not terms:
+        if not terms or k <= 0:
             return []
-        scored = [(id_, float(len(terms & words))) for id_, words in self._docs.items()]
-        hits = [(id_, score) for id_, score in scored if score > 0]
-        hits.sort(key=lambda pair: pair[1], reverse=True)
-        return hits[:k]
-
-    def delete(self, chunk_id: str) -> None:
-        self._docs.pop(chunk_id, None)
-
-
-class InMemoryDocuments:
-    """A minimal, dependency-free DocumentStore — the second implementation of that port."""
-
-    def __init__(self) -> None:
-        self._rows: dict[str, tuple[str, Mapping[str, Any]]] = {}
-
-    def add_documents(self, rows: Iterable[tuple[str, str, Mapping[str, Any]]]) -> None:
-        for chunk_id, display, meta in rows:
-            self._rows[chunk_id] = (display, dict(meta))
+        scored = []
+        for chunk_id, pairing in self._rows.items():
+            words = set(f"{pairing.source} {pairing.context} {pairing.target}".lower().split())
+            overlap = len(terms & words)
+            if overlap:
+                scored.append((chunk_id, float(overlap)))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:k]
 
     def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None:
+        pairing = self._rows.get(chunk_id)
+        if pairing is None:
+            return None
+        display = f"{pairing.source} -> {pairing.target}" if pairing.target else pairing.source
+        return display, dict(pairing.meta)
+
+    def get(self, chunk_id: str) -> Pairing | None:
         return self._rows.get(chunk_id)
+
+    def all_ids(self) -> Iterator[str]:
+        return iter(self._rows)
 
     def count(self) -> int:
         return len(self._rows)
+
+
+class InMemoryRunStore:
+    """A minimal, dependency-free RunStore — the second implementation of that port. ``_results``
+    is append-only in call order, exactly like the SQL driver's ``seq``, so ordering derives from
+    it the same way: :meth:`results` returns the latest result per record, ordered by the *index*
+    (≈ ``seq``) of that latest write."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, Record] = {}
+        self._results: list[RunResult] = []
+
+    def add_records(self, records: Iterable[Record]) -> int:
+        added = 0
+        for record in records:
+            if record.record_id not in self._records:
+                self._records[record.record_id] = record
+                added += 1
+        return added
+
+    def append_result(self, result: RunResult) -> None:
+        record_id = result.record.record_id
+        if record_id not in self._records:
+            raise ValueError(f"no record {record_id!r} in the catalogue")
+        self._results.append(result)
+
+    def completed_ids(self) -> set[str]:
+        return {result.record.record_id for result in self._results}
+
+    def pending(self) -> Iterator[Record]:
+        done = self.completed_ids()
+        waiting = [r for r in self._records.values()
+                  if r.status is Status.PENDING and r.record_id not in done]
+        waiting.sort(key=lambda r: (r.rel_path, r.line_no))
+        return iter(waiting)
+
+    def results(self) -> Iterator[RunResult]:
+        latest_index: dict[str, int] = {}
+        for index, result in enumerate(self._results):
+            latest_index[result.record.record_id] = index
+        return (self._results[i] for i in sorted(latest_index.values()))
+
+    def latest_records(self) -> Iterator[Record]:
+        return (result.record for result in self.results())
+
+    def count_records(self) -> int:
+        return len(self._records)
+
+
+class InMemoryLexicon:
+    """A minimal, dependency-free LexiconStore -- the second implementation of that port. ``add``
+    upserts, keyed on ``(term, category)``, matching the shipped driver's update semantics."""
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, str], Entry] = {}
+
+    def entries(self) -> list[Entry]:
+        return list(self._rows.values())
+
+    def add(self, entries: Iterable[Entry]) -> int:
+        added = 0
+        for entry in entries:
+            key = (entry.term, entry.category)
+            if key not in self._rows:
+                added += 1
+            self._rows[key] = entry
+        return added
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -115,14 +201,20 @@ VECTOR_FACTORIES: list[Callable[[Path], VectorIndex]] = [
     lambda tmp: QdrantVectorIndex(str(tmp / "v.qdrant"), dim=3),  # a second REAL vector DB
     lambda tmp: InMemoryVectorIndex(),
 ]
-LEXICAL_FACTORIES: list[Callable[[Path], LexicalIndex]] = [
-    lambda tmp: Fts5Index(),
-    lambda tmp: InMemoryLexicalIndex(),
+PAIRING_FACTORIES: list[Callable[[Path], PairingStore]] = [
+    lambda tmp: SqlitePairings(str(tmp / "p.sqlite")),
+    lambda tmp: DuckDBPairings(str(tmp / "p.duckdb")),  # a second REAL co-located store
+    lambda tmp: InMemoryPairings(),
 ]
-DOCUMENT_FACTORIES: list[Callable[[Path], DocumentStore]] = [
-    lambda tmp: SqliteDocuments(str(tmp / "rows.db")),
-    lambda tmp: SqliteDocuments(),  # in-memory SQLite
-    lambda tmp: InMemoryDocuments(),
+RUN_FACTORIES: list[Callable[[Path], RunStore]] = [
+    lambda tmp: SqliteRunStore(str(tmp / "run.db")),
+    lambda tmp: SqliteRunStore(),  # in-memory SQLite
+    lambda tmp: InMemoryRunStore(),
+]
+LEXICON_FACTORIES: list[Callable[[Path], LexiconStore]] = [
+    lambda tmp: SqliteLexicon(str(tmp / "lex.db")),
+    lambda tmp: SqliteLexicon(),  # in-memory SQLite
+    lambda tmp: InMemoryLexicon(),
 ]
 
 
@@ -152,41 +244,45 @@ class TestVectorIndexConformance:
         assert index.reconcile(["a", "new"]) == {"new"}  # b dropped, new reported missing
 
 
-@pytest.mark.parametrize("factory", LEXICAL_FACTORIES)
-class TestLexicalIndexConformance:
-    def test_lifecycle(self, factory: Callable[[Path], LexicalIndex], tmp_path: Path) -> None:
-        index = factory(tmp_path)
-        index.index("d1", "the quick brown fox")
-        index.index("d2", "a lazy dog")
-
-        results = index.search("quick fox", k=5)
-        assert [chunk_id for chunk_id, _ in results] == ["d1"]  # only d1 matches
-        assert all(score >= 0 for _id, score in results)  # higher-is-better
-
-        index.delete("d1")
-        assert index.search("quick", k=5) == []
-
-    def test_empty_query(self, factory: Callable[[Path], LexicalIndex], tmp_path: Path) -> None:
-        assert factory(tmp_path).search("", k=5) == []
-
-
-@pytest.mark.parametrize("factory", DOCUMENT_FACTORIES)
-class TestDocumentStoreConformance:
-    def test_lifecycle(self, factory: Callable[[Path], DocumentStore], tmp_path: Path) -> None:
+@pytest.mark.parametrize("factory", PAIRING_FACTORIES)
+class TestPairingStoreConformance:
+    def test_lifecycle(self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
         store = factory(tmp_path)
         assert store.count() == 0
-        store.add_documents([("d1", "cat -> kot", {"n": 1}), ("d2", "dog -> pies", {})])
+        added = store.add([
+            Pairing(chunk_id="p1", source="the quick brown fox", target="a fast animal"),
+            Pairing(chunk_id="p2", source="a slow green turtle", target="not fast at all"),
+        ])
+        assert added == 2
         assert store.count() == 2
-        assert store.document("d1") == ("cat -> kot", {"n": 1})
-        assert store.document("d2") == ("dog -> pies", {})
+        assert store.document("p1") == ("the quick brown fox -> a fast animal", {})
         assert store.document("missing") is None
 
-    def test_reinsert_replaces(self, factory: Callable[[Path], DocumentStore],
-                               tmp_path: Path) -> None:
+        pairing = store.get("p1")
+        assert pairing is not None and pairing.target == "a fast animal"
+        assert store.get("missing") is None
+        assert set(store.all_ids()) == {"p1", "p2"}
+
+    def test_search_ranks_higher_is_better(self, factory: Callable[[Path], PairingStore],
+                                           tmp_path: Path) -> None:
         store = factory(tmp_path)
-        store.add_documents([("d1", "first", {})])
-        store.add_documents([("d1", "second", {"v": 2})])
-        assert store.count() == 1 and store.document("d1") == ("second", {"v": 2})
+        store.add([Pairing(chunk_id="p1", source="the quick brown fox"),
+                  Pairing(chunk_id="p2", source="a slow green turtle")])
+        results = store.search("quick fox", k=5)
+        assert [chunk_id for chunk_id, _score in results] == ["p1"]
+        assert all(score >= 0 for _id, score in results)
+
+    def test_empty_query(self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
+        assert factory(tmp_path).search("", k=5) == []
+
+    def test_add_is_idempotent_on_a_duplicate_chunk_id(
+            self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add([Pairing(chunk_id="p1", source="first")])
+        assert store.add([Pairing(chunk_id="p1", source="second")]) == 0
+        assert store.count() == 1
+        pairing = store.get("p1")
+        assert pairing is not None and pairing.source == "first"
 
 
 # Two real SqlStore engines behind one port: swapping SQLite -> DuckDB is a config edit only.
@@ -222,3 +318,80 @@ class TestSqlStoreConformance:
         with pytest.raises(SqlStoreError, match="query failed"):
             store.query("SELECT * FROM no_such_table")
         store.close()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("factory", RUN_FACTORIES)
+class TestRunStoreConformance:
+    def test_lifecycle(self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        assert store.count_records() == 0
+        added = store.add_records([Record(record_id="1", source="a"),
+                                   Record(record_id="2", source="b")])
+        assert added == 2
+        assert store.count_records() == 2
+        assert {r.record_id for r in store.pending()} == {"1", "2"}
+
+        applied = Record(record_id="1", source="a", status=Status.VERIFIED, output="A")
+        store.append_result(RunResult(record=applied))
+        assert store.completed_ids() == {"1"}
+        assert {r.record_id for r in store.pending()} == {"2"}
+        [result] = list(store.results())
+        assert result.record.record_id == "1" and result.record.output == "A"
+
+    def test_add_records_is_idempotent_on_a_duplicate_id(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([Record(record_id="1", source="a")])
+        assert store.add_records([Record(record_id="1", source="a")]) == 0
+        assert store.count_records() == 1
+
+    def test_results_returns_the_latest_by_write_order(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([Record(record_id="1", source="a")])
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.PRODUCED, output="first")))
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.VERIFIED, output="second")))
+        [result] = list(store.results())
+        assert result.record.output == "second"
+
+    def test_latest_records_matches_results_but_only_the_record(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([Record(record_id="1", source="a")])
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.PRODUCED, output="first")))
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.VERIFIED, output="second")))
+        [record] = list(store.latest_records())
+        assert record.output == "second" and record.status is Status.VERIFIED
+        assert [r.record for r in store.results()] == list(store.latest_records())
+
+    def test_pending_excludes_skipped_and_completed_records(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([
+            Record(record_id="1", source="a"),
+            Record(record_id="2", source="   ", status=Status.SKIPPED),
+        ])
+        assert {r.record_id for r in store.pending()} == {"1"}
+
+
+@pytest.mark.parametrize("factory", LEXICON_FACTORIES)
+class TestLexiconStoreConformance:
+    def test_lifecycle(self, factory: Callable[[Path], LexiconStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        assert store.entries() == []
+        added = store.add([Entry(term="cat", rendering="kot"),
+                           Entry(term="dog", rendering="pies")])
+        assert added == 2
+        assert {e.term for e in store.entries()} == {"cat", "dog"}
+
+    def test_add_upserts_on_a_duplicate_key(
+            self, factory: Callable[[Path], LexiconStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add([Entry(term="cat", rendering="kot")])
+        assert store.add([Entry(term="cat", rendering="KOTEK")]) == 0
+        [entry] = store.entries()
+        assert entry.rendering == "KOTEK"

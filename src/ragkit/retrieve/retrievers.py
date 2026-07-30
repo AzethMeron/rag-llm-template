@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ragkit.core.ports import LexicalIndex, Retrieved, VectorIndex
+from ragkit.core.ports import Retrieved, SearchIndex, VectorIndex
 
 from .embedding import EmbeddingClient
 
@@ -40,10 +40,12 @@ def _collect(scored: list[tuple[str, float]], resolve: Resolver, meta: MetaResol
 
 
 class LexicalRetriever:
-    """A :class:`~ragkit.core.ports.Retriever` over a :class:`~ragkit.core.ports.LexicalIndex`
-    (BM25). Strong on names, ids, and recurring terminology."""
+    """A :class:`~ragkit.core.ports.Retriever` over a :class:`~ragkit.core.ports.SearchIndex`
+    (BM25). Strong on names, ids, and recurring terminology. Depends only on the narrow
+    ``SearchIndex`` read side (never indexing/deleting through a retriever), which is exactly what
+    :class:`~ragkit.core.ports.PairingStore` exposes."""
 
-    def __init__(self, index: LexicalIndex, resolve: Resolver, *,
+    def __init__(self, index: SearchIndex, resolve: Resolver, *,
                  meta: MetaResolver = _no_meta, default_k: int = 10) -> None:
         self._index = index
         self._resolve = resolve

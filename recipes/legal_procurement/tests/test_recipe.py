@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import httpx
@@ -13,8 +13,9 @@ import pytest
 
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retrieved
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.legal_procurement import eval as lp_eval
 from recipes.legal_procurement.plugins.validators import CitationGroundingValidator
@@ -51,12 +52,12 @@ def _answer(**over: object) -> str:
     return json.dumps(base)
 
 
-def _ctx(ids: list[str] | None = None) -> dict:
+def _ctx(ids: list[str] | None = None) -> dict[str, object]:
     return {"retriever": _StubRetriever(["ref-1", "ref-2"] if ids is None else ids)}
 
 
 class TestCitationRefusals:
-    def _refused(self, output: str, ctx: dict | None = None) -> bool:
+    def _refused(self, output: str, ctx: dict[str, object] | None = None) -> bool:
         vs = _validator().validate(_rec(), output, ctx if ctx is not None else _ctx())
         return any(v.rule_id == "ungrounded_citation" and v.blocking for v in vs)
 
@@ -248,7 +249,7 @@ def _eval_data(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 class TestEvalMain:
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, gold = _eval_data(tmp_path)
         code = lp_eval.main(["--config", str(config), "--heldout", str(heldout),
                              "--gold", str(gold)])
@@ -256,20 +257,20 @@ class TestEvalMain:
         assert code == 0
         assert "Recall@20" in out and "MRR@10" in out and "NDCG@10" in out and "queries 2" in out
 
-    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, _ = _eval_data(tmp_path)
         code = lp_eval.main(["--config", str(config), "--heldout", str(heldout),
                              "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
 
-    def test_bad_k_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_bad_k_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, gold = _eval_data(tmp_path)
         code = lp_eval.main(["--config", str(config), "--heldout", str(heldout),
                              "--gold", str(gold), "--k", "0"])
         assert code == 1 and "error:" in capsys.readouterr().err
 
     def test_journal_reports_grounding_rate(self, tmp_path: Path,
-                                            capsys: pytest.CaptureFixture) -> None:
+                                            capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, gold = _eval_data(tmp_path)
         journal = tmp_path / "j.jsonl"
         good = Record(record_id="q1", source="W jakim trybie zamawiający udziela zamówienia?",
@@ -286,7 +287,7 @@ class TestEvalMain:
 
 
 # --- end to end: answer from the legal-passage memory over each retriever ------------------------
-def _factory(answer: dict) -> Callable[[str, float], httpx.Client]:
+def _factory(answer: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         props = body.get("response_format", {}).get("json_schema", {}).get(
@@ -314,21 +315,20 @@ def _staged(tmp_path: Path) -> Path:
     return config
 
 
-def _catalog(tmp_path: Path) -> Path:
-    path = tmp_path / "heldout.jsonl"
-    write_catalog([Record(record_id="q1", source=QUESTION, meta={})], path)
-    return path
+def _catalog(tmp_path: Path) -> SqliteRunStore:
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="q1", source=QUESTION, meta={})])
+    return store
 
 
 class TestEndToEnd:
-    def _run(self, tmp_path: Path, answer: dict) -> Record:
+    def _run(self, tmp_path: Path, answer: dict[str, object]) -> Record:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory(answer))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        return result
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        return result.record
 
     def test_a_grounded_answer_verifies(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, {
@@ -369,9 +369,8 @@ class TestEndToEnd:
             return httpx.Client(transport=httpx.MockTransport(handler))
 
         assembled = assemble(config, client_factory=factory)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
         assert "przetargu nieograniczonego" in seen[0]  # the retrieved legal passage
         assert "Relevant legal passages:" in seen[0]    # the retrieved block heading
 
@@ -396,7 +395,7 @@ def _embed(text: str) -> list[float]:
     return [1.0, (len(text) % 5) / 5.0, (sum(map(ord, text)) % 7) / 7.0]
 
 
-def _vector_factory(answer: dict) -> Callable[[str, float], httpx.Client]:
+def _vector_factory(answer: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):
@@ -418,13 +417,14 @@ def _vector_factory(answer: dict) -> Callable[[str, float], httpx.Client]:
 class TestPassageMemoryOnEachVectorDB:
     """The legal-passage memory is retrieved through dense retrieval over EITHER real vector DB
     (lancedb, qdrant); a grounded answer citing a retrieved passage VERIFIES. Only a storage.toml
-    driver edit differs. (The default fts5 lexical path is covered by TestEndToEnd.)"""
+    driver edit differs. (The default sqlite pairing-store path is covered by TestEndToEnd.)"""
 
     def test_a_grounded_answer_verifies(self, tmp_path: Path, vector_driver: str) -> None:
         config = _staged(tmp_path)
         (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
         (config / "storage.toml").write_text(
-            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n'
+            f'[pairings]\ndriver = "sqlite"\npath = "../data/passages.pairings.db"\n',
             encoding="utf-8")
         (config / "retrieval.toml").write_text(
             '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',
@@ -434,8 +434,7 @@ class TestPassageMemoryOnEachVectorDB:
         assembled = assemble(config, client_factory=_vector_factory(answer))
         from ragkit.retrieve.retrievers import DenseRetriever
         assert isinstance(assembled.retriever, DenseRetriever)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
