@@ -87,6 +87,58 @@ class TestErrors:
         with pytest.raises(ValueError, match="batch_size"):
             EmbeddingClient(base_url="http://x", batch_size=0)
 
+    def test_bad_retry_config(self) -> None:
+        with pytest.raises(ValueError, match="max_retries"):
+            EmbeddingClient(base_url="http://x", max_retries=-1)
+        with pytest.raises(ValueError, match="retry_backoff_seconds"):
+            EmbeddingClient(base_url="http://x", retry_backoff_seconds=-1)
+
+
+class TestRetries:
+    """A transient failure during a long ingest must be retried, not fatal (regression: a single
+    embedding timeout killed a multi-hour dense build)."""
+
+    def _flaky(self, fail_times: int, exc: type[httpx.HTTPError] | int):
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] <= fail_times:
+                if isinstance(exc, int):
+                    return httpx.Response(exc, text="transient")
+                raise exc("transient", request=request)
+            inputs = json.loads(request.content)["input"]
+            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
+        return handler, calls
+
+    def test_retries_a_timeout_then_succeeds(self) -> None:
+        handler, calls = self._flaky(2, httpx.ReadTimeout)
+        out = embedding_client(handler, max_retries=3).embed(["a"])
+        assert len(out) == 1 and calls["n"] == 3  # 2 timeouts + 1 success
+
+    def test_retries_a_503_then_succeeds(self) -> None:
+        handler, calls = self._flaky(1, 503)
+        out = embedding_client(handler, max_retries=3).embed(["a"])
+        assert len(out) == 1 and calls["n"] == 2
+
+    def test_gives_up_after_the_retry_budget(self) -> None:
+        handler, calls = self._flaky(99, httpx.ConnectError)
+        with pytest.raises(EmbeddingError, match="after 3 attempt"):
+            embedding_client(handler, max_retries=2).embed(["a"])
+        assert calls["n"] == 3  # initial + 2 retries
+
+    def test_does_not_retry_a_client_error(self) -> None:
+        handler, calls = self._flaky(99, 400)  # 4xx is deterministic
+        with pytest.raises(EmbeddingError, match="after 1 attempt"):
+            embedding_client(handler, max_retries=3).embed(["a"])
+        assert calls["n"] == 1  # not retried
+
+    def test_does_not_retry_a_malformed_reply(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"nope": 1})  # deterministic
+        with pytest.raises(EmbeddingError, match="malformed"):
+            embedding_client(handler, max_retries=3).embed(["x"])
+
 
 class TestClean:
     def test_strips_placeholders(self) -> None:

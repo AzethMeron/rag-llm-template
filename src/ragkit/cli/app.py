@@ -276,7 +276,10 @@ def _embedding_client(settings: RetrievalSettings, pool: ModelPool,
                        f"model, not an embedding model")
     endpoint = pool.endpoint(spec.endpoint)
     client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
-    return EmbeddingClient(base_url=endpoint.base_url, model=spec.model_id, client=client)
+    return EmbeddingClient(base_url=endpoint.base_url, model=spec.model_id,
+                           timeout_seconds=endpoint.timeout_seconds,
+                           max_retries=endpoint.max_retries,
+                           retry_backoff_seconds=endpoint.retry_backoff_seconds, client=client)
 
 
 def _rerank_client(settings: RetrievalSettings, pool: ModelPool,

@@ -9,6 +9,7 @@ built. Behind an injectable ``httpx.Client`` for testing with an in-memory trans
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -17,6 +18,9 @@ import httpx
 from ragkit.core.errors import RagkitError
 
 _PLACEHOLDER = re.compile(r"\[\[\d+\]\]")
+# Transient failures worth retrying: a timed-out or dropped connection, or a server-side/rate-limit
+# status. A 4xx (bad request) or a malformed reply is deterministic and is raised at once.
+_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 
 DEFAULT_EMBEDDING_MIN_SCORE = 0.55
 """A sensible starting cosine floor. On a different scale from the lexical floor: embedding
@@ -43,13 +47,20 @@ class EmbeddingClient:
     (so callers that do not want numpy need not import it)."""
 
     def __init__(self, *, base_url: str, model: str = "local", batch_size: int = 64,
-                 timeout_seconds: float = 120.0, client: httpx.Client | None = None) -> None:
+                 timeout_seconds: float = 120.0, max_retries: int = 4,
+                 retry_backoff_seconds: float = 1.0, client: httpx.Client | None = None) -> None:
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        if max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+        if retry_backoff_seconds < 0:
+            raise ValueError(f"retry_backoff_seconds must be >= 0, got {retry_backoff_seconds}")
         self._np = _require_numpy()
         self._url = base_url.rstrip("/") + "/embeddings"
         self._model = model
         self._batch = batch_size
+        self._max_retries = max_retries
+        self._backoff = retry_backoff_seconds
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
 
@@ -80,15 +91,28 @@ class EmbeddingClient:
         matrix /= np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9
         return matrix
 
+    def _post_with_retry(self, chunk: list[str]) -> list[Any]:
+        """POST one batch, retrying a transient failure (timeout, dropped connection, 5xx/429) with
+        exponential backoff so a long ingest survives a passing stall instead of dying on it. A
+        deterministic failure (4xx, malformed reply) is raised at once, never retried."""
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._client.post(
+                    self._url, json={"model": self._model, "input": chunk})
+                response.raise_for_status()
+                return response.json()["data"]
+            except (KeyError, ValueError) as exc:
+                raise EmbeddingError(f"malformed embedding response: {exc}", url=self._url) from exc
+            except httpx.HTTPError as exc:
+                if attempt >= self._max_retries or not _is_transient(exc):
+                    raise EmbeddingError(
+                        f"embedding request failed after {attempt + 1} attempt(s): {exc}",
+                        url=self._url) from exc
+                time.sleep(self._backoff * 2 ** attempt)
+        raise EmbeddingError("embedding retries exhausted", url=self._url)  # pragma: no cover
+
     def _request(self, chunk: list[str]) -> list[list[float]]:
-        try:
-            response = self._client.post(self._url, json={"model": self._model, "input": chunk})
-            response.raise_for_status()
-            data = response.json()["data"]
-        except httpx.HTTPError as exc:
-            raise EmbeddingError(f"embedding request failed: {exc}", url=self._url) from exc
-        except (KeyError, ValueError) as exc:
-            raise EmbeddingError(f"malformed embedding response: {exc}", url=self._url) from exc
+        data = self._post_with_retry(chunk)
         if len(data) != len(chunk):
             raise EmbeddingError(
                 f"endpoint returned {len(data)} embeddings for {len(chunk)} inputs", url=self._url)
@@ -102,6 +126,12 @@ class EmbeddingClient:
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+
+
+def _is_transient(exc: httpx.HTTPError) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _TRANSIENT_STATUS
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
 
 
 def _require_numpy() -> Any:
