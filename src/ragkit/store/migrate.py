@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from ragkit.core.ports import LexiconStore, Pairing, PairingStore, RunResult, RunStore
@@ -44,13 +44,18 @@ def _iter_legacy_documents(path: Path) -> Iterator[tuple[str, str, dict]]:
 
 
 def migrate_documents_to_pairings(documents_path: Path, pairing_store: PairingStore, *,
-                                  batch_size: int = 5000) -> int:
+                                  batch_size: int = 5000,
+                                  on_batch: Callable[[int], None] | None = None) -> int:
     """Fold a legacy ``DocumentStore``'s rows into ``pairing_store`` as source-only pairings (no
     target/context — a lexical reference entry never had either). Resumable exactly like
     :func:`~ragkit.ingest.reference.import_reference`: the floor is ``pairing_store.count()``, and
     since both the source table and the destination preserve insertion order (``ref-<line>``
     numbering), skipping the first ``floor`` rows continues an interrupted migration rather than
     restarting it. Returns the number of pairings actually added.
+
+    ``on_batch``, when given, is called after each committed batch with the destination's new total
+    row count (``pairing_store.count()``, cheaply tracked rather than re-queried) — a multi-million
+    row migration run unsupervised needs some sign of life beyond "still running".
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
@@ -64,8 +69,12 @@ def migrate_documents_to_pairings(documents_path: Path, pairing_store: PairingSt
         if len(batch) >= batch_size:
             total += pairing_store.add(batch)
             batch = []
+            if on_batch is not None:
+                on_batch(floor + total)
     if batch:
         total += pairing_store.add(batch)
+        if on_batch is not None:
+            on_batch(floor + total)
     return total
 
 

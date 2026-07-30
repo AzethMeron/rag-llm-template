@@ -20,8 +20,9 @@ from ragkit.store.run.sqlite import SqliteRunStore
 
 
 class TestMigrateDocumentsToPairings:
-    def _old_store(self, tmp_path: Path, rows: list[tuple[str, str, dict]]) -> Path:
-        path = tmp_path / "old.docs.db"
+    def _old_store(self, tmp_path: Path, rows: list[tuple[str, str, dict]], *,
+                   name: str = "old.docs.db") -> Path:
+        path = tmp_path / name
         docs = SqliteDocuments(str(path))
         docs.add_documents(rows)
         docs.close()
@@ -71,6 +72,25 @@ class TestMigrateDocumentsToPairings:
         pairings = SqlitePairings()
         with pytest.raises(ValueError, match="batch_size"):
             migrate_documents_to_pairings(old, pairings, batch_size=0)
+
+    def test_on_batch_reports_the_destinations_running_total(self, tmp_path: Path) -> None:
+        old = self._old_store(tmp_path, [(f"ref-{i}", f"passage {i}", {}) for i in range(1, 6)])
+        pairings = SqlitePairings(str(tmp_path / "new.pairings.db"))
+        seen: list[int] = []
+        migrate_documents_to_pairings(old, pairings, batch_size=2, on_batch=seen.append)
+        # Two full batches of 2, then one partial batch of 1 -- on_batch fires for each, including
+        # the trailing partial one, and reports the store's running total, not a per-batch delta.
+        assert seen == [2, 4, 5]
+
+    def test_on_batch_reflects_a_nonzero_resume_floor(self, tmp_path: Path) -> None:
+        old = self._old_store(tmp_path, [(f"ref-{i}", f"passage {i}", {}) for i in range(1, 4)])
+        pairings = SqlitePairings(str(tmp_path / "new.pairings.db"))
+        migrate_documents_to_pairings(old, pairings)  # floor becomes 3
+        old2 = self._old_store(tmp_path, [(f"ref-{i}", f"passage {i}", {})
+                                          for i in range(1, 6)], name="old2.docs.db")
+        seen: list[int] = []
+        migrate_documents_to_pairings(old2, pairings, on_batch=seen.append)
+        assert seen == [5]
 
     def test_old_store_is_opened_read_only(self, tmp_path: Path) -> None:
         # Never write through the connection this migration opens against the legacy artifact.
