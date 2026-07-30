@@ -7,6 +7,8 @@ once.
 """
 from __future__ import annotations
 
+import math
+
 
 def bm25_to_relevance(bm25: float) -> float:
     """Map FTS5's negative, lower-is-better ``bm25()`` to a higher-is-better score in ``[0, 1)``.
@@ -15,7 +17,7 @@ def bm25_to_relevance(bm25: float) -> float:
     increasing in the match quality: 0 for a marginal match, approaching 1 for a very strong one.
     A bounded, order-preserving transform, which is all a relevance floor and a fuser need.
     """
-    return 1.0 - 2.0 ** bm25
+    return 1.0 - math.pow(2.0, bm25)
 
 
 def as_match(query: str) -> str:

@@ -111,6 +111,14 @@ class TestErrors:
         with pytest.raises(EmbeddingError, match="no 'embedding'"):
             embedding_client(handler).embed(["x"])
 
+    def test_data_is_not_a_list(self) -> None:
+        # 'data' present but the wrong shape (e.g. an error object instead of a result array) --
+        # distinct from a missing key entirely, and from a per-item shape problem.
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": {"error": "unexpected"}})
+        with pytest.raises(EmbeddingError, match="'data' is dict, not a list"):
+            embedding_client(handler).embed(["x"])
+
     def test_no_data_key(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"nope": 1})

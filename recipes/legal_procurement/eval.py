@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,7 +73,7 @@ class Report:
     def ndcg(self) -> float:
         return self._mean(lambda s: s.ndcg)
 
-    def _mean(self, pick) -> float:
+    def _mean(self, pick: Callable[[QueryScore], float]) -> float:
         return sum(pick(s) for s in self.scores) / self.queries if self.scores else 0.0
 
 

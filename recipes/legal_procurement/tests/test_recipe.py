@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import httpx
@@ -52,12 +52,12 @@ def _answer(**over: object) -> str:
     return json.dumps(base)
 
 
-def _ctx(ids: list[str] | None = None) -> dict:
+def _ctx(ids: list[str] | None = None) -> dict[str, object]:
     return {"retriever": _StubRetriever(["ref-1", "ref-2"] if ids is None else ids)}
 
 
 class TestCitationRefusals:
-    def _refused(self, output: str, ctx: dict | None = None) -> bool:
+    def _refused(self, output: str, ctx: dict[str, object] | None = None) -> bool:
         vs = _validator().validate(_rec(), output, ctx if ctx is not None else _ctx())
         return any(v.rule_id == "ungrounded_citation" and v.blocking for v in vs)
 
@@ -249,7 +249,7 @@ def _eval_data(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 class TestEvalMain:
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, gold = _eval_data(tmp_path)
         code = lp_eval.main(["--config", str(config), "--heldout", str(heldout),
                              "--gold", str(gold)])
@@ -257,20 +257,20 @@ class TestEvalMain:
         assert code == 0
         assert "Recall@20" in out and "MRR@10" in out and "NDCG@10" in out and "queries 2" in out
 
-    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, _ = _eval_data(tmp_path)
         code = lp_eval.main(["--config", str(config), "--heldout", str(heldout),
                              "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
 
-    def test_bad_k_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_bad_k_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, gold = _eval_data(tmp_path)
         code = lp_eval.main(["--config", str(config), "--heldout", str(heldout),
                              "--gold", str(gold), "--k", "0"])
         assert code == 1 and "error:" in capsys.readouterr().err
 
     def test_journal_reports_grounding_rate(self, tmp_path: Path,
-                                            capsys: pytest.CaptureFixture) -> None:
+                                            capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, gold = _eval_data(tmp_path)
         journal = tmp_path / "j.jsonl"
         good = Record(record_id="q1", source="W jakim trybie zamawiający udziela zamówienia?",
@@ -287,7 +287,7 @@ class TestEvalMain:
 
 
 # --- end to end: answer from the legal-passage memory over each retriever ------------------------
-def _factory(answer: dict) -> Callable[[str, float], httpx.Client]:
+def _factory(answer: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         props = body.get("response_format", {}).get("json_schema", {}).get(
@@ -322,7 +322,7 @@ def _catalog(tmp_path: Path) -> SqliteRunStore:
 
 
 class TestEndToEnd:
-    def _run(self, tmp_path: Path, answer: dict) -> Record:
+    def _run(self, tmp_path: Path, answer: dict[str, object]) -> Record:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory(answer))
         store = _catalog(tmp_path)
@@ -395,7 +395,7 @@ def _embed(text: str) -> list[float]:
     return [1.0, (len(text) % 5) / 5.0, (sum(map(ord, text)) % 7) / 7.0]
 
 
-def _vector_factory(answer: dict) -> Callable[[str, float], httpx.Client]:
+def _vector_factory(answer: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):

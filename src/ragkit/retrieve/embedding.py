@@ -100,7 +100,12 @@ class EmbeddingClient:
                 response = self._client.post(
                     self._url, json={"model": self._model, "input": chunk})
                 response.raise_for_status()
-                return response.json()["data"]
+                data = response.json()["data"]
+                if not isinstance(data, list):
+                    raise EmbeddingError(
+                        f"malformed embedding response: 'data' is {type(data).__name__}, "
+                        f"not a list", url=self._url)
+                return data
             except (KeyError, ValueError) as exc:
                 raise EmbeddingError(f"malformed embedding response: {exc}", url=self._url) from exc
             except httpx.HTTPError as exc:

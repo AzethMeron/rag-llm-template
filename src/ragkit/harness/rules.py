@@ -18,6 +18,7 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ragkit.core.config import (
     ConfigError,
@@ -122,7 +123,7 @@ class RuleSet:
             raise ConfigError(f"[limits]: {exc}", path=path) from exc
 
 
-def _forbidden(entries: list[dict], *, path: Path) -> tuple[tuple[str, str], ...]:
+def _forbidden(entries: list[dict[str, Any]], *, path: Path) -> tuple[tuple[str, str], ...]:
     result: list[tuple[str, str]] = []
     for entry in entries:
         reject_unknown(entry, {"pattern", "reason"}, label="[[forbidden]]", path=path)
@@ -138,7 +139,7 @@ def _forbidden(entries: list[dict], *, path: Path) -> tuple[tuple[str, str], ...
     return tuple(result)
 
 
-def _advisory(entries: list[dict], *, path: Path) -> tuple[tuple[str, str], ...]:
+def _advisory(entries: list[dict[str, Any]], *, path: Path) -> tuple[tuple[str, str], ...]:
     result: list[tuple[str, str]] = []
     for entry in entries:
         reject_unknown(entry, {"id", "description"}, label="[[advisory]]", path=path)

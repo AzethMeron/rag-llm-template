@@ -12,7 +12,7 @@ import pytest
 from ragkit.cli.app import assemble
 from ragkit.core.records import Record, Status
 from ragkit.core.rules import Severity
-from ragkit.harness import run_batch
+from ragkit.harness import Harness, run_batch
 from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.translation.plugins.validators import (
@@ -164,7 +164,7 @@ class TestReferenceMemoryOnEachPairingsDriver:
 class TestFaithfulToLlmTranslator:
     """The recipe reproduces llm-translator's panel, rules, prompts and context building."""
 
-    def _harness(self, tmp_path: Path):
+    def _harness(self, tmp_path: Path) -> Harness:
         return assemble(_staged_config(tmp_path),
                         substitutions={"source_language": "English", "target_language": "Polish"},
                         client_factory=_factory("{}")).harness
@@ -332,7 +332,7 @@ class TestEvalGoldAndMain:
         with pytest.raises(tr_eval.EvalError, match="empty"):
             tr_eval.load_gold(self._gold(tmp_path, "\n"))
 
-    def test_main_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_main_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal = tmp_path / "j.jsonl"
         rec = Record(record_id="a", source="x", output="Kot śpi.", status=Status.VERIFIED)
         journal.write_text(rec.to_json() + "\n", encoding="utf-8")
@@ -340,7 +340,7 @@ class TestEvalGoldAndMain:
         code = tr_eval.main(["--journal", str(journal), "--gold", str(gold)])
         assert code == 0 and "exact match 1.000" in capsys.readouterr().out
 
-    def test_main_missing_gold(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_main_missing_gold(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         code = tr_eval.main(["--journal", str(tmp_path / "j.jsonl"),
                              "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import httpx
@@ -52,12 +52,12 @@ def _decision(**over: object) -> str:
     return json.dumps(base)
 
 
-def _ctx(texts: list[str] | None = None) -> dict:
+def _ctx(texts: list[str] | None = None) -> dict[str, object]:
     return {"retriever": _StubRetriever(MANUAL.split("|") if texts is None else texts)}
 
 
 class TestGroundingRefusals:
-    def _refused(self, output: str, ctx: dict | None = None) -> bool:
+    def _refused(self, output: str, ctx: dict[str, object] | None = None) -> bool:
         vs = _validator().validate(_rec(), output, ctx if ctx is not None else _ctx([MANUAL]))
         return any(v.rule_id == "ungrounded_decision" and v.blocking for v in vs)
 
@@ -185,7 +185,7 @@ class TestLoadGold:
             pdm_eval.load_gold(self._write(tmp_path, "\n"))
 
 
-def _factory(decision: dict) -> Callable[[str, float], httpx.Client]:
+def _factory(decision: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         props = body.get("response_format", {}).get("json_schema", {}).get(
@@ -219,7 +219,7 @@ def _catalog(tmp_path: Path) -> SqliteRunStore:
 
 
 class TestEndToEnd:
-    def _run(self, tmp_path: Path, decision: dict) -> Record:
+    def _run(self, tmp_path: Path, decision: dict[str, object]) -> Record:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory(decision))
         store = _catalog(tmp_path)
@@ -285,12 +285,12 @@ class TestEvalMain:
                         encoding="utf-8")
         return journal, gold
 
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, gold = self._setup(tmp_path, "urgent")
         code = pdm_eval.main(["--journal", str(journal), "--gold", str(gold)])
         assert code == 0 and "exact severity 1.000" in capsys.readouterr().out
 
-    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, _ = self._setup(tmp_path, "urgent")
         code = pdm_eval.main(["--journal", str(journal), "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
@@ -317,7 +317,7 @@ def _embed(text: str) -> list[float]:
     return [1.0, (len(text) % 5) / 5.0, (sum(map(ord, text)) % 7) / 7.0]
 
 
-def _vector_factory(decision: dict) -> Callable[[str, float], httpx.Client]:
+def _vector_factory(decision: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):

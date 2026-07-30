@@ -132,7 +132,7 @@ class _Interruptible:
 
     def __exit__(self, *_: object) -> None:
         for number, handler in self._previous.items():
-            signal.signal(number, handler)  # type: ignore[arg-type]
+            signal.signal(number, handler)
 
 
 def run_batch(harness: Harness, records: Iterable[Record], run_store: RunStore, *,

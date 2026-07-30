@@ -12,6 +12,7 @@ import pytest
 
 from ragkit.cli.app import assemble
 from ragkit.core.records import Record, Status
+from ragkit.core.rules import Violation
 from ragkit.harness import run_batch
 from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
@@ -45,7 +46,7 @@ def _rec() -> Record:
     return Record(record_id="track-1", source="Track 'Song A'")
 
 
-def _validate(form: dict) -> list:
+def _validate(form: dict[str, object]) -> list[Violation]:
     return FieldTypesValidator(GENRE_PRICE).validate(_rec(), json.dumps(form), {})
 
 
@@ -279,13 +280,13 @@ class TestEvalMain:
                                     "unit_price": 0.99}) + "\n", encoding="utf-8")
         return journal, gold
 
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, gold = self._setup(tmp_path, json.dumps({"genre": "Rock", "unit_price": 0.99}))
         code = fill_eval.main(["--journal", str(journal), "--gold", str(gold)])
         out = capsys.readouterr().out
         assert code == 0 and "both 1.000" in out
 
-    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal, _ = self._setup(tmp_path, json.dumps({"genre": "Rock", "unit_price": 0.99}))
         code = fill_eval.main(["--journal", str(journal), "--gold", str(tmp_path / "no.jsonl")])
         assert code == 1 and "error:" in capsys.readouterr().err
@@ -298,7 +299,8 @@ class TestDatabaseSwap:
     """The recipe fills a form from historical records held in EITHER real SqlStore driver (sqlite
     and duckdb) via the sql_rows block -- a one-line storage.toml edit, no code change."""
 
-    def _staged(self, tmp_path: Path, store_cls, driver: str, filename: str) -> Path:
+    def _staged(self, tmp_path: Path, store_cls: type[SqliteStore] | type[DuckDBStore],
+               driver: str, filename: str) -> Path:
         config = tmp_path / "config"
         shutil.copytree(CONFIG, config)
         (tmp_path / "data").mkdir()
@@ -308,8 +310,9 @@ class TestDatabaseSwap:
             encoding="utf-8")
         return config
 
-    def test_a_grounded_fill_verifies(self, tmp_path: Path, store_cls, driver: str,
-                                      filename: str) -> None:
+    def test_a_grounded_fill_verifies(self, tmp_path: Path,
+                                      store_cls: type[SqliteStore] | type[DuckDBStore],
+                                      driver: str, filename: str) -> None:
         config = self._staged(tmp_path, store_cls, driver, filename)
         assembled = assemble(config, client_factory=_factory("Rock", 0.99))
         store = _heldout(tmp_path)

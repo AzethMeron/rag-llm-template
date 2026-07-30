@@ -22,13 +22,14 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 from ragkit.core.ports import LexiconStore, Pairing, PairingStore, RunResult, RunStore
 from ragkit.core.lexicon import read_lexicon
 from ragkit.core.records import read_catalog, read_journal
 
 
-def _iter_legacy_documents(path: Path) -> Iterator[tuple[str, str, dict]]:
+def _iter_legacy_documents(path: Path) -> Iterator[tuple[str, str, dict[str, Any]]]:
     """Stream ``(chunk_id, display, meta)`` rows from a legacy row-store database (schema:
     ``docs(chunk_id, display, meta)``), in original insertion order, never materialising the whole
     table in memory. Opened read-only: a migration must never risk writing the source it is reading
