@@ -88,6 +88,17 @@ class EmbeddingClient:
         if matrix.ndim != 2:
             raise EmbeddingError(f"expected 2-D embeddings, got shape {matrix.shape}",
                                  url=self._url)
+        # A NaN/Inf slipped through as a numerically valid float -- np.asarray above only rejects
+        # non-numeric/ragged data. Left unchecked, normalising a poisoned row below produces a
+        # silent all-NaN vector (NaN/NaN or Inf/Inf is NaN) that upserts into the vector store
+        # without ever raising -- a search against it then silently returns no/wrong hits instead
+        # of failing loud, in direct violation of "never allow failures to be silent."
+        non_finite_rows = int(np.count_nonzero(~np.isfinite(matrix).all(axis=1)))
+        if non_finite_rows:
+            raise EmbeddingError(
+                f"embedding response contains non-finite values (NaN/Inf) in {non_finite_rows} "
+                f"of {matrix.shape[0]} row(s) -- the endpoint returned a malformed embedding",
+                url=self._url)
         matrix /= np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9
         return matrix
 

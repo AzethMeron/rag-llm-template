@@ -133,6 +133,34 @@ class TestErrors:
         with pytest.raises(EmbeddingError, match="uniform numeric matrix"):
             embedding_client(handler).embed(["a", "b"])
 
+    def test_nan_in_response_is_rejected_not_silently_normalised(self) -> None:
+        # Regression: NaN is a numerically valid float32 value, so np.asarray accepts it and the
+        # L2-normalise step (dividing by a NaN norm) used to turn it into a silent all-NaN vector
+        # instead of raising -- corrupting the vector store with no error anywhere. NaN/Infinity
+        # aren't standard JSON, but Python's json (both sides) permissively round-trips the literal
+        # token by default, so a real server can and does emit exactly this over the wire; raw
+        # `content=`, not the `json=` kwarg, is used here since httpx's own encoder for `json=`
+        # refuses to produce them.
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": [{"embedding": [1.0, NaN]}]}')
+        with pytest.raises(EmbeddingError, match="non-finite values"):
+            embedding_client(handler).embed(["x"])
+
+    def test_infinity_in_response_is_rejected_not_silently_normalised(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": [{"embedding": [1.0, Infinity]}]}')
+        with pytest.raises(EmbeddingError, match="non-finite values"):
+            embedding_client(handler).embed(["x"])
+
+    def test_one_poisoned_row_among_several_is_still_caught(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": ['
+                                                b'{"embedding": [1.0, 0.0]}, '
+                                                b'{"embedding": [NaN, 0.0]}, '
+                                                b'{"embedding": [0.0, 1.0]}]}')
+        with pytest.raises(EmbeddingError, match=r"1 of 3 row\(s\)"):
+            embedding_client(handler).embed(["a", "b", "c"])
+
     def test_bad_batch_size(self) -> None:
         with pytest.raises(ValueError, match="batch_size"):
             EmbeddingClient(base_url="http://x", batch_size=0)
