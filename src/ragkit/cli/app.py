@@ -202,22 +202,52 @@ def _load_corpus(path: Path, recipe: _Recipe, storage: Storage) -> Corpus:
 
 
 def _ingest(corpus: Corpus, path: Path, recipe: _Recipe) -> Corpus:
-    """Stream the reference JSONL into the corpus, unless its index is already populated. An on-disk
-    index (``storage.toml`` gave it a ``path``) persists across runs, so a large corpus is ingested
-    once and reused rather than re-read on every assemble; an in-memory index is always empty at
-    startup and so is (re)built. Ingest itself is streamed and batched — never held whole in RAM."""
-    if len(corpus) == 0:
-        corpus.add_all(_corpus_items(path, recipe))
+    """Stream the reference JSONL into the corpus, **resumable**. The document store's count is the
+    durable floor: documents are written last in each batch, so anything counted there is already in
+    the lexical/vector stores too, and those stores are AHEAD by at most one uncommitted batch after
+    a crash. So we drop that inconsistent tail (:func:`_discard_tail`), then continue ingest from
+    the floor — an interrupted multi-hour ingest costs seconds to resume, not a restart. A finished
+    on-disk index resumes to a no-op (floor == corpus size, nothing left to add); an in-memory index
+    is always empty and so is built from scratch. Ingest streams and batches — never held in RAM."""
+    floor = len(corpus)  # == document store count
+    if floor > 0:
+        _discard_tail(corpus.lexical_index, floor, batched=False)
+        _discard_tail(corpus.vector_index, floor, batched=True)
+    corpus.add_all(_corpus_items(path, recipe, skip=floor))
     return corpus
 
 
-def _corpus_items(path: Path, recipe: _Recipe) -> Iterator[CorpusItem]:
+def _discard_tail(index: Any, floor: int, *, batched: bool) -> None:
+    """Delete any rows past ``floor`` (their ``ref-<n>`` ids) from a search index, so it is
+    consistent with the document store before ingest resumes. ``batched`` picks the port's delete
+    shape (a vector index deletes a sequence, a lexical index one id at a time). An index that
+    cannot report its size can't be trimmed and is left as-is (a resumed lexical index may then hold
+    a one-batch duplicate — the built-in FTS5 driver reports its size, so this does not apply)."""
+    if index is None or not hasattr(index, "count"):
+        return
+    extra = index.count() - floor
+    if extra <= 0:
+        return
+    ids = [f"ref-{floor + i}" for i in range(1, extra + 1)]
+    if batched:
+        index.delete(ids)
+    else:
+        for chunk_id in ids:
+            index.delete(chunk_id)
+
+
+def _corpus_items(path: Path, recipe: _Recipe, *, skip: int = 0) -> Iterator[CorpusItem]:
     """Yield one :class:`CorpusItem` per non-blank JSONL line, read lazily so a multi-GB corpus
     streams through rather than materialising. ``ref-<line>`` numbers raw lines (blanks included),
-    the same id the fetch scripts assign, so citations and gold line up."""
+    the same id the fetch scripts assign, so citations and gold line up. ``skip`` fast-forwards past
+    the first ``skip`` lines *without* parsing them — the resume path uses it to continue an
+    interrupted ingest from the already-stored floor (the fetch scripts write gap-free JSONL, so a
+    line number equals its ``ref-<n>``)."""
     import json
     with path.open(encoding="utf-8") as handle:
         for line_no, raw in enumerate(handle, 1):
+            if line_no <= skip:
+                continue
             line = raw.strip()
             if not line:
                 continue
