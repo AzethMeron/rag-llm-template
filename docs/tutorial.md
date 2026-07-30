@@ -273,12 +273,13 @@ the revision budget the record is `REJECTED` rather than shipped wrong.
 ## 5. Add a memory (retrieval)
 
 Give the classifier **worked examples** retrieved per input — a labelled corpus of past tickets.
-Point the recipe at a JSONL reference corpus and add the `retrieved` context block.
+Point the recipe at a JSONL reference corpus, add a `[pairings]` store to import it into (mandatory
+— there is no in-memory fallback), and add the `retrieved` context block.
 
 ```
 # recipes/triage/data/examples.jsonl   (git-ignored; a fetch.sh would build it)
-{"source": "Refund the duplicate charge on my invoice", "label": "billing / high"}
-{"source": "Where do I find the CSV export button", "label": "how_to / low"}
+{"source": "Refund the duplicate charge on my invoice", "target": "billing / high"}
+{"source": "Where do I find the CSV export button", "target": "how_to / low"}
 ```
 
 ```toml
@@ -287,7 +288,14 @@ Point the recipe at a JSONL reference corpus and add the `retrieved` context blo
 file = "../data/examples.jsonl"
 retriever = "lexical"      # BM25 over the corpus, built from config alone
 index_field = "source"     # what matching happens on
-display_field = "label"    # what a hit shows (or omit for a sensible default)
+target_field = "target"    # the default; a hit displays as "source -> target"
+```
+
+```toml
+# recipes/triage/config/storage.toml
+[pairings]
+driver = "sqlite"
+path = "../data/examples.pairings.db"
 ```
 
 ```toml
@@ -299,23 +307,11 @@ min_score = 0.3
 heading = "Similar past tickets and how they were triaged (examples, not the required answer):"
 ```
 
-That is the whole "RAG" wiring for the default lexical retriever. With no `storage.toml`, the
-corpus rebuilds in memory every run — fine for a small example. For anything larger, add a
-`[pairings]` store so it imports once and persists (see [`docs/config.md`](config.md#storagetoml)):
-
-```toml
-# recipes/triage/config/storage.toml
-[pairings]
-driver = "sqlite"
-path = "../data/examples.pairings.db"
-```
-
-`display_field` above is read only by the legacy in-memory fallback (no `[pairings]` configured).
-`[pairings]` has no equivalent "show this arbitrary field alone" option — its display convention is
-always `"source -> target"` (or bare `source` with no target), matching a translation-memory-shaped
-pairing. `target_field = "label"` would show `"Refund the duplicate charge on my invoice -> billing
-/ high"`, not `"billing / high"` alone; if a bare label display matters more than persistence, stay
-on the legacy fallback.
+That is the whole "RAG" wiring for the default lexical retriever: `[reference].file` is streamed
+into `[pairings]` once (`import_reference`, resumable — see [`docs/config.md`](config.md#storagetoml))
+and reused on every later run rather than rebuilt. A hit displays as `"source -> target"`; there is
+no "show this arbitrary field alone" option — the display convention is always a pairing's
+`source`/`target`, so shape a JSONL field you want shown as one or the other.
 
 To retrieve **densely** over a real vector database instead, add a `retrieval.toml` and a
 `[vector]` store — see [§10](#10-swapping-components-by-config). The retriever is also injectable

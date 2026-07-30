@@ -252,11 +252,11 @@ Three database roles are kept apart: the framework's own reference memory (`[pai
 `[lexicon]`) and run state (`[run]`), and the external, read-only task data source (`[sql]` with
 `read_only`, a write refused at the port before the database).
 
-*Legacy, still supported*: `[lexical]` (`fts5`; `path`, `tokenizer`) + `[documents]` (`sqlite`;
-`path`) is the pre-overhaul **split** store a `PairingStore`-less recipe still falls back to — an
-index returning ids only, paired with a separate relational row store, kept in sync purely by
-write ordering rather than one transaction. Prefer `[pairings]` for anything new;
-`tools/migrate_storage.sh` folds an existing split store's rows into a pairing store directly.
+The pre-overhaul **split** store (`[lexical]` + `[documents]`: an index returning ids only, paired
+with a separate relational row store, kept in sync purely by write ordering rather than one
+transaction) has been retired — `[pairings]` is the only reference-memory store now, and
+`[reference].file` needs one configured. `tools/migrate_storage.sh` folds an existing split store's
+rows into a pairing store directly, for a recipe migrating forward from before the retirement.
 
 **On-disk streaming ingest, built once.** `[reference].file` is streamed into `[pairings]`
 line-by-line in batches, so a multi-GB corpus never materialises in RAM. When `[pairings]` is
@@ -292,11 +292,10 @@ What the task produces, its extra validators, and an optional reference corpus.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `file` | string | `""` | JSONL corpus (relative to the config dir) to retrieve from. |
+| `file` | string | `""` | JSONL corpus (relative to the config dir) to retrieve from. Importing it needs a `[pairings]` store in `storage.toml` — there is no in-memory fallback. |
 | `retriever` | string | `"lexical"` | `"lexical"` builds over the corpus; a **dotted path / entry-point name** selects a corpus-free custom retriever resolved through the `RETRIEVERS` registry. |
 | `index_field` | string | `"source"` | The JSON field matched on (becomes a pairing's `source`). |
-| `target_field` | string | `"target"` | **`[pairings]` only.** The JSON field that becomes a pairing's `target`; a hit then displays as `"source -> target"` when present, else `source` alone. Absent from the legacy split-store path (see below). |
-| `display_field` | string | `""` | **Legacy split-store path only** (no `[pairings]` in `storage.toml`). The field a hit shows; falls back to `"source -> target"` (literal keys) or the `"text"` field. Ignored once `[pairings]` is configured — `target_field` takes over that role. |
+| `target_field` | string | `"target"` | The JSON field that becomes a pairing's `target`; a hit then displays as `"source -> target"` when present, else `source` alone. |
 | `options` | table | `{}` | Options passed to a custom (dotted-path) retriever's `from_config`. |
 
 **Replacing the retriever without editing our code** — two seams, matching how the components are

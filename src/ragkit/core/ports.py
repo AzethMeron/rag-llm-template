@@ -240,35 +240,10 @@ class VectorIndex(Protocol):
 class SearchIndex(Protocol):
     """The read side of a keyword search index: maps a query to ``(chunk_id, score)`` best-first,
     higher-is-better. This is the *narrow* interface a :class:`Retriever` built over a search index
-    actually depends on (never the write side) — every :class:`LexicalIndex` satisfies it, and so
-    does a :class:`PairingStore` (its rows and search index are co-located, but a retriever never
-    indexes or deletes through it directly)."""
+    actually depends on (never the write side) — a :class:`PairingStore` satisfies it (its rows and
+    search index are co-located, but a retriever never indexes or deletes through it directly)."""
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
-
-
-@runtime_checkable
-class LexicalIndex(SearchIndex, Protocol):
-    """A keyword/BM25 index. ``search`` returns ``(chunk_id, score)`` best-first, score
-    higher-is-better (a driver over an inverted BM25 converts the native scale itself)."""
-
-    def index(self, chunk_id: str, text: str) -> None: ...
-
-    def delete(self, chunk_id: str) -> None: ...
-
-
-@runtime_checkable
-class DocumentStore(Protocol):
-    """The relational home for chunk rows — the single store every retrieval path resolves a hit
-    through, so a corpus of any size lives in the database rather than a RAM map. A search index
-    (BM25, ANN) returns ids; this turns an id back into its display text + metadata. ``count`` is
-    the corpus size, used to skip re-ingesting an already-built store."""
-
-    def add_documents(self, rows: Iterable[tuple[str, str, Mapping[str, Any]]]) -> None: ...
-
-    def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None: ...
-
-    def count(self) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,10 +268,9 @@ class PairingStore(Protocol):
     """The reference-memory store: rows and a keyword search index co-located in one durable store,
     so a hit and its display text can never drift apart the way two separately-written stores can.
 
-    ``search`` and ``document`` deliberately share :class:`LexicalIndex`'s and
-    :class:`DocumentStore`'s exact signatures: a driver that implements this port also *is* a valid
-    ``LexicalIndex`` and ``DocumentStore``, so the existing lexical/dense/hybrid retriever stack
-    runs over a pairing store unchanged, with no parallel retrieval code path to keep in sync.
+    ``search`` satisfies :class:`SearchIndex`, and ``document`` resolves a hit's display text +
+    metadata the same way, so the lexical/dense/hybrid retriever stack (:mod:`ragkit.retrieve.
+    retrievers`) runs over a pairing store with no parallel retrieval code path to keep in sync.
     """
 
     def add(self, pairings: Iterable[Pairing]) -> int:

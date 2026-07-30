@@ -1,13 +1,11 @@
 """Import a reference JSONL corpus into a :class:`~ragkit.core.ports.PairingStore`, and build
 retrievers over it.
 
-The DB-native counterpart to :mod:`ragkit.ingest.corpus`: where :class:`~ragkit.ingest.corpus.
-Corpus` streams into a *split* lexical index + document store (kept in sync only by write
-ordering), this streams into one *co-located* :class:`~ragkit.core.ports.PairingStore` — so import
-is resumable exactly like ``Corpus.add_all``'s, but the row and its search entry can never drift
-apart (see :mod:`ragkit.store.pairings.sqlite`). The vector index, when configured, still lives
-separately (co-locating an ANN index is a different, harder problem) and is kept in sync via
-:meth:`~ragkit.core.ports.VectorIndex.reconcile`.
+Streams the corpus, batched, into one *co-located* :class:`~ragkit.core.ports.PairingStore` — the
+row and its search entry are written in the same transaction and so can never drift apart (see
+:mod:`ragkit.store.pairings.sqlite`) — with the store's own row count as the resumable floor. The
+vector index, when configured, still lives separately (co-locating an ANN index is a different,
+harder problem) and is kept in sync via :meth:`~ragkit.core.ports.VectorIndex.reconcile`.
 """
 from __future__ import annotations
 
@@ -32,9 +30,8 @@ class ReferenceImportError(RagkitError):
 def reference_pairings(path: Path, *, index_field: str = "source", target_field: str = "target",
                        skip: int = 0) -> Iterator[Pairing]:
     """Yield one :class:`~ragkit.core.ports.Pairing` per non-blank JSONL line beyond ``skip``,
-    numbered ``ref-<line>`` — the same numbering the legacy split-store path assigns (see
-    :mod:`ragkit.ingest.corpus`), so citations, gold, and :mod:`ragkit.eval.retrieval` line up
-    regardless of which store backs a recipe. ``skip`` fast-forwards past already-imported lines
+    numbered ``ref-<line>`` — a fetch script's own numbering, so citations, gold, and
+    :mod:`ragkit.eval.retrieval` line up. ``skip`` fast-forwards past already-imported lines
     without parsing them, the resume path's mechanism. A line with no ``index_field`` value is
     skipped (blank source), never yielded as an empty pairing."""
     with path.open(encoding="utf-8") as handle:
@@ -129,10 +126,9 @@ def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex,
 
 class PairingRetrievers:
     """Builds retrievers over a :class:`~ragkit.core.ports.PairingStore` (+ optional vector index/
-    embedder) — the pairings counterpart to :class:`~ragkit.ingest.corpus.Corpus`'s retriever-
-    building surface, minus the ingest machinery (:func:`import_reference` is a module-level
-    function, not a method here: a pairing store is already one complete store, so there is no
-    separate lexical/document write path to batch together)."""
+    embedder). :func:`import_reference` is a module-level function, not a method here: a pairing
+    store is already one complete store, so there is no separate lexical/document write path to
+    batch together."""
 
     def __init__(self, pairing_store: PairingStore, *, vector: VectorIndex | None = None,
                 embedder: EmbeddingClient | None = None) -> None:

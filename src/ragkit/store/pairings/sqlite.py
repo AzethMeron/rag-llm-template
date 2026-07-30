@@ -3,9 +3,8 @@
 An FTS5 *external-content* table (``pairings_fts``) mirrors ``pairings`` via ``AFTER INSERT/UPDATE/
 DELETE`` triggers, so every write to the row and its search entry happens inside the very same
 statement's implicit transaction: there is no window where one exists without the other, and an
-aborted write leaves neither behind. This is what the two-database predecessor (a
-:class:`~ragkit.store.documents.sqlite.SqliteDocuments` row store plus a separate
-:class:`~ragkit.store.lexical.fts5.Fts5Index`) could only approximate through write ordering.
+aborted write leaves neither behind. This is what the pre-overhaul split store (a relational row
+table plus a separate FTS5 index, kept in sync only by write ordering) could only approximate.
 """
 from __future__ import annotations
 
@@ -54,8 +53,8 @@ END;
 
 class SqlitePairings:
     """A :class:`~ragkit.core.ports.PairingStore` over one co-located SQLite database. Also
-    satisfies :class:`~ragkit.core.ports.LexicalIndex` (``search``) and
-    :class:`~ragkit.core.ports.DocumentStore` (``document``), by design (see the port docstring)."""
+    satisfies :class:`~ragkit.core.ports.SearchIndex` (``search``), by design (see the port
+    docstring)."""
 
     CONFIG_KEYS = frozenset({"path", "tokenizer"})
 

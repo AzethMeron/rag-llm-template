@@ -20,8 +20,6 @@ import pytest
 
 from ragkit.core.lexicon import Entry
 from ragkit.core.ports import (
-    DocumentStore,
-    LexicalIndex,
     LexiconStore,
     Pairing,
     PairingStore,
@@ -31,8 +29,6 @@ from ragkit.core.ports import (
     VectorIndex,
 )
 from ragkit.core.records import Record, Status
-from ragkit.store.documents.sqlite import SqliteDocuments
-from ragkit.store.lexical.fts5 import Fts5Index
 from ragkit.store.lexicon.sqlite import SqliteLexicon
 from ragkit.store.pairings.duckdb import DuckDBPairings
 from ragkit.store.pairings.sqlite import SqlitePairings
@@ -78,49 +74,10 @@ class InMemoryVectorIndex:
         return wanted - set(self._vectors)
 
 
-class InMemoryLexicalIndex:
-    """A minimal, dependency-free LexicalIndex — the second implementation of that port."""
-
-    def __init__(self) -> None:
-        self._docs: dict[str, set[str]] = {}
-
-    def index(self, chunk_id: str, text: str) -> None:
-        self._docs[chunk_id] = set(text.lower().split())
-
-    def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
-        terms = set(query.lower().split())
-        if not terms:
-            return []
-        scored = [(id_, float(len(terms & words))) for id_, words in self._docs.items()]
-        hits = [(id_, score) for id_, score in scored if score > 0]
-        hits.sort(key=lambda pair: pair[1], reverse=True)
-        return hits[:k]
-
-    def delete(self, chunk_id: str) -> None:
-        self._docs.pop(chunk_id, None)
-
-
-class InMemoryDocuments:
-    """A minimal, dependency-free DocumentStore — the second implementation of that port."""
-
-    def __init__(self) -> None:
-        self._rows: dict[str, tuple[str, Mapping[str, Any]]] = {}
-
-    def add_documents(self, rows: Iterable[tuple[str, str, Mapping[str, Any]]]) -> None:
-        for chunk_id, display, meta in rows:
-            self._rows[chunk_id] = (display, dict(meta))
-
-    def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None:
-        return self._rows.get(chunk_id)
-
-    def count(self) -> int:
-        return len(self._rows)
-
-
 class InMemoryPairings:
     """A minimal, dependency-free PairingStore — the second implementation of that port, combining
-    a simple word-overlap search (like InMemoryLexicalIndex) with a dict-backed row store (like
-    InMemoryDocuments). ``add`` mirrors the shipped drivers' idempotent-on-duplicate contract."""
+    a simple word-overlap search with a dict-backed row store. ``add`` mirrors the shipped drivers'
+    idempotent-on-duplicate contract."""
 
     def __init__(self) -> None:
         self._rows: dict[str, Pairing] = {}
@@ -241,15 +198,6 @@ VECTOR_FACTORIES: list[Callable[[Path], VectorIndex]] = [
     lambda tmp: QdrantVectorIndex(str(tmp / "v.qdrant"), dim=3),  # a second REAL vector DB
     lambda tmp: InMemoryVectorIndex(),
 ]
-LEXICAL_FACTORIES: list[Callable[[Path], LexicalIndex]] = [
-    lambda tmp: Fts5Index(),
-    lambda tmp: InMemoryLexicalIndex(),
-]
-DOCUMENT_FACTORIES: list[Callable[[Path], DocumentStore]] = [
-    lambda tmp: SqliteDocuments(str(tmp / "rows.db")),
-    lambda tmp: SqliteDocuments(),  # in-memory SQLite
-    lambda tmp: InMemoryDocuments(),
-]
 PAIRING_FACTORIES: list[Callable[[Path], PairingStore]] = [
     lambda tmp: SqlitePairings(str(tmp / "p.sqlite")),
     lambda tmp: DuckDBPairings(str(tmp / "p.duckdb")),  # a second REAL co-located store
@@ -291,43 +239,6 @@ class TestVectorIndexConformance:
         index = factory(tmp_path)
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
         assert index.reconcile(["a", "new"]) == {"new"}  # b dropped, new reported missing
-
-
-@pytest.mark.parametrize("factory", LEXICAL_FACTORIES)
-class TestLexicalIndexConformance:
-    def test_lifecycle(self, factory: Callable[[Path], LexicalIndex], tmp_path: Path) -> None:
-        index = factory(tmp_path)
-        index.index("d1", "the quick brown fox")
-        index.index("d2", "a lazy dog")
-
-        results = index.search("quick fox", k=5)
-        assert [chunk_id for chunk_id, _ in results] == ["d1"]  # only d1 matches
-        assert all(score >= 0 for _id, score in results)  # higher-is-better
-
-        index.delete("d1")
-        assert index.search("quick", k=5) == []
-
-    def test_empty_query(self, factory: Callable[[Path], LexicalIndex], tmp_path: Path) -> None:
-        assert factory(tmp_path).search("", k=5) == []
-
-
-@pytest.mark.parametrize("factory", DOCUMENT_FACTORIES)
-class TestDocumentStoreConformance:
-    def test_lifecycle(self, factory: Callable[[Path], DocumentStore], tmp_path: Path) -> None:
-        store = factory(tmp_path)
-        assert store.count() == 0
-        store.add_documents([("d1", "cat -> kot", {"n": 1}), ("d2", "dog -> pies", {})])
-        assert store.count() == 2
-        assert store.document("d1") == ("cat -> kot", {"n": 1})
-        assert store.document("d2") == ("dog -> pies", {})
-        assert store.document("missing") is None
-
-    def test_reinsert_replaces(self, factory: Callable[[Path], DocumentStore],
-                               tmp_path: Path) -> None:
-        store = factory(tmp_path)
-        store.add_documents([("d1", "first", {})])
-        store.add_documents([("d1", "second", {"v": 2})])
-        assert store.count() == 1 and store.document("d1") == ("second", {"v": 2})
 
 
 @pytest.mark.parametrize("factory", PAIRING_FACTORIES)

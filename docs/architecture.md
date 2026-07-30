@@ -137,11 +137,11 @@ cache: the row and the FTS5 entry that indexes it are **one database, one transa
 FTS5 *external-content* table kept in sync by `AFTER INSERT/UPDATE/DELETE` triggers inside the
 same statement's implicit transaction as the row write (`store/pairings/sqlite.py`). There is no
 window where a row exists without its index entry or vice versa, and an aborted write leaves
-neither behind — the co-location invariant a *split* row store + search index (the pre-overhaul
-`DocumentStore` + `LexicalIndex` pair, still `store/documents/sqlite.py` + `store/lexical/
-fts5.py`) could only approximate through write ordering, never guarantee. `PairingStore`
-structurally satisfies both older ports (`search`, `document`), so `LexicalRetriever` /
-`DenseRetriever` / `HybridRetriever` are reused verbatim over either.
+neither behind — the co-location invariant a *split* row store + search index (a relational row
+table plus a separate FTS5 index, kept in sync only by write ordering) could only approximate,
+never guarantee. `PairingStore` satisfies `SearchIndex` (`search`) directly, so `LexicalRetriever`
+/ `DenseRetriever` / `HybridRetriever` (`retrieve/retrievers.py`, `retrieve/hybrid.py`) are reused
+verbatim over it — there is exactly one retrieval code path, not one per store shape.
 
 Import is built to match: `ingest/reference.py`'s `import_reference` streams a recipe's
 `[reference].file` JSONL into the pairing store in batches, resumable from `PairingStore.count()`
@@ -149,11 +149,10 @@ as the durable floor — an interrupted multi-hour import costs seconds to resum
 When a `[vector]` store is configured, each batch is embedded and upserted alongside, and
 `VectorIndex.reconcile` closes any gap a crash left between the two. This is what lets the
 recipes below ingest and query a multi-GB, multi-million-row corpus at a few tens of MB of
-process RSS. A recipe with no `[pairings]` in its `storage.toml` falls back to the pre-overhaul
-split store (in-memory, or on disk via `[lexical]`/`[documents]`) — every retrieval recipe
-shipped with this project has been migrated onto `PairingStore` (`tools/migrate_storage.sh`
-folds an existing split store's rows in directly, without re-reading the original corpus), so the
-split path exists for a config that predates the migration, not as the recommended one.
+process RSS. `[reference].file` needs a `[pairings]` store configured — there is no in-memory or
+split-store fallback; `tools/migrate_storage.sh` folds a pre-retirement recipe's on-disk artifacts
+(a legacy row store, a `lexicon.jsonl`, a catalogue+journal pair) into the current stores directly,
+without re-reading the original corpus.
 
 ## Where to look next
 

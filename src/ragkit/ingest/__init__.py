@@ -1,11 +1,10 @@
-"""Ingestion: build a retrieval corpus from a source, through extract -> normalise -> dedup ->
-chunk -> embed -> index. The corpus builder ties chunks into the storage indexes with an embedding
-cache and hands back retrievers; the extractors and chunkers are registered components, swappable
-by config. Depends on retrieve, store, and core."""
+"""Ingestion: build a reference memory from a source, through extract -> normalise -> dedup ->
+chunk -> embed -> import. ``reference.py`` streams a JSONL corpus into a ``PairingStore`` and hands
+back retrievers; the extractors and chunkers are registered components, swappable by config.
+Depends on retrieve, store, and core."""
 from __future__ import annotations
 
 from .chunk import CHUNKERS, ChunkError, FixedChunker, SentenceChunker, StructureChunker
-from .corpus import Corpus, CorpusItem
 from .dedup import content_hash, dedup_chunks, dedup_documents
 from .extract import (
     EXTRACTORS,
@@ -24,7 +23,6 @@ from .reference import (
 )
 
 __all__ = [
-    "Corpus", "CorpusItem",
     "PairingRetrievers", "ReferenceImportError", "import_reference", "reference_pairings",
     "EXTRACTORS", "TextExtractor", "JsonlExtractor", "HtmlExtractor", "MarkdownExtractor",
     "ExtractError",

@@ -263,14 +263,16 @@ def _vector_factory() -> Callable[[str, float], httpx.Client]:
 class TestRetrievalMemoryOnEachVectorDB:
     """The translation memory is retrieved through dense retrieval over EITHER real vector DB
     (lancedb, qdrant), assembled from retrieval.toml -- the recipe runs end-to-end on each with only
-    a storage.toml driver edit. (The default fts5 lexical path is covered by TestEndToEnd.)"""
+    a storage.toml driver edit. (The default sqlite pairing-store path is covered by
+    TestEndToEnd.)"""
 
     def test_translates_with_a_vector_backed_memory(self, tmp_path: Path,
                                                     vector_driver: str) -> None:
         config = _staged_config(tmp_path)
         (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
         (config / "storage.toml").write_text(
-            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n'
+            f'[pairings]\ndriver = "sqlite"\npath = "../data/reference.pairings.db"\n',
             encoding="utf-8")
         (config / "retrieval.toml").write_text(
             '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',

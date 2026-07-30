@@ -1,9 +1,9 @@
 """BM25 scoring and FTS5 query-escaping helpers, shared by every driver built on SQLite FTS5.
 
 Extracted so the score convention and query-escaping live in exactly one place (CLAUDE.md: single
-source of truth): both the standalone :class:`~ragkit.store.lexical.fts5.Fts5Index` and the
-co-located pairing store's FTS5 table use the identical transform and the identical escaping, so a
-ranking or a quoting bug can only exist once.
+source of truth): the co-located pairing store's FTS5 table (:mod:`ragkit.store.pairings.sqlite`)
+uses this exact transform and this exact escaping, so a ranking or a quoting bug can only exist
+once.
 """
 from __future__ import annotations
 

@@ -1,5 +1,10 @@
-> **Status:** Approved 2026-07-30, implementation pending (to be executed in a later session).
-> Scope, decisions, and phasing below are the agreed design; nothing here is built yet.
+> **Status:** Approved 2026-07-30; implemented the same day, P0 through P5, including the
+> optional legacy split-store retirement P5 left on the table (`DocumentStore`/`LexicalIndex`
+> ports, `SqliteDocuments`, `Fts5Index`, `ingest/corpus.py`'s `Corpus` builder, and the
+> `[lexical]`/`[documents]` storage.toml bindings are all removed from the live framework;
+> `tools/migrate_storage.sh` remains as the one-time bridge for artifacts predating the
+> retirement). This document is the historical design record — see `docs/architecture.md` and
+> `docs/config.md` for the current, living description of the storage layer.
 
 # Full storage overhaul — DB-native reference memory, run store, write-back
 

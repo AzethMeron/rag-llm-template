@@ -17,6 +17,7 @@ from .conftest import RETRIEVAL_MODELS, retrieval_factory, scripted_factory, wri
 
 _REF = [{"source": "the cat sat", "target": "kot"}, {"source": "a dog ran", "target": "pies"}]
 _VECTOR_STORAGE = '[vector]\ndriver = "lancedb"\npath = "v.lance"\ndim = 3\n'
+_PAIRINGS_STORAGE = '[pairings]\ndriver = "sqlite"\npath = "p.db"\n'
 _RECIPE_WITH_REF = ('[task]\noutput_schema = "json_field"\n[task.output_schema_options]\n'
                     'field = "translation"\n[reference]\nfile = "ref.jsonl"\n')
 
@@ -55,28 +56,13 @@ class TestAssembleAndRun:
         recipe = ('[task]\noutput_schema = "json_field"\n'
                   '[reference]\nfile = "ref.jsonl"\n')
         config = write_config(tmp_path / "cfg", recipe=recipe,
-                              reference=[{"source": "the cat", "target": "kot"}])
+                              reference=[{"source": "the cat", "target": "kot"}],
+                              storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n')
         assembled = assemble(config, client_factory=scripted_factory())
         from ragkit.retrieve.retrievers import LexicalRetriever
         assert isinstance(assembled.retriever, LexicalRetriever)
         hits = assembled.retriever.retrieve("cat", k=1)
         assert hits and hits[0].text == "the cat -> kot"
-
-    def test_on_disk_reference_index_is_built_once_and_reused(self, tmp_path: Path) -> None:
-        # With an on-disk document store the corpus is streamed in on the first assemble and the
-        # persisted rows are reused on the next — no re-ingest (the build-once path keys on the
-        # document store's count()).
-        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF,
-                              reference=[{"source": "the cat sat", "target": "kot"}],
-                              storage='[lexical]\ndriver = "fts5"\npath = "lex.db"\n'
-                                      '[documents]\ndriver = "sqlite"\npath = "rows.db"\n')
-        first = assemble(config, client_factory=scripted_factory())
-        assert first.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
-        # Overwrite the source corpus; a reuse (no re-ingest) still serves the original passage.
-        (config / "ref.jsonl").write_text('{"source": "a dog ran", "target": "pies"}\n',
-                                          encoding="utf-8")
-        second = assemble(config, client_factory=scripted_factory())
-        assert second.retriever.retrieve("cat", k=1)[0].text == "the cat sat -> kot"
 
     def test_injected_retriever_overrides_the_config(self, tmp_path: Path) -> None:
         # The replace-without-editing-our-code seam for a corpus-stateful Retriever: a caller
@@ -117,34 +103,9 @@ class TestAssembleAndRun:
 
 
 class TestRetrievalToml:
-    def test_lexical_stack_from_config(self, tmp_path: Path) -> None:
-        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=_REF,
-                              retrieval='[retrieval]\nkind = "lexical"\n[retrieval.lexical]\n'
-                                        'min_score = 0.1\n')
-        assembled = assemble(config, client_factory=scripted_factory())
-        from ragkit.retrieve.retrievers import LexicalRetriever
-        assert isinstance(assembled.retriever, LexicalRetriever)
-
-    def test_hybrid_stack_from_config_assembles_and_retrieves(self, tmp_path: Path) -> None:
-        retrieval = ('[retrieval]\nkind = "hybrid"\ncandidate_pool = 10\n'
-                     '[retrieval.dense]\nmodel = "embedder"\n'
-                     '[retrieval.rerank]\nenabled = true\nmodel = "reranker"\n')
-        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
-                              reference=_REF, storage=_VECTOR_STORAGE, retrieval=retrieval)
-        assembled = assemble(config, client_factory=retrieval_factory())
-        from ragkit.retrieve.hybrid import HybridRetriever
-        assert isinstance(assembled.retriever, HybridRetriever)
-        hits = assembled.retriever.retrieve("cat", k=2, min_score=0.0)
-        assert any("cat" in hit.text for hit in hits)  # the stack actually returns the cat doc
-
-    def test_dense_stack_from_config(self, tmp_path: Path) -> None:
-        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
-                              reference=_REF, storage=_VECTOR_STORAGE,
-                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
-                                        'model = "embedder"\n')
-        assembled = assemble(config, client_factory=retrieval_factory())
-        from ragkit.retrieve.retrievers import DenseRetriever
-        assert isinstance(assembled.retriever, DenseRetriever)
+    # The lexical/dense/hybrid happy paths are covered by TestPairingsStorage below (a
+    # [pairings] store is mandatory now, so those tests exercise the same assembly this class
+    # used to test over the legacy split store).
 
     def test_dense_without_a_vector_store_is_refused(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
@@ -177,7 +138,7 @@ class TestRetrievalToml:
 
     def test_wrong_kind_of_rerank_model_is_refused(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
-                              reference=_REF, storage=_VECTOR_STORAGE,
+                              reference=_REF, storage=_VECTOR_STORAGE + _PAIRINGS_STORAGE,
                               retrieval='[retrieval]\nkind = "hybrid"\n[retrieval.dense]\n'
                                         'model = "embedder"\n[retrieval.rerank]\nenabled = true\n'
                                         'model = "prod"\n')  # prod is a chat model
@@ -225,13 +186,20 @@ class TestConfigErrors:
         recipe = ('[task]\noutput_schema="json_field"\n'
                   '[reference]\nfile="ref.jsonl"\nretriever="dense"\n')
         config = write_config(tmp_path / "cfg", recipe=recipe,
-                              reference=[{"source": "a", "target": "b"}])
+                              reference=[{"source": "a", "target": "b"}],
+                              storage=_PAIRINGS_STORAGE)
         with pytest.raises(ConfigError, match="needs an embedding endpoint"):
             assemble(config, client_factory=scripted_factory())
 
     def test_unknown_recipe_section(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg", recipe='[bogus]\nx = 1\n')
         with pytest.raises(ConfigError, match="unknown key"):
+            assemble(config, client_factory=scripted_factory())
+
+    def test_reference_file_without_a_pairings_store_is_refused(self, tmp_path: Path) -> None:
+        # [reference].file needs somewhere to import into; there is no more in-memory fallback.
+        config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=_REF)
+        with pytest.raises(ConfigError, match=r"no \[pairings\] store"):
             assemble(config, client_factory=scripted_factory())
 
 
@@ -242,30 +210,14 @@ class TestReferenceCorpus:
 
     def test_blank_lines_and_missing_index_field_are_skipped(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg", recipe=self._recipe(),
-                              reference=[{"source": "the cat", "target": "kot"}, {"target": "x"}])
+                              reference=[{"source": "the cat", "target": "kot"}, {"target": "x"}],
+                              storage=_PAIRINGS_STORAGE)
         # append a blank line to the reference file
         ref = config / "ref.jsonl"
         ref.write_text(ref.read_text() + "\n\n", encoding="utf-8")
         assembled = assemble(config, client_factory=scripted_factory())
         assert assembled.retriever is not None
         assert len(assembled.retriever.retrieve("cat", k=5)) == 1  # only the one with a source
-
-    def test_invalid_json_in_reference_is_reported(self, tmp_path: Path) -> None:
-        config = write_config(tmp_path / "cfg", recipe=self._recipe(),
-                              reference=[{"source": "a", "target": "b"}])
-        ref = config / "ref.jsonl"
-        ref.write_text(ref.read_text() + "\n{not json", encoding="utf-8")
-        with pytest.raises(ConfigError, match="invalid JSON in reference"):
-            assemble(config, client_factory=scripted_factory())
-
-    def test_display_field_and_fallbacks(self, tmp_path: Path) -> None:
-        config = write_config(
-            tmp_path / "cfg", recipe=self._recipe(index_field="q"),
-            reference=[{"q": "question one", "text": "shown text"}])
-        assembled = assemble(config, client_factory=scripted_factory())
-        assert assembled.retriever is not None
-        hits = assembled.retriever.retrieve("question", k=1)
-        assert hits[0].text == "shown text"  # fell back to the 'text' field
 
 
 class TestExternalStore:
@@ -280,71 +232,6 @@ class TestExternalStore:
         assembled = assemble(config, client_factory=scripted_factory())
         assert assembled.harness.sql_store is not None
         assert assembled.harness.sql_store.query("SELECT a FROM t")[0]["a"] == 1
-
-
-class TestResumableIngest:
-    """A crashed ingest must resume from the durable floor, not restart — the whole point of
-    persisting the corpus in real databases (regression: a full dense embed died at 86% and had to
-    start over because ingest had no resume)."""
-
-    def test_discard_tail_trims_the_skewed_tail(self, tmp_path: Path) -> None:
-        from ragkit.cli.app import _discard_tail
-        from ragkit.store.lexical.fts5 import Fts5Index
-        from ragkit.store.vector.lancedb import LanceVectorIndex
-
-        lex = Fts5Index()  # a lexical index deletes one id at a time
-        for i in range(1, 6):
-            lex.index(f"ref-{i}", f"alpha{i}")
-        _discard_tail(lex, 3, batched=False)
-        assert lex.count() == 3
-        assert lex.search("alpha5", k=5) == []  # ref-5 (past the floor) gone
-        assert lex.search("alpha2", k=5)  # ref-2 (below the floor) kept
-
-        vec = LanceVectorIndex(str(tmp_path / "v"), dim=2)  # a vector index deletes a sequence
-        vec.upsert([f"ref-{i}" for i in range(1, 5)], [[1.0, 0.0]] * 4, [{}] * 4)
-        _discard_tail(vec, 3, batched=True)
-        assert vec.count() == 3
-
-        _discard_tail(lex, 3, batched=False)  # floor == size now -> nothing trimmed
-        assert lex.count() == 3
-        _discard_tail(None, 3, batched=False)  # no index -> no-op
-
-        class NoCount:
-            def delete(self, _chunk_id: str) -> None:
-                raise AssertionError("must not delete an index whose size is unknown")
-
-        _discard_tail(NoCount(), 3, batched=False)  # cannot trim without count() -> no-op
-
-    def test_ingest_resumes_from_the_durable_floor(self, tmp_path: Path) -> None:
-        from ragkit.store.lexical.fts5 import Fts5Index
-
-        def refs(n: int) -> list[dict]:
-            return [{"source": f"passage {i} about cats", "target": f"t{i}"}
-                    for i in range(1, n + 1)]
-
-        config = write_config(
-            tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=refs(3),
-            storage='[lexical]\ndriver = "fts5"\npath = "lex.db"\n'
-                    '[documents]\ndriver = "sqlite"\npath = "rows.db"\n')
-        assemble(config, client_factory=scripted_factory())  # first ingest: 3 rows in both stores
-
-        # Simulate a crash mid-next-batch: the lexical index took two rows the document store
-        # (written last) never committed, so the stores are skewed (lexical 5, documents 3).
-        lex = Fts5Index(str(config / "lex.db"))
-        lex.index("ref-4", "an orphan row")
-        lex.index("ref-5", "another orphan row")
-        lex.close()
-        assert Fts5Index(str(config / "lex.db")).count() == 5
-
-        # The source now has the five passages the crashed run was ingesting.
-        (config / "ref.jsonl").write_text(
-            "\n".join(json.dumps(r) for r in refs(5)), encoding="utf-8")
-        assembled = assemble(config, client_factory=scripted_factory())  # resume, not restart
-
-        # trimmed the two orphans, then added the real ref-4 and ref-5:
-        assert Fts5Index(str(config / "lex.db")).count() == 5
-        hit = assembled.retriever.retrieve("passage 5 cats", k=1)[0]
-        assert hit.text == "passage 5 about cats -> t5"  # the real ref-5, the orphan discarded
 
 
 class TestPairingsStorage:

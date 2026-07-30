@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ragkit.core.ports import Pairing
 from ragkit.retrieve.retrievers import DenseRetriever, LexicalRetriever, trigram_similarity
-from ragkit.store.lexical.fts5 import Fts5Index
+from ragkit.store.pairings.sqlite import SqlitePairings
 from ragkit.store.vector.lancedb import LanceVectorIndex
 
 from .conftest import fake_embedder
@@ -17,10 +18,9 @@ def _resolve(chunk_id: str) -> str | None:
 
 
 class TestLexical:
-    def _index(self) -> Fts5Index:
-        index = Fts5Index()
-        for chunk_id, text in TEXT.items():
-            index.index(chunk_id, text)
+    def _index(self) -> SqlitePairings:
+        index = SqlitePairings()
+        index.add([Pairing(chunk_id=chunk_id, source=text) for chunk_id, text in TEXT.items()])
         return index
 
     def test_retrieves_matching_chunks(self) -> None:
@@ -37,9 +37,9 @@ class TestLexical:
         assert LexicalRetriever(self._index(), _resolve).retrieve("quick", k=0) == ()
 
     def test_unresolvable_id_is_dropped(self) -> None:
-        # The index knows 'a' but the text store has lost it: dropped, not surfaced empty.
-        index = Fts5Index()
-        index.index("ghost", "the quick brown fox")
+        # The index knows 'ghost' but the text store has lost it: dropped, not surfaced empty.
+        index = SqlitePairings()
+        index.add([Pairing(chunk_id="ghost", source="the quick brown fox")])
         hits = LexicalRetriever(index, lambda cid: None).retrieve("fox", k=5)
         assert hits == ()
 

@@ -41,10 +41,9 @@ def _collect(scored: list[tuple[str, float]], resolve: Resolver, meta: MetaResol
 
 class LexicalRetriever:
     """A :class:`~ragkit.core.ports.Retriever` over a :class:`~ragkit.core.ports.SearchIndex`
-    (BM25). Strong on names, ids, and recurring terminology. Depends on the narrow ``SearchIndex``
-    read interface rather than the full :class:`~ragkit.core.ports.LexicalIndex` port, so a
-    :class:`~ragkit.core.ports.PairingStore` (which never indexes/deletes through a retriever)
-    works here too, unchanged."""
+    (BM25). Strong on names, ids, and recurring terminology. Depends only on the narrow
+    ``SearchIndex`` read side (never indexing/deleting through a retriever), which is exactly what
+    :class:`~ragkit.core.ports.PairingStore` exposes."""
 
     def __init__(self, index: SearchIndex, resolve: Resolver, *,
                  meta: MetaResolver = _no_meta, default_k: int = 10) -> None:

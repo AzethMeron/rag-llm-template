@@ -2,13 +2,14 @@
 lexicon.jsonl->LexiconStore, and catalog+journal->RunStore."""
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from ragkit.core.lexicon import Entry, write_lexicon
 from ragkit.core.records import Record, Status, write_catalog
-from ragkit.store.documents.sqlite import SqliteDocuments
 from ragkit.store.lexicon.sqlite import SqliteLexicon
 from ragkit.store.migrate import (
     migrate_documents_to_pairings,
@@ -22,10 +23,18 @@ from ragkit.store.run.sqlite import SqliteRunStore
 class TestMigrateDocumentsToPairings:
     def _old_store(self, tmp_path: Path, rows: list[tuple[str, str, dict]], *,
                    name: str = "old.docs.db") -> Path:
+        # Builds the legacy row-store schema directly (the class that once wrapped it -- retired
+        # along with the rest of the split store -- is gone; the migration itself reads this raw
+        # schema via sqlite3, not through a framework class, so this mirrors that exactly).
         path = tmp_path / name
-        docs = SqliteDocuments(str(path))
-        docs.add_documents(rows)
-        docs.close()
+        conn = sqlite3.connect(str(path))
+        conn.execute("CREATE TABLE docs(chunk_id TEXT PRIMARY KEY, display TEXT NOT NULL, "
+                     "meta TEXT NOT NULL)")
+        conn.executemany(
+            "INSERT INTO docs(chunk_id, display, meta) VALUES (?, ?, ?)",
+            [(chunk_id, display, json.dumps(meta)) for chunk_id, display, meta in rows])
+        conn.commit()
+        conn.close()
         return path
 
     def test_migrates_all_rows(self, tmp_path: Path) -> None:

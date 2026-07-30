@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Migrate a recipe's pre-overhaul on-disk artifacts (a SqliteDocuments row store, a lexicon.jsonl,
-# or a catalog+journal pair) into the new DB-native stores this project uses (PairingStore /
-# LexiconStore / RunStore -- see docs/storage-overhaul-plan.md).
+# Migrate a recipe's pre-overhaul on-disk artifacts (a legacy relational row store, a
+# lexicon.jsonl, or a catalog+journal pair) into the new DB-native stores this project uses
+# (PairingStore / LexiconStore / RunStore -- see docs/storage-overhaul-plan.md). The legacy split
+# store itself (that row store plus its separate FTS5 index) has been retired from the live
+# framework; this script's job is purely to bring forward data from before that retirement.
 #
 # Never touches or deletes the source artifact: each migration is a pure additive row-copy into the
 # destination database, safe to interrupt and re-run (resumable/idempotent -- see
@@ -61,18 +63,19 @@ case "$subcommand" in
         mkdir -p "$(dirname "$pairings_db")"
         "$python" - "$documents" "$pairings_db" "$pairings_driver" "$batch_size" <<'PY' \
             || die "documents migration failed (see the error above)"
+import sqlite3
 import sys
 import time
 from pathlib import Path
 
 from ragkit.store import PAIRING_STORES
-from ragkit.store.documents.sqlite import SqliteDocuments
 from ragkit.store.migrate import migrate_documents_to_pairings
 
 documents_path = Path(sys.argv[1])
 pairings_path, driver, batch_size = sys.argv[2], sys.argv[3], int(sys.argv[4])
 
-total_source = SqliteDocuments(str(documents_path)).count()
+with sqlite3.connect(f"file:{documents_path.resolve()}?mode=ro", uri=True) as conn:
+    total_source = conn.execute("SELECT count(*) FROM docs").fetchone()[0]
 pairing_store = PAIRING_STORES.create(driver, {"path": pairings_path})
 start = time.monotonic()
 

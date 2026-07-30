@@ -1,12 +1,12 @@
-"""The storage layer: relational, vector, and lexical stores behind their ports, plus a schema
-introspector, each resolved through a registry so a driver is swappable by config.
+"""The storage layer: relational, vector, pairing, run, and lexicon stores behind their ports,
+plus a schema introspector, each resolved through a registry so a driver is swappable by config.
 
-Two database roles are kept apart (see ``docs/architecture.md``): the framework's *own* store
-(records, chunks, metadata — writable, SQLite by default) and an *external* task data source (the
-database NL->SQL queries or form-autofill reads — read-only, never written by the framework). The
-default vector database is LanceDB and the default lexical index is SQLite FTS5; both are real and
-need no server, and both keep their optional third-party dependency confined to their driver
-module so the core import path stays clean.
+Three database roles are kept apart (see ``docs/architecture.md``): the framework's reference
+memory (``pairings``/``lexicon`` — writable, SQLite by default), its run state (``run`` — writable,
+SQLite), and an *external* task data source (the database NL->SQL queries or form-autofill reads —
+read-only, never written by the framework). The default vector database is LanceDB; it and every
+other driver keep their optional third-party dependency confined to their own module so the core
+import path stays clean.
 """
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from typing import Any
 
 from ragkit.core.config import ConfigError, load_toml, reject_unknown
 from ragkit.core.ports import (
-    DocumentStore,
-    LexicalIndex,
     LexiconStore,
     PairingStore,
     RunStore,
@@ -27,9 +25,7 @@ from ragkit.core.ports import (
 )
 from ragkit.core.registry import Registry
 
-from .documents.sqlite import DocumentStoreError, SqliteDocuments
 from .filters import FilterError, to_sql
-from .lexical.fts5 import Fts5Index, LexicalIndexError
 from .lexicon.sqlite import LexiconStoreError, SqliteLexicon
 from .pairings.common import PairingStoreError
 from .pairings.duckdb import DuckDBPairings
@@ -46,12 +42,6 @@ SQL_STORES: Registry[SqlStore] = Registry(
 VECTOR_INDEXES: Registry[VectorIndex] = Registry(
     "vector index", VectorIndex,  # type: ignore[type-abstract]
     entry_point_group="ragkit.vector_indexes")
-LEXICAL_INDEXES: Registry[LexicalIndex] = Registry(
-    "lexical index", LexicalIndex,  # type: ignore[type-abstract]
-    entry_point_group="ragkit.lexical_indexes")
-DOCUMENT_STORES: Registry[DocumentStore] = Registry(
-    "document store", DocumentStore,  # type: ignore[type-abstract]
-    entry_point_group="ragkit.document_stores")
 PAIRING_STORES: Registry[PairingStore] = Registry(
     "pairing store", PairingStore,  # type: ignore[type-abstract]
     entry_point_group="ragkit.pairing_stores")
@@ -69,8 +59,6 @@ SQL_STORES.register("sqlite", SqliteStore)
 SQL_STORES.register("duckdb", DuckDBStore)
 VECTOR_INDEXES.register("lancedb", LanceVectorIndex)
 VECTOR_INDEXES.register("qdrant", QdrantVectorIndex)
-LEXICAL_INDEXES.register("fts5", Fts5Index)
-DOCUMENT_STORES.register("sqlite", SqliteDocuments)
 PAIRING_STORES.register("sqlite", SqlitePairings)
 PAIRING_STORES.register("duckdb", DuckDBPairings)
 RUN_STORES.register("sqlite", SqliteRunStore)
@@ -81,16 +69,12 @@ SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 
 @dataclass(frozen=True, slots=True)
 class Storage:
-    """The stores a run assembles: any may be absent (a lexical-only run has no vector index; a
-    run with no external data source has no introspector). ``pairings`` is the DB-native reference
-    memory (co-located rows + search index); ``lexical``/``documents`` are the legacy split-store
-    pair, kept for recipes not yet migrated to ``[pairings]`` (see
-    docs/storage-overhaul-plan.md)."""
+    """The stores a run assembles: any may be absent (a run with no reference memory has no
+    pairings store; a run with no external data source has no introspector). ``pairings`` is the
+    DB-native reference memory (co-located rows + search index)."""
 
     sql: SqlStore | None = None
     vector: VectorIndex | None = None
-    lexical: LexicalIndex | None = None
-    documents: DocumentStore | None = None
     pairings: PairingStore | None = None
     run: RunStore | None = None
     lexicon: LexiconStore | None = None
@@ -104,16 +88,12 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
     config directory), so a config is portable rather than tied to the caller's working directory;
     a ``:memory:`` path is left as-is."""
     data = load_toml(path, what="storage file")
-    reject_unknown(data, {"sql", "vector", "lexical", "documents", "pairings", "run", "lexicon",
-                         "introspector"}, label="the storage file", path=path)
+    reject_unknown(data, {"sql", "vector", "pairings", "run", "lexicon", "introspector"},
+                   label="the storage file", path=path)
     base = base_dir or path.parent
     return Storage(
         sql=_build(SQL_STORES, data.get("sql"), label="[sql]", path=path, base=base),
         vector=_build(VECTOR_INDEXES, data.get("vector"), label="[vector]", path=path, base=base),
-        lexical=_build(LEXICAL_INDEXES, data.get("lexical"), label="[lexical]", path=path,
-                       base=base),
-        documents=_build(DOCUMENT_STORES, data.get("documents"), label="[documents]", path=path,
-                         base=base),
         pairings=_build(PAIRING_STORES, data.get("pairings"), label="[pairings]", path=path,
                         base=base),
         run=_build(RUN_STORES, data.get("run"), label="[run]", path=path, base=base),
@@ -141,11 +121,11 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path, 
 
 __all__ = [
     "Storage", "load_storage",
-    "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "DOCUMENT_STORES", "PAIRING_STORES",
+    "SQL_STORES", "VECTOR_INDEXES", "PAIRING_STORES",
     "RUN_STORES", "LEXICON_STORES", "SCHEMA_INTROSPECTORS",
     "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
-    "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex", "SqliteDocuments",
+    "LanceVectorIndex", "QdrantVectorIndex",
     "SqlitePairings", "DuckDBPairings", "SqliteRunStore", "SqliteLexicon",
-    "SqlStoreError", "LexicalIndexError", "VectorIndexError", "DocumentStoreError",
+    "SqlStoreError", "VectorIndexError",
     "PairingStoreError", "RunStoreError", "LexiconStoreError", "FilterError", "to_sql",
 ]

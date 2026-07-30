@@ -1,17 +1,20 @@
 """One-time migrations from the legacy JSONL/split-store artifacts to the DB-native stores this
-project now uses (see ``docs/storage-overhaul-plan.md``).
+project now uses (see ``docs/storage-overhaul-plan.md``). The split store itself (a relational row
+table alongside a separate FTS5 index) has been retired from the live framework — these functions
+exist purely to fold artifacts a pre-retirement recipe left on disk into the new stores.
 
 Each function reads an old artifact and writes a new store, streaming in batches so a multi-GB
 corpus never sits fully in RAM. None of them touch or delete the old artifact — leaving it in place
 is the caller's safety net until the new one is verified (``tools/migrate_storage.sh`` is the
 hardened wrapper that actually runs these against a recipe's data).
 
-Folding a :class:`~ragkit.store.documents.sqlite.SqliteDocuments` row store into a
-:class:`~ragkit.core.ports.PairingStore` deliberately does **not** touch the matching
-:class:`~ragkit.store.lexical.fts5.Fts5Index` file at all: the new pairing store builds its own
-FTS5 index from the same source text as pairings are added (see
-:mod:`ragkit.store.pairings.sqlite`), so the old search index carries nothing the migration needs —
-only the row data (chunk id, display text, meta) does.
+Folding a legacy row-store database (schema: ``docs(chunk_id, display, meta)``) into a
+:class:`~ragkit.core.ports.PairingStore` deliberately does **not** touch the matching legacy FTS5
+index file at all: the new pairing store builds its own FTS5 index from the same source text as
+pairings are added (see :mod:`ragkit.store.pairings.sqlite`), so the old search index carries
+nothing the migration needs — only the row data (chunk id, display text, meta) does. Both functions
+read the legacy schema directly via ``sqlite3``, not through a framework class, since the class
+that once wrapped it no longer exists.
 """
 from __future__ import annotations
 
@@ -26,10 +29,10 @@ from ragkit.core.records import read_catalog, read_journal
 
 
 def _iter_legacy_documents(path: Path) -> Iterator[tuple[str, str, dict]]:
-    """Stream ``(chunk_id, display, meta)`` rows from a legacy ``SqliteDocuments`` database
-    (schema: ``docs(chunk_id, display, meta)``), in original insertion order, never materialising
-    the whole table in memory. Opened read-only: a migration must never risk writing the source
-    it is reading from."""
+    """Stream ``(chunk_id, display, meta)`` rows from a legacy row-store database (schema:
+    ``docs(chunk_id, display, meta)``), in original insertion order, never materialising the whole
+    table in memory. Opened read-only: a migration must never risk writing the source it is reading
+    from."""
     conn = sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True)
     try:
         cursor = conn.execute("SELECT chunk_id, display, meta FROM docs ORDER BY rowid")
@@ -46,7 +49,7 @@ def _iter_legacy_documents(path: Path) -> Iterator[tuple[str, str, dict]]:
 def migrate_documents_to_pairings(documents_path: Path, pairing_store: PairingStore, *,
                                   batch_size: int = 5000,
                                   on_batch: Callable[[int], None] | None = None) -> int:
-    """Fold a legacy ``DocumentStore``'s rows into ``pairing_store`` as source-only pairings (no
+    """Fold a legacy row store's rows into ``pairing_store`` as source-only pairings (no
     target/context — a lexical reference entry never had either). Resumable exactly like
     :func:`~ragkit.ingest.reference.import_reference`: the floor is ``pairing_store.count()``, and
     since both the source table and the destination preserve insertion order (``ref-<line>``

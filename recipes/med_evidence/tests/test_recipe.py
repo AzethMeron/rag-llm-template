@@ -396,14 +396,15 @@ def _vector_factory(decision: dict) -> Callable[[str, float], httpx.Client]:
 class TestAbstractsMemoryOnEachVectorDB:
     """The abstracts memory is retrieved through dense retrieval over EITHER real vector DB
     (lancedb, qdrant); the grounded decision is checked against those retrieved abstracts and
-    VERIFIES. Only a storage.toml driver edit differs. (The default fts5 lexical path is covered by
-    TestEndToEnd.)"""
+    VERIFIES. Only a storage.toml driver edit differs. (The default sqlite pairing-store path is
+    covered by TestEndToEnd.)"""
 
     def test_a_grounded_decision_verifies(self, tmp_path: Path, vector_driver: str) -> None:
         config = _staged(tmp_path)
         (config / "models.toml").write_text(_VEC_MODELS, encoding="utf-8")
         (config / "storage.toml").write_text(
-            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n',
+            f'[vector]\ndriver = "{vector_driver}"\npath = "../data/v.{vector_driver}"\ndim = 3\n'
+            f'[pairings]\ndriver = "sqlite"\npath = "../data/abstracts.pairings.db"\n',
             encoding="utf-8")
         (config / "retrieval.toml").write_text(
             '[retrieval]\nkind = "dense"\n[retrieval.dense]\nmodel = "embedder"\n',

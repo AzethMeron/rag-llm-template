@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from ragkit.retrieve.embedding import EmbeddingClient, EmbeddingError, _clean
+from ragkit.retrieve.embedding import EmbeddingClient, EmbeddingError, _clean, dedup_embed
 
 from .conftest import embedding_client, fake_embedder
 
@@ -48,6 +48,48 @@ class TestEmbed:
 
         embedding_client(handler).embed(["[[0]] hello [[1]]"])
         assert "[[0]]" not in seen[0]
+
+
+class TestDedupEmbed:
+    def test_a_repeated_text_is_embedded_once(self) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            calls.extend(inputs)
+            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+
+        client = embedding_client(handler)
+        result = dedup_embed(client, ["same", "same", "different"])
+        assert calls == ["same", "different"]  # embedded once each, not three times
+        assert set(result) == {"same", "different"}
+
+    def test_every_result_maps_back_to_its_own_text(self) -> None:
+        # Distinct directions, not just magnitudes -- embed() L2-normalises, so same-direction
+        # vectors of different magnitude would collapse to the same normalised result.
+        client = fake_embedder(lambda t: [1.0, 0.0] if t == "a" else [0.0, 1.0])
+        result = dedup_embed(client, ["a", "bb"])
+        assert result["a"] == pytest.approx([1.0, 0.0])
+        assert result["bb"] == pytest.approx([0.0, 1.0])
+
+    def test_no_cache_persists_across_separate_calls(self) -> None:
+        # Deduplication is scoped to one call's batch, not a RAM-map remembered across calls -- a
+        # rare cross-call duplicate is simply re-embedded, by design (see the docstring).
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            calls.extend(inputs)
+            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+
+        client = embedding_client(handler)
+        dedup_embed(client, ["same"])
+        dedup_embed(client, ["same"])
+        assert calls == ["same", "same"]
+
+    def test_empty_input(self) -> None:
+        client = fake_embedder(lambda t: [1.0])
+        assert dedup_embed(client, []) == {}
 
 
 class TestErrors:
