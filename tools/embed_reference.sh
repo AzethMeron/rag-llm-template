@@ -8,6 +8,12 @@
 # orphans and reports what's missing) and only embeds the gap, so interrupting and re-running
 # costs nothing and duplicates nothing.
 #
+# A long, many-times-resumed run on a lancedb [vector] store accumulates one on-disk fragment per
+# upsert -- run tools/compact_vector_store.sh periodically against the same --config (e.g. every
+# few hundred thousand rows), not just once at the end. An uncompacted table with thousands of
+# fragments costs multiple GB of RSS per subsequent batch here, confirmed directly at real corpus
+# scale, before this script embeds a single new row.
+#
 # Usage: tools/embed_reference.sh --config DIR --embedding-url URL [--embedding-model NAME]
 #                                 [--batch-size N] [--http-batch-size N]
 #   --config DIR            a config directory whose storage.toml has [pairings] AND [vector]
