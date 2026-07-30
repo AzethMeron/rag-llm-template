@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from ragkit.core.config import ConfigError
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
 from ragkit.llm.pool import ModelPoolError
+from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.cli.app import assemble
 
 from .conftest import RETRIEVAL_MODELS, retrieval_factory, scripted_factory, write_config
@@ -42,13 +43,13 @@ class TestAssembleAndRun:
     def test_end_to_end_run(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg")
         assembled = assemble(config, client_factory=scripted_factory())
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="hello")], catalog)
-        progress = run_batch(assembled.harness, pending_records(catalog, journal), journal,
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="hello")])
+        progress = run_batch(assembled.harness, store.pending(), store,
                              install_signal_handlers=False)
         assert progress.verified == 1
-        [result] = list(read_journal(journal))
-        assert result.output == "RESULT" and result.status is Status.VERIFIED
+        [result] = list(store.results())
+        assert result.record.output == "RESULT" and result.record.status is Status.VERIFIED
 
     def test_reference_retriever_is_wired(self, tmp_path: Path) -> None:
         recipe = ('[task]\noutput_schema = "json_field"\n'

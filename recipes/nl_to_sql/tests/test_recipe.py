@@ -11,8 +11,9 @@ import httpx
 import pytest
 
 from ragkit.cli.app import assemble
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteIntrospector, SqliteStore
 
@@ -142,24 +143,23 @@ class TestEndToEnd:
     def test_a_safe_query_verifies(self, tmp_path: Path) -> None:
         config = _staged_config(tmp_path)
         assembled = assemble(config, client_factory=_factory("SELECT count(*) FROM singer"))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="how many singers?")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED and "SELECT" in (result.output or "")
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="how many singers?")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
+        assert "SELECT" in (result.record.output or "")
 
     def test_a_destructive_generation_is_rejected_not_executed(self, tmp_path: Path) -> None:
         config = _staged_config(tmp_path)
         # The model is made to emit a DROP every time; it is rejected and never runs. The row
         # count in the database is unchanged afterward.
         assembled = assemble(config, client_factory=_factory("DROP TABLE singer"))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="delete all singers")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="delete all singers")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
         # The table still exists and still has its row.
         check = SqliteStore(str(tmp_path / "data" / "database.sqlite"), read_only=True)
         assert check.query("SELECT count(*) AS n FROM singer")[0]["n"] == 1
@@ -350,23 +350,22 @@ class TestDatabaseSwap:
                                    filename: str) -> None:
         config = self._staged(tmp_path, store_cls, driver, filename)
         assembled = assemble(config, client_factory=_factory("SELECT count(*) FROM singer"))
-        journal = tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="how many singers?")], tmp_path / "c.jsonl")
-        run_batch(assembled.harness, pending_records(tmp_path / "c.jsonl", journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED and "SELECT" in (result.output or "")
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="how many singers?")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
+        assert "SELECT" in (result.record.output or "")
 
     def test_a_destructive_generation_is_rejected(self, tmp_path: Path, store_cls, driver: str,
                                                   filename: str) -> None:
         config = self._staged(tmp_path, store_cls, driver, filename)
         assembled = assemble(config, client_factory=_factory("DROP TABLE singer"))
-        journal = tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="delete all")], tmp_path / "c.jsonl")
-        run_batch(assembled.harness, pending_records(tmp_path / "c.jsonl", journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="delete all")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
         # The read-only binding on the chosen engine still holds the row.
         check = store_cls(str(tmp_path / "data" / filename), read_only=True)
         assert check.query("SELECT count(*) AS n FROM singer")[0]["n"] == 1

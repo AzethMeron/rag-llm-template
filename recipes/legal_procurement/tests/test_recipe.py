@@ -13,8 +13,9 @@ import pytest
 
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retrieved
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.legal_procurement import eval as lp_eval
 from recipes.legal_procurement.plugins.validators import CitationGroundingValidator
@@ -314,21 +315,20 @@ def _staged(tmp_path: Path) -> Path:
     return config
 
 
-def _catalog(tmp_path: Path) -> Path:
-    path = tmp_path / "heldout.jsonl"
-    write_catalog([Record(record_id="q1", source=QUESTION, meta={})], path)
-    return path
+def _catalog(tmp_path: Path) -> SqliteRunStore:
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="q1", source=QUESTION, meta={})])
+    return store
 
 
 class TestEndToEnd:
     def _run(self, tmp_path: Path, answer: dict) -> Record:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory(answer))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        return result
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        return result.record
 
     def test_a_grounded_answer_verifies(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, {
@@ -369,9 +369,8 @@ class TestEndToEnd:
             return httpx.Client(transport=httpx.MockTransport(handler))
 
         assembled = assemble(config, client_factory=factory)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
         assert "przetargu nieograniczonego" in seen[0]  # the retrieved legal passage
         assert "Relevant legal passages:" in seen[0]    # the retrieved block heading
 
@@ -434,8 +433,7 @@ class TestPassageMemoryOnEachVectorDB:
         assembled = assemble(config, client_factory=_vector_factory(answer))
         from ragkit.retrieve.retrievers import DenseRetriever
         assert isinstance(assembled.retriever, DenseRetriever)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED

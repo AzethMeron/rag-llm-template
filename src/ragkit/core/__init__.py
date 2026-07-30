@@ -54,6 +54,8 @@ from .records import (
     CatalogError,
     Record,
     Status,
+    export_jsonl,
+    import_jsonl,
     make_record_id,
     merge_journal,
     read_catalog,
@@ -73,6 +75,7 @@ __all__ = [
     # records
     "Record", "Status", "CatalogError", "make_record_id",
     "read_catalog", "write_catalog", "read_journal", "merge_journal",
+    "import_jsonl", "export_jsonl",
     # config
     "ConfigError", "load_toml", "as_table", "reject_unknown", "tables",
     "read_int", "read_float", "read_bool", "read_string", "read_string_list",

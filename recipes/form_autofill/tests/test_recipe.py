@@ -11,8 +11,9 @@ import httpx
 import pytest
 
 from ragkit.cli.app import assemble
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore
 
@@ -217,23 +218,22 @@ def _staged(tmp_path: Path) -> Path:
     return config
 
 
-def _heldout(tmp_path: Path) -> Path:
-    catalog = tmp_path / "heldout.jsonl"
-    write_catalog([Record(record_id="track-1", source="Track 'Song A' from 'High Voltage'",
-                          meta={"album_id": 1, "track_id": 1})], catalog)
-    return catalog
+def _heldout(tmp_path: Path) -> SqliteRunStore:
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="track-1", source="Track 'Song A' from 'High Voltage'",
+                              meta={"album_id": 1, "track_id": 1})])
+    return store
 
 
 class TestEndToEnd:
     def test_a_grounded_fill_verifies(self, tmp_path: Path) -> None:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory("Rock", 0.99))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
-        assert json.loads(result.output or "{}") == {"genre": "Rock", "unit_price": 0.99}
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
+        assert json.loads(result.record.output or "{}") == {"genre": "Rock", "unit_price": 0.99}
 
     def test_the_sibling_rows_reach_the_prompt(self, tmp_path: Path) -> None:
         # The sql_rows block must query the album's other tracks (2 and 3), excluding track 1.
@@ -253,9 +253,8 @@ class TestEndToEnd:
             return httpx.Client(transport=httpx.MockTransport(handler))
 
         assembled = assemble(config, client_factory=factory)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
         producer_prompt = seen[0]
         assert "Song B" in producer_prompt and "Song C" in producer_prompt
         assert "Song A" not in producer_prompt.split("Track to fill:")[0]  # the held-out track
@@ -264,11 +263,10 @@ class TestEndToEnd:
         # A non-positive price violates the FieldTypesValidator every attempt -> REJECTED.
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory("Rock", 0))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
 
 
 class TestEvalMain:
@@ -314,9 +312,8 @@ class TestDatabaseSwap:
                                       filename: str) -> None:
         config = self._staged(tmp_path, store_cls, driver, filename)
         assembled = assemble(config, client_factory=_factory("Rock", 0.99))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_heldout(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
-        assert json.loads(result.output or "{}") == {"genre": "Rock", "unit_price": 0.99}
+        store = _heldout(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
+        assert json.loads(result.record.output or "{}") == {"genre": "Rock", "unit_price": 0.99}

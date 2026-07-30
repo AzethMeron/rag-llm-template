@@ -10,9 +10,10 @@ import httpx
 import pytest
 
 from ragkit.cli.app import assemble
-from ragkit.core.records import Record, Status, read_journal, write_catalog
+from ragkit.core.records import Record, Status
 from ragkit.core.rules import Severity
-from ragkit.harness import pending_records, run_batch
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.translation.plugins.validators import (
     EchoValidator,
@@ -103,12 +104,11 @@ class TestEndToEnd:
         assembled = assemble(config, substitutions={"source_language": "English",
                                                     "target_language": "Polish"},
                              client_factory=_factory(json.dumps({"translation": "Kot śpi."})))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="The cat is sleeping.")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED and result.output == "Kot śpi."
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat is sleeping.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED and result.record.output == "Kot śpi."
 
     def test_an_untranslated_echo_is_rejected(self, tmp_path: Path) -> None:
         config = _staged_config(tmp_path)
@@ -118,12 +118,11 @@ class TestEndToEnd:
         assembled = assemble(config, substitutions={"source_language": "English",
                                                     "target_language": "Polish"},
                              client_factory=_factory(json.dumps({"translation": source})))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source=source)], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source=source)])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
 
     def test_reference_examples_are_retrieved(self, tmp_path: Path) -> None:
         config = _staged_config(tmp_path)
@@ -185,12 +184,11 @@ class TestFaithfulToLlmTranslator:
         assembled = assemble(config, substitutions={"source_language": "English",
                                                     "target_language": "Polish"},
                              client_factory=_factory(json.dumps({"translation": "Sure! Kot śpi."})))
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="The cat sleeps.")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.REJECTED
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat sleeps.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.REJECTED
 
 
 # --- retrieval memory over each real vector DB (lancedb, qdrant) + the default fts5 lexical -------
@@ -255,12 +253,11 @@ class TestRetrievalMemoryOnEachVectorDB:
                              client_factory=_vector_factory())
         from ragkit.retrieve.retrievers import DenseRetriever
         assert isinstance(assembled.retriever, DenseRetriever)
-        catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-        write_catalog([Record(record_id="1", source="The cat is sleeping.")], catalog)
-        run_batch(assembled.harness, pending_records(catalog, journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED and result.output == "Kot śpi."
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat is sleeping.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED and result.record.output == "Kot śpi."
 
 
 from recipes.translation import eval as tr_eval  # noqa: E402

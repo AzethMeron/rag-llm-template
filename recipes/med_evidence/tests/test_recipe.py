@@ -13,8 +13,9 @@ import pytest
 
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retrieved
-from ragkit.core.records import Record, Status, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.med_evidence import eval as med_eval
 from recipes.med_evidence import reader_eval
@@ -262,21 +263,20 @@ def _staged(tmp_path: Path) -> Path:
     return config
 
 
-def _catalog(tmp_path: Path) -> Path:
-    path = tmp_path / "heldout.jsonl"
-    write_catalog([Record(record_id="q1", source=QUESTION, meta={"pmid": "q1"})], path)
-    return path
+def _catalog(tmp_path: Path) -> SqliteRunStore:
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="q1", source=QUESTION, meta={"pmid": "q1"})])
+    return store
 
 
 class TestEndToEnd:
     def _run(self, tmp_path: Path, decision: dict) -> Record:
         config = _staged(tmp_path)
         assembled = assemble(config, client_factory=_factory(decision))
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        return result
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        return result.record
 
     def test_a_grounded_decision_verifies(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, {
@@ -306,9 +306,8 @@ class TestEndToEnd:
             return httpx.Client(transport=httpx.MockTransport(handler))
 
         assembled = assemble(config, client_factory=factory)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
         prompt = seen[0]
         assert "cardiovascular events" in prompt          # the retrieved abstract
         assert "abstract excerpts" in prompt              # the retrieved block heading rendered
@@ -416,11 +415,10 @@ class TestAbstractsMemoryOnEachVectorDB:
         assembled = assemble(config, client_factory=_vector_factory(decision))
         from ragkit.retrieve.retrievers import DenseRetriever
         assert isinstance(assembled.retriever, DenseRetriever)
-        journal = tmp_path / "j.jsonl"
-        run_batch(assembled.harness, pending_records(_catalog(tmp_path), journal), journal,
-                  install_signal_handlers=False)
-        [result] = list(read_journal(journal))
-        assert result.status is Status.VERIFIED
+        store = _catalog(tmp_path)
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED
 
 
 class TestReaderEval:

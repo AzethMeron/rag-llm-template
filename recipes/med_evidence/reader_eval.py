@@ -29,9 +29,10 @@ from pathlib import Path
 
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retrieved
-from ragkit.core.records import Record, read_journal, write_catalog
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, export_jsonl
+from ragkit.harness import run_batch
 from ragkit.llm.pool import ClientFactory
+from ragkit.store.run.sqlite import SqliteRunStore
 
 from .eval import EvalError, evaluate, load_gold
 
@@ -97,16 +98,18 @@ def main(argv: Sequence[str] | None = None, *, client_factory: ClientFactory | N
         return 1
 
     args.journal.parent.mkdir(parents=True, exist_ok=True)
-    catalog = args.journal.with_name(args.journal.stem + ".catalog.jsonl")
-    write_catalog(records, catalog)
+    run_db = args.journal.with_name(args.journal.stem + ".run.db")
+    store = SqliteRunStore(str(run_db))
+    store.add_records(records)
     assembled = assemble(args.config, retriever=SelfAbstractRetriever(by_question),
                          client_factory=client_factory)
-    run_batch(assembled.harness, pending_records(catalog, args.journal), args.journal,
-              install_signal_handlers=False)
+    run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+    export_jsonl(store, args.journal)  # journal.jsonl artifact, for read_journal/eval.py parity
 
     produced: dict[str, str | None] = {
-        r.record_id: (r.output if r.status.is_injectable else None)
-        for r in read_journal(args.journal)}
+        result.record.record_id:
+            (result.record.output if result.record.status.is_injectable else None)
+        for result in store.results()}
     report = evaluate([(rid, produced.get(rid), decision) for rid, decision in gold.items()])
     print(f"[reader / gold-context] decided {report.produced}/{report.total} | "
           f"accuracy {report.accuracy:.3f} | "
