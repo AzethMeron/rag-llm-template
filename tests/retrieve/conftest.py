@@ -9,8 +9,11 @@ from ragkit.retrieve.embedding import EmbeddingClient
 from ragkit.retrieve.rerank import RerankClient
 
 
-def embedding_client(handler: Callable[[httpx.Request], httpx.Response]) -> EmbeddingClient:
-    return EmbeddingClient(base_url="http://x/v1",
+def embedding_client(handler: Callable[[httpx.Request], httpx.Response], *,
+                     max_retries: int = 0) -> EmbeddingClient:
+    # Default max_retries=0 (fail fast) keeps the tests deterministic and quick; retry tests pass a
+    # count explicitly. retry_backoff_seconds=0 means a retry never actually sleeps.
+    return EmbeddingClient(base_url="http://x/v1", max_retries=max_retries, retry_backoff_seconds=0,
                            client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 

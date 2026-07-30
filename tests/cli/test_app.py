@@ -1,6 +1,7 @@
 """Config-driven assembly, and the checks it makes before any server is contacted."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -278,3 +279,68 @@ class TestExternalStore:
         assembled = assemble(config, client_factory=scripted_factory())
         assert assembled.harness.sql_store is not None
         assert assembled.harness.sql_store.query("SELECT a FROM t")[0]["a"] == 1
+
+
+class TestResumableIngest:
+    """A crashed ingest must resume from the durable floor, not restart — the whole point of
+    persisting the corpus in real databases (regression: a full dense embed died at 86% and had to
+    start over because ingest had no resume)."""
+
+    def test_discard_tail_trims_the_skewed_tail(self, tmp_path: Path) -> None:
+        from ragkit.cli.app import _discard_tail
+        from ragkit.store.lexical.fts5 import Fts5Index
+        from ragkit.store.vector.lancedb import LanceVectorIndex
+
+        lex = Fts5Index()  # a lexical index deletes one id at a time
+        for i in range(1, 6):
+            lex.index(f"ref-{i}", f"alpha{i}")
+        _discard_tail(lex, 3, batched=False)
+        assert lex.count() == 3
+        assert lex.search("alpha5", k=5) == []  # ref-5 (past the floor) gone
+        assert lex.search("alpha2", k=5)  # ref-2 (below the floor) kept
+
+        vec = LanceVectorIndex(str(tmp_path / "v"), dim=2)  # a vector index deletes a sequence
+        vec.upsert([f"ref-{i}" for i in range(1, 5)], [[1.0, 0.0]] * 4, [{}] * 4)
+        _discard_tail(vec, 3, batched=True)
+        assert vec.count() == 3
+
+        _discard_tail(lex, 3, batched=False)  # floor == size now -> nothing trimmed
+        assert lex.count() == 3
+        _discard_tail(None, 3, batched=False)  # no index -> no-op
+
+        class NoCount:
+            def delete(self, _chunk_id: str) -> None:
+                raise AssertionError("must not delete an index whose size is unknown")
+
+        _discard_tail(NoCount(), 3, batched=False)  # cannot trim without count() -> no-op
+
+    def test_ingest_resumes_from_the_durable_floor(self, tmp_path: Path) -> None:
+        from ragkit.store.lexical.fts5 import Fts5Index
+
+        def refs(n: int) -> list[dict]:
+            return [{"source": f"passage {i} about cats", "target": f"t{i}"}
+                    for i in range(1, n + 1)]
+
+        config = write_config(
+            tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=refs(3),
+            storage='[lexical]\ndriver = "fts5"\npath = "lex.db"\n'
+                    '[documents]\ndriver = "sqlite"\npath = "rows.db"\n')
+        assemble(config, client_factory=scripted_factory())  # first ingest: 3 rows in both stores
+
+        # Simulate a crash mid-next-batch: the lexical index took two rows the document store
+        # (written last) never committed, so the stores are skewed (lexical 5, documents 3).
+        lex = Fts5Index(str(config / "lex.db"))
+        lex.index("ref-4", "an orphan row")
+        lex.index("ref-5", "another orphan row")
+        lex.close()
+        assert Fts5Index(str(config / "lex.db")).count() == 5
+
+        # The source now has the five passages the crashed run was ingesting.
+        (config / "ref.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in refs(5)), encoding="utf-8")
+        assembled = assemble(config, client_factory=scripted_factory())  # resume, not restart
+
+        # trimmed the two orphans, then added the real ref-4 and ref-5:
+        assert Fts5Index(str(config / "lex.db")).count() == 5
+        hit = assembled.retriever.retrieve("passage 5 cats", k=1)[0]
+        assert hit.text == "passage 5 about cats -> t5"  # the real ref-5, the orphan discarded

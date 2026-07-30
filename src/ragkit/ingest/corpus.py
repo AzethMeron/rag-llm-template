@@ -66,6 +66,16 @@ class Corpus:
         # SQLite store is used, so a hit still resolves through the database abstraction.
         self._documents: DocumentStore = documents if documents is not None else SqliteDocuments()
 
+    @property
+    def lexical_index(self) -> LexicalIndex | None:
+        """The lexical index, exposed so a resuming ingest can reconcile it to the doc floor."""
+        return self._lexical
+
+    @property
+    def vector_index(self) -> VectorIndex | None:
+        """The vector index, exposed so a resuming ingest can reconcile it to the document floor."""
+        return self._vector
+
     def add_all(self, items: Iterable[CorpusItem]) -> int:
         """Index every item, streaming in batches so the source is never fully materialised in RAM;
         returns the count. Within a batch, identical index texts are embedded once; the rows,
