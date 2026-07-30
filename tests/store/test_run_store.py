@@ -155,6 +155,32 @@ class TestCrashSafety:
             SqliteRunStore(synchronous="BOGUS")
 
 
+class TestConcurrency:
+    """busy_timeout: a concurrent reader must not fail outright on the brief window WAL doesn't
+    cover (e.g. its own checkpoint) -- it retries instead of raising immediately."""
+
+    def test_busy_timeout_is_set(self) -> None:
+        store = SqliteRunStore()
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000  # type: ignore[attr-defined]
+
+    def test_a_reader_is_not_locked_out_by_an_open_writer(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        path = str(tmp_path / "run.db")
+        store = SqliteRunStore(path)
+        store.add_records([_record("1", "a")])
+
+        writer = sqlite3.connect(path)
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO records(record_id, source, status) VALUES ('2', 'b', "
+                       "'pending')")
+        try:
+            assert store.count_records() == 1
+        finally:
+            writer.rollback()
+            writer.close()
+
+
 class TestErrors:
     def test_bad_path_is_a_structured_error(self, tmp_path: Path) -> None:
         with pytest.raises(RunStoreError, match="could not open the run store"):

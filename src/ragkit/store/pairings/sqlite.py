@@ -52,7 +52,7 @@ END;
 
 
 class SqlitePairings:
-    """A :class:`~ragkit.core.ports.PairingStore` over one co-located SQLite database. Also
+    """A :class:`~ragkit.core.ports.PairingStore` over one co-located SQLite database (WAL). Also
     satisfies :class:`~ragkit.core.ports.SearchIndex` (``search``), by design (see the port
     docstring)."""
 
@@ -62,6 +62,12 @@ class SqlitePairings:
         self._lock = threading.Lock()
         try:
             self._conn = sqlite3.connect(path, check_same_thread=False)
+            # WAL: a reader never blocks on a concurrent writer's commit (the default rollback
+            # journal takes an exclusive lock for the whole commit, so even a plain read can hit
+            # "database is locked"). busy_timeout covers the remaining brief windows (e.g. two
+            # writers, or WAL's own checkpoint) by retrying instead of failing immediately.
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(_SCHEMA.format(tokenizer=tokenizer))
             self._conn.commit()
         except sqlite3.Error as exc:

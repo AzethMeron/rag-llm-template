@@ -116,6 +116,10 @@ class SqliteRunStore:
         try:
             self._conn = sqlite3.connect(path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # A concurrent reader retries instead of failing outright on the brief window WAL
+            # doesn't cover (e.g. its own checkpoint) -- see SqlitePairings.__init__ for the fuller
+            # rationale (this store already had WAL; busy_timeout closes the remaining gap).
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute(f"PRAGMA synchronous={mode}")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)

@@ -24,10 +24,10 @@ class LexiconStoreError(RagkitError):
 
 
 class SqliteLexicon:
-    """A :class:`~ragkit.core.ports.LexiconStore` over one SQLite table. ``add`` upserts (keyed on
-    ``term``+``category``): re-importing a corrected rendering replaces the stale one, unlike the
-    pairing store's first-write-wins idempotency -- a lexicon is a *current* mapping, not a log of
-    distinct produced facts."""
+    """A :class:`~ragkit.core.ports.LexiconStore` over one SQLite table (WAL). ``add`` upserts
+    (keyed on ``term``+``category``): re-importing a corrected rendering replaces the stale one,
+    unlike the pairing store's first-write-wins idempotency -- a lexicon is a *current* mapping,
+    not a log of distinct produced facts."""
 
     CONFIG_KEYS = frozenset({"path"})
 
@@ -35,6 +35,10 @@ class SqliteLexicon:
         self._lock = threading.Lock()
         try:
             self._conn = sqlite3.connect(path, check_same_thread=False)
+            # WAL + busy_timeout: see SqlitePairings.__init__ for why (a reader must not fail on
+            # "database is locked" just because a writer's commit is in flight elsewhere).
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS lexicon("
                 "term TEXT NOT NULL, rendering TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', "

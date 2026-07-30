@@ -142,6 +142,39 @@ class TestSqliteCoLocationInvariant:
         assert store.search("alpha", k=5) == []
 
 
+class TestSqliteConcurrency:
+    """WAL + busy_timeout: a concurrent reader must not be locked out by a writer's in-flight
+    transaction (an on-disk store is read from many workers at once during a run)."""
+
+    def test_journal_mode_is_wal(self, tmp_path: Path) -> None:
+        store = SqlitePairings(str(tmp_path / "p.db"))
+        assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+    def test_busy_timeout_is_set(self) -> None:
+        store = SqlitePairings()
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+    def test_a_reader_is_not_locked_out_by_an_open_writer(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        path = str(tmp_path / "p.db")
+        store = SqlitePairings(path)
+        store.add([Pairing(chunk_id="p1", source="alpha")])
+
+        # A second connection holds a write transaction open -- under the default rollback
+        # journal this would make the read below raise "database is locked"; under WAL it must
+        # not, because a reader never blocks on a writer's uncommitted transaction.
+        writer = sqlite3.connect(path)
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO pairings(chunk_id, source) VALUES ('p2', 'beta')")
+        try:
+            assert store.count() == 1
+            assert store.search("alpha", k=5)
+        finally:
+            writer.rollback()
+            writer.close()
+
+
 class TestDuckDBWeakerAtomicity:
     """Documented tradeoff (see the module docstring): unlike the SQLite driver, DuckDB does not
     roll back a whole batch when one row in it fails -- a partial write can survive."""

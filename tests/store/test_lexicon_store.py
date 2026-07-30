@@ -68,6 +68,36 @@ class TestCompat:
         assert [e.term for e in hits] == ["cat"]
 
 
+class TestConcurrency:
+    """WAL + busy_timeout: a concurrent reader must not be locked out by a writer's in-flight
+    transaction."""
+
+    def test_journal_mode_is_wal(self, tmp_path: Path) -> None:
+        store = SqliteLexicon(str(tmp_path / "lex.db"))
+        assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+    def test_busy_timeout_is_set(self) -> None:
+        store = SqliteLexicon()
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+    def test_a_reader_is_not_locked_out_by_an_open_writer(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        path = str(tmp_path / "lex.db")
+        store = SqliteLexicon(path)
+        store.add([Entry(term="cat", rendering="kot")])
+
+        writer = sqlite3.connect(path)
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO lexicon(term, rendering, category, entity_id) "
+                       "VALUES ('dog', 'pies', '', 0)")
+        try:
+            assert len(store.entries()) == 1
+        finally:
+            writer.rollback()
+            writer.close()
+
+
 class TestErrors:
     def test_bad_path_is_a_structured_error(self, tmp_path: Path) -> None:
         with pytest.raises(LexiconStoreError, match="could not open the lexicon store"):
