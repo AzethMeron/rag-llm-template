@@ -109,3 +109,12 @@ class TestReconcilePaging:
         assert index.count() == 300
         missing = index.reconcile([*ids[:150], "new"])  # drop 150 orphans, report 1 missing
         assert missing == {"new"} and index.count() == 150
+
+
+class TestConfig:
+    def test_missing_dependency_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        from ragkit.store.vector import qdrant as driver
+        monkeypatch.setitem(sys.modules, "qdrant_client", None)
+        with pytest.raises(VectorIndexError, match="needs 'qdrant-client'"):
+            driver._require_qdrant()

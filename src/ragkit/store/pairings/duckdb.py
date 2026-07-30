@@ -168,9 +168,30 @@ class DuckDBPairings:
                        meta=json.loads(meta), verified=bool(verified), created_at=created_at)
 
     def all_ids(self) -> Iterator[str]:
+        # fetchmany, not fetchall: the ids of a multi-million-row corpus must not all be resident
+        # at once. A dedicated cursor (not self._conn.execute() directly) is required here: DuckDB's
+        # connection.execute() returns the connection itself and reuses one shared result-set
+        # state, so an unrelated self._conn.execute() call from another method while this generator
+        # is paused between yields would silently clobber this iteration's position (verified: a
+        # second execute() on the same connection redirects a still-open fetchmany() to its result
+        # set). con.cursor() gives an independent result-set, immune to that. The lock is only ever
+        # held for one fetch at a time (never across a yield), so a slow/lazy consumer cannot hold
+        # this store's lock indefinitely and starve other threads.
         with self._lock:
-            rows = self._conn.execute("SELECT chunk_id FROM pairings ORDER BY chunk_id").fetchall()
-        return (row[0] for row in rows)
+            try:
+                cursor = self._conn.cursor()
+                cursor.execute("SELECT chunk_id FROM pairings ORDER BY chunk_id")
+            except Exception as exc:
+                raise PairingStoreError(f"could not list pairing ids: {exc}") from exc
+        while True:
+            with self._lock:
+                try:
+                    rows = cursor.fetchmany(1000)
+                except Exception as exc:
+                    raise PairingStoreError(f"could not list pairing ids: {exc}") from exc
+            if not rows:
+                return
+            yield from (row[0] for row in rows)
 
     def _count_locked(self) -> int:
         return int(self._conn.execute("SELECT count(*) FROM pairings").fetchone()[0])

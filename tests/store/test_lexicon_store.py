@@ -97,6 +97,41 @@ class TestConcurrency:
             writer.rollback()
             writer.close()
 
+    def test_busy_timeout_exhausted_is_a_structured_error_not_a_raw_one(
+            self, tmp_path: Path) -> None:
+        # Two writers genuinely contend even under WAL; this holds a competing write lock for
+        # longer than the store's busy_timeout so the retry budget is actually exhausted, and
+        # checks the resulting sqlite3.OperationalError comes back as LexiconStoreError.
+        import sqlite3
+        import threading
+        import time
+
+        path = str(tmp_path / "lex.db")
+        store = SqliteLexicon(path)
+        store._conn.execute("PRAGMA busy_timeout=100")
+        store.add([Entry(term="cat", rendering="kot")])
+
+        lock_acquired = threading.Event()
+
+        def _hold_write_lock_for(seconds: float) -> None:
+            writer = sqlite3.connect(path)
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("INSERT INTO lexicon(term, rendering, category, entity_id) "
+                           "VALUES ('dog', 'pies', '', 0)")
+            lock_acquired.set()
+            time.sleep(seconds)
+            writer.rollback()
+            writer.close()
+
+        holder = threading.Thread(target=_hold_write_lock_for, args=(0.4,))
+        holder.start()
+        lock_acquired.wait(timeout=5)
+        try:
+            with pytest.raises(LexiconStoreError, match="could not add entries"):
+                store.add([Entry(term="bird", rendering="ptak")])
+        finally:
+            holder.join(timeout=5)
+
 
 class TestErrors:
     def test_bad_path_is_a_structured_error(self, tmp_path: Path) -> None:

@@ -160,6 +160,9 @@ class InMemoryRunStore:
             latest_index[result.record.record_id] = index
         return (self._results[i] for i in sorted(latest_index.values()))
 
+    def latest_records(self) -> Iterator[Record]:
+        return (result.record for result in self.results())
+
     def count_records(self) -> int:
         return len(self._records)
 
@@ -352,6 +355,18 @@ class TestRunStoreConformance:
             record=Record(record_id="1", source="a", status=Status.VERIFIED, output="second")))
         [result] = list(store.results())
         assert result.record.output == "second"
+
+    def test_latest_records_matches_results_but_only_the_record(
+            self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add_records([Record(record_id="1", source="a")])
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.PRODUCED, output="first")))
+        store.append_result(RunResult(
+            record=Record(record_id="1", source="a", status=Status.VERIFIED, output="second")))
+        [record] = list(store.latest_records())
+        assert record.output == "second" and record.status is Status.VERIFIED
+        assert [r.record for r in store.results()] == list(store.latest_records())
 
     def test_pending_excludes_skipped_and_completed_records(
             self, factory: Callable[[Path], RunStore], tmp_path: Path) -> None:

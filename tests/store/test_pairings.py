@@ -2,6 +2,7 @@
 invariant, and the DuckDB driver's documented weaker-atomicity tradeoff."""
 from __future__ import annotations
 
+import multiprocessing
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,19 @@ DRIVERS: list[tuple[type[Any], str]] = [
     (SqlitePairings, "p.sqlite"),
     (DuckDBPairings, "p.duckdb"),
 ]
+
+
+def _open_duckdb_pairings_in_a_new_process(path: str, result: multiprocessing.Queue[str]
+                                            ) -> None:
+    # Module-level (not nested): the "spawn" context re-imports this module in the child, so the
+    # target must be picklable by reference, not a closure.
+    try:
+        DuckDBPairings(path)
+        result.put("ok")
+    except PairingStoreError as exc:
+        result.put(f"PairingStoreError: {exc}")
+    except Exception as exc:  # noqa: BLE001 -- reports any type back so the assertion names it
+        result.put(f"{type(exc).__name__}: {exc}")
 
 
 @pytest.mark.parametrize(("driver", "filename"), DRIVERS)
@@ -126,6 +140,38 @@ class TestLifecycle:
         with pytest.raises(PairingStoreError, match="could not add pairings"):
             store.add([Pairing(chunk_id="c2", source="more")])
 
+    def test_all_ids_spans_multiple_fetch_batches_correctly(
+            self, driver: type[Any], filename: str, tmp_path: Path) -> None:
+        # Regression: all_ids() fetches in pages internally (so a multi-million-row corpus is
+        # never held fully in memory just to list ids); this proves the paging loop itself is
+        # correct across a page boundary, not just for a handful of rows in one page.
+        store = driver(str(tmp_path / filename))
+        expected = {f"c{i}" for i in range(2500)}
+        store.add([Pairing(chunk_id=cid, source=f"source {cid}") for cid in expected])
+        assert set(store.all_ids()) == expected
+        store.close()
+
+    def test_all_ids_on_a_closed_store_is_structured(self, driver: type[Any], filename: str,
+                                                      tmp_path: Path) -> None:
+        store = driver(str(tmp_path / filename))
+        store.add([Pairing(chunk_id="c1", source="hello world")])
+        store.close()
+        with pytest.raises(PairingStoreError, match="could not list pairing ids"):
+            list(store.all_ids())
+
+    def test_all_ids_error_on_a_later_fetch_batch_is_structured(
+            self, driver: type[Any], filename: str, tmp_path: Path) -> None:
+        # Distinct from the closed-before-iterating case above: this closes the store *after* the
+        # first (successful) fetchmany batch, so the failure is the loop's second-and-later
+        # iteration, not just its opening query.
+        store = driver(str(tmp_path / filename))
+        store.add([Pairing(chunk_id="c1", source="hello world")])
+        ids = store.all_ids()
+        assert next(ids) == "c1"
+        store.close()
+        with pytest.raises(PairingStoreError, match="could not list pairing ids"):
+            next(ids)
+
 
 class TestSqliteCoLocationInvariant:
     """The property the co-located schema exists for: a write to the row and its search entry
@@ -174,6 +220,42 @@ class TestSqliteConcurrency:
             writer.rollback()
             writer.close()
 
+    def test_busy_timeout_exhausted_is_a_structured_error_not_a_raw_one(
+            self, tmp_path: Path) -> None:
+        # Unlike the read above (WAL: readers never contend with a writer), two *writers* do
+        # genuinely contend -- WAL still allows only one at a time. This holds a competing write
+        # lock for longer than the store's busy_timeout, so the retry budget is actually
+        # exhausted (not just brushed past), and checks the resulting sqlite3.OperationalError
+        # ("database is locked") comes back as PairingStoreError, not the raw driver exception.
+        import sqlite3
+        import threading
+        import time
+
+        path = str(tmp_path / "p.db")
+        store = SqlitePairings(path)
+        store._conn.execute("PRAGMA busy_timeout=100")  # shrunk so the test stays fast
+        store.add([Pairing(chunk_id="p1", source="alpha")])
+
+        lock_acquired = threading.Event()
+
+        def _hold_write_lock_for(seconds: float) -> None:
+            writer = sqlite3.connect(path)
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("INSERT INTO pairings(chunk_id, source) VALUES ('p2', 'beta')")
+            lock_acquired.set()
+            time.sleep(seconds)
+            writer.rollback()
+            writer.close()
+
+        holder = threading.Thread(target=_hold_write_lock_for, args=(0.4,))
+        holder.start()
+        lock_acquired.wait(timeout=5)
+        try:
+            with pytest.raises(PairingStoreError, match="could not add pairings"):
+                store.add([Pairing(chunk_id="p3", source="gamma")])
+        finally:
+            holder.join(timeout=5)
+
 
 class TestDuckDBWeakerAtomicity:
     """Documented tradeoff (see the module docstring): unlike the SQLite driver, DuckDB does not
@@ -189,6 +271,32 @@ class TestDuckDBWeakerAtomicity:
         assert store.get("ok") is not None
         # The index is still rebuilt over whatever survived, so it is never stale either.
         assert store.search("alpha", k=5)
+
+
+class TestDuckDBConcurrency:
+    """Unlike SQLite (WAL: many readers, one writer, all in one process-shared connection),
+    DuckDB has no equivalent of busy_timeout for a genuinely separate OS *process* opening the
+    same on-disk file: a second process is refused outright, immediately, not retried. This must
+    still surface as a structured PairingStoreError, not a raw duckdb.IOException -- the actual
+    real-world incident this guards against is two admin processes (an ingest job and a status
+    check, say) pointed at the same on-disk pairings database."""
+
+    def test_a_second_process_opening_the_same_file_is_refused_and_structured(
+            self, tmp_path: Path) -> None:
+        path = str(tmp_path / "p.duckdb")
+        store = DuckDBPairings(path)  # held open for the whole test -- the file lock is live
+        store.add([Pairing(chunk_id="c1", source="alpha")])
+
+        ctx = multiprocessing.get_context("spawn")
+        queue: multiprocessing.Queue[str] = ctx.Queue()
+        proc = ctx.Process(target=_open_duckdb_pairings_in_a_new_process, args=(path, queue))
+        proc.start()
+        outcome = queue.get(timeout=30)
+        proc.join(timeout=30)
+
+        assert outcome.startswith("PairingStoreError:"), outcome
+        assert "could not open the pairing store" in outcome
+        store.close()
 
 
 class TestDuckDBRebuildFailure:

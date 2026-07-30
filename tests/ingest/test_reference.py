@@ -15,7 +15,7 @@ from ragkit.ingest.reference import (
     import_reference,
     reference_pairings,
 )
-from ragkit.retrieve.embedding import EmbeddingClient
+from ragkit.retrieve.embedding import EmbeddingClient, EmbeddingError
 from ragkit.store.pairings.sqlite import SqlitePairings
 from ragkit.store.vector.lancedb import LanceVectorIndex
 
@@ -129,6 +129,49 @@ class TestImportReference:
         hits = vector.search([1.0, 0.0], k=1)
         assert hits[0][0] == "ref-1"
 
+    def test_a_real_embedder_failure_mid_import_is_durable_and_resumable(
+            self, tmp_path: Path) -> None:
+        """Unlike the test below (which fakes the crashed state directly), this drives a real
+        embedding-server failure partway through a multi-batch import: the exception must
+        propagate (not be swallowed), whatever pairings were durably committed before the failure
+        must survive, and a plain resume (fresh embedder, no injected failure) must both finish
+        the corpus and heal the vector gap the crash left -- the actual multi-hour-job
+        crash/restart scenario, not just its already-healed end state."""
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(6)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+
+        call_count = 0
+
+        def flaky_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise httpx.ConnectError("simulated embedding-server crash")
+            inputs = json.loads(request.content)["input"]
+            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
+
+        flaky_embedder = EmbeddingClient(
+            base_url="http://x/v1", max_retries=0,
+            client=httpx.Client(transport=httpx.MockTransport(flaky_handler)))
+
+        with pytest.raises(EmbeddingError):
+            import_reference(path, store, vector=vector, embedder=flaky_embedder, batch_size=2)
+
+        # The pairing store commits a batch before embedding it (see _flush), so the crashed
+        # batch's two pairings are durably present even though their vectors never landed.
+        assert store.count() == 4
+        assert vector.count() == 2
+
+        # A plain resume (no injected failure) picks up where the pairing store left off, and its
+        # unconditional final reconcile_vector() re-embeds the batch the crash orphaned.
+        good_embedder = _embedder(lambda t: [1.0, 0.0])
+        added = import_reference(path, store, vector=vector, embedder=good_embedder, batch_size=2)
+        assert added == 2  # only ref-5/ref-6, the two lines never reached before the crash
+        assert store.count() == 6
+        assert vector.count() == 6
+
     def test_reconcile_re_embeds_a_gap_left_by_a_previous_crash(self, tmp_path: Path) -> None:
         path = tmp_path / "ref.jsonl"
         _write_jsonl(path, [{"source": "cat text"}, {"source": "dog text"}])
@@ -175,6 +218,61 @@ class TestImportReference:
 
         reconcile_vector(_StubPairingStore(), _StubVectorIndex(),  # type: ignore[arg-type]
                          embedder=None)  # type: ignore[arg-type]
+
+    def test_reconcile_rejects_a_bad_batch_size(self, tmp_path: Path) -> None:
+        from ragkit.ingest.reference import reconcile_vector
+
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        with pytest.raises(ValueError, match="batch_size must be >= 1"):
+            reconcile_vector(store, vector, embedder, batch_size=0)
+
+    def test_reconcile_embeds_missing_ids_in_chunks_of_batch_size(self, tmp_path: Path) -> None:
+        """Regression test: a large gap must be re-embedded in bounded batches, not as one call
+        that holds every missing row's vector in RAM at once (the same shape of bug the LanceDB
+        indexed_ids() fix addressed on the read side)."""
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(10)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        import_reference(path, store)  # pairings only, no vector -- so all 10 are "missing"
+
+        upsert_call_sizes: list[int] = []
+        real_upsert = vector.upsert
+
+        def _tracking_upsert(ids: object, vectors: object, metas: object) -> None:
+            upsert_call_sizes.append(len(vectors))  # type: ignore[arg-type]
+            real_upsert(ids, vectors, metas)  # type: ignore[arg-type]
+
+        vector.upsert = _tracking_upsert  # type: ignore[method-assign]
+
+        missing = reconcile_vector(store, vector, embedder, batch_size=3)
+
+        assert missing == 10
+        assert upsert_call_sizes == [3, 3, 3, 1]  # 10 ids in batches of 3, never all at once
+        assert vector.count() == 10
+
+    def test_reconcile_on_batch_reports_total_upfront_then_progress(self, tmp_path: Path) -> None:
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(5)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        import_reference(path, store)
+
+        calls: list[tuple[int, int]] = []
+        reconcile_vector(store, vector, embedder, batch_size=2,
+                         on_batch=lambda done, total: calls.append((done, total)))
+
+        assert calls[0] == (0, 5)  # scope announced before any batch runs
+        assert calls[-1] == (5, 5)  # final call reports completion
+        assert all(done <= total for done, total in calls)
 
 
 class TestPairingRetrievers:

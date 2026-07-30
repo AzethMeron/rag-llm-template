@@ -180,6 +180,42 @@ class TestConcurrency:
             writer.rollback()
             writer.close()
 
+    def test_busy_timeout_exhausted_is_a_structured_error_not_a_raw_one(
+            self, tmp_path: Path) -> None:
+        # Two writers genuinely contend even under WAL (only one at a time); this holds a
+        # competing write lock for longer than the store's busy_timeout so the retry budget is
+        # actually exhausted, and checks the resulting sqlite3.OperationalError comes back as
+        # RunStoreError, not the raw driver exception.
+        import sqlite3
+        import threading
+        import time
+
+        path = str(tmp_path / "run.db")
+        store = SqliteRunStore(path)
+        store._conn.execute("PRAGMA busy_timeout=100")  # type: ignore[attr-defined]
+        store.add_records([_record("1", "a")])
+
+        lock_acquired = threading.Event()
+
+        def _hold_write_lock_for(seconds: float) -> None:
+            writer = sqlite3.connect(path)
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "INSERT INTO records(record_id, source, status) VALUES ('2', 'b', 'pending')")
+            lock_acquired.set()
+            time.sleep(seconds)
+            writer.rollback()
+            writer.close()
+
+        holder = threading.Thread(target=_hold_write_lock_for, args=(0.4,))
+        holder.start()
+        lock_acquired.wait(timeout=5)
+        try:
+            with pytest.raises(RunStoreError, match="could not add records"):
+                store.add_records([_record("3", "c")])
+        finally:
+            holder.join(timeout=5)
+
 
 class TestErrors:
     def test_bad_path_is_a_structured_error(self, tmp_path: Path) -> None:
@@ -208,6 +244,53 @@ class TestErrors:
         with pytest.raises(RunStoreError, match="could not append a result"):
             store.append_result(RunResult(
                 record=_record("1", "a", status=Status.VERIFIED, output="A")))
+
+    def test_pending_on_a_closed_store_is_structured(self) -> None:
+        store = SqliteRunStore()
+        store.add_records([_record("1", "a")])
+        store.close()
+        with pytest.raises(RunStoreError, match="pending query failed"):
+            list(store.pending())
+
+    def test_results_on_a_closed_store_is_structured(self) -> None:
+        store = SqliteRunStore()
+        store.add_records([_record("1", "a")])
+        store.append_result(RunResult(record=_record("1", "a", status=Status.VERIFIED,
+                                                      output="A")))
+        store.close()
+        with pytest.raises(RunStoreError, match="results query failed"):
+            list(store.results())
+
+    def test_latest_records_on_a_closed_store_is_structured(self) -> None:
+        store = SqliteRunStore()
+        store.add_records([_record("1", "a")])
+        store.append_result(RunResult(record=_record("1", "a", status=Status.VERIFIED,
+                                                      output="A")))
+        store.close()
+        with pytest.raises(RunStoreError, match="latest_records query failed"):
+            list(store.latest_records())
+
+
+class TestStreamingAtScale:
+    """Regression: pending()/results()/latest_records() fetch internally in pages (never the
+    whole table in one fetchall()), so this proves the paging loop is correct across a page
+    boundary, not just for a handful of rows in one page."""
+
+    def test_pending_spans_multiple_fetch_batches_correctly(self) -> None:
+        store = SqliteRunStore()
+        ids = {f"r{i}" for i in range(2500)}
+        store.add_records([_record(rid, "x") for rid in ids])
+        assert {r.record_id for r in store.pending()} == ids
+
+    def test_results_and_latest_records_span_multiple_fetch_batches_correctly(self) -> None:
+        store = SqliteRunStore()
+        ids = {f"r{i}" for i in range(2500)}
+        store.add_records([_record(rid, "x") for rid in ids])
+        for rid in ids:
+            store.append_result(RunResult(
+                record=_record(rid, "x", status=Status.VERIFIED, output=f"out-{rid}")))
+        assert {r.record.record_id for r in store.results()} == ids
+        assert {r.record_id for r in store.latest_records()} == ids
 
     def test_injected_clock_drives_created_at(self) -> None:
         ticks = iter([1.0, 2.0])

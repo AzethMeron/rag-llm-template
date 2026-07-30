@@ -19,7 +19,8 @@ from ..store.pairings.sink import PairingSink
 
 
 def write_back(run_store: RunStore, sink: Sink, pairing_store: PairingStore, *,
-               vector: VectorIndex | None = None, embedder: EmbeddingClient | None = None) -> int:
+               vector: VectorIndex | None = None, embedder: EmbeddingClient | None = None,
+               batch_size: int = 1000) -> int:
     """Read ``run_store.results()``, keep the ``VERIFIED`` ones — the conservative bar for what is
     trusted enough to teach a later run; ``PRODUCED`` covers an output kept *despite* a flagged
     rule or an incomplete review, not something write-back should reinforce — fold each result's
@@ -35,8 +36,9 @@ def write_back(run_store: RunStore, sink: Sink, pairing_store: PairingStore, *,
     the count reported is meaningless.
 
     If ``vector``/``embedder`` are given, :func:`~ragkit.ingest.reference.reconcile_vector` runs
-    afterward, so a later dense/hybrid retrieval sees the new pairings too. Returns the number of
-    pairings actually added.
+    afterward (embedding the gap in chunks of ``batch_size``, not all at once), so a later
+    dense/hybrid retrieval sees the new pairings too. Returns the number of pairings actually
+    added.
     """
     if vector is not None and embedder is None:
         raise ValueError("a vector index needs an embedder to reconcile after write-back")
@@ -48,5 +50,5 @@ def write_back(run_store: RunStore, sink: Sink, pairing_store: PairingStore, *,
     sink.write(enriched)
     added = pairing_store.count() - before
     if vector is not None and embedder is not None:
-        reconcile_vector(pairing_store, vector, embedder)
+        reconcile_vector(pairing_store, vector, embedder, batch_size=batch_size)
     return added

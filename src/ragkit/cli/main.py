@@ -75,7 +75,7 @@ def _seed_memory(harness: Harness, store: RunStore) -> None:
     EstablishedBlock`) is reproducible rather than starting empty on every restart. A no-op when
     the recipe has no memory wired, or the store has no results yet (a fresh run)."""
     if harness.memory is not None:
-        harness.memory = OutputMemory.from_records(result.record for result in store.results())
+        harness.memory = OutputMemory.from_records(store.latest_records())
 
 
 def cmd_import(args: argparse.Namespace) -> int:

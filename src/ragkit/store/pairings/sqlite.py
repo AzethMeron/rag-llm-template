@@ -141,9 +141,23 @@ class SqlitePairings:
                        meta=json.loads(meta), verified=bool(verified), created_at=created_at)
 
     def all_ids(self) -> Iterator[str]:
+        # fetchmany, not fetchall: the ids of a multi-million-row corpus must not all be resident
+        # at once. The lock is only ever held for one fetch at a time (never across a yield), so
+        # a slow/lazy consumer cannot hold this store's lock indefinitely and starve other threads.
         with self._lock:
-            rows = self._conn.execute("SELECT chunk_id FROM pairings ORDER BY id").fetchall()
-        return (row[0] for row in rows)
+            try:
+                cursor = self._conn.execute("SELECT chunk_id FROM pairings ORDER BY id")
+            except sqlite3.Error as exc:
+                raise PairingStoreError(f"could not list pairing ids: {exc}") from exc
+        while True:
+            with self._lock:
+                try:
+                    rows = cursor.fetchmany(1000)
+                except sqlite3.Error as exc:
+                    raise PairingStoreError(f"could not list pairing ids: {exc}") from exc
+            if not rows:
+                return
+            yield from (row[0] for row in rows)
 
     def _count_locked(self) -> int:
         return int(self._conn.execute("SELECT count(*) FROM pairings").fetchone()[0])

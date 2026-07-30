@@ -399,6 +399,12 @@ class RunStore(Protocol):
         """The latest result for every record that has one."""
         ...
 
+    def latest_records(self) -> Iterator[Record]:
+        """Like :meth:`results`, but yields the finished ``Record`` alone rather than the full
+        ``RunResult`` -- for a caller that only needs what a record produced (its output, status,
+        meta), not the retrieval/review/violation detail behind how it got there."""
+        ...
+
     def count_records(self) -> int: ...
 
 

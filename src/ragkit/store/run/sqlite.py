@@ -72,6 +72,19 @@ _LATEST_RESULTS_QUERY = (
     "ON latest.record_id = res.record_id AND latest.seq = res.seq "
     "ORDER BY res.seq")
 
+# A caller wanting just the finished Record (source/output/status/meta -- e.g. seeding output
+# memory, or a plain export) does not need the wide per-attempt columns _LATEST_RESULTS_QUERY
+# also carries (retrieved chunk text, reviews, violations): reading those into memory on every
+# `ragkit run` invocation just to throw them away was measured as a genuine memory cost at scale.
+_LATEST_RECORDS_QUERY = (
+    "SELECT r.record_id, r.source, r.rel_path, r.line_no, r.span_start, r.span_end, r.meta, "
+    "res.status, res.output, res.notes "
+    "FROM results res "
+    "JOIN records r ON r.record_id = res.record_id "
+    "JOIN (SELECT record_id, max(seq) AS seq FROM results GROUP BY record_id) latest "
+    "ON latest.record_id = res.record_id AND latest.seq = res.seq "
+    "ORDER BY res.seq")
+
 
 class RunStoreError(RagkitError):
     """A run-store operation failed, the run database is misconfigured, or ``append_result`` was
@@ -83,6 +96,13 @@ def _row_to_record(row: tuple[Any, ...]) -> Record:
     return Record(record_id=record_id, source=source, status=Status(status), rel_path=rel_path,
                  line_no=line_no, span_start=span_start, span_end=span_end,
                  meta=json.loads(meta))
+
+
+def _row_to_latest_record(row: tuple[Any, ...]) -> Record:
+    record_id, source, rel_path, line_no, span_start, span_end, meta, status, output, notes = row
+    return Record(record_id=record_id, source=source, status=Status(status), output=output,
+                 rel_path=rel_path, line_no=line_no, span_start=span_start, span_end=span_end,
+                 notes=tuple(json.loads(notes)), meta=json.loads(meta))
 
 
 def _row_to_result(row: tuple[Any, ...]) -> RunResult:
@@ -192,14 +212,38 @@ class SqliteRunStore:
         return {row[0] for row in rows}
 
     def pending(self) -> Iterator[Record]:
-        with self._lock:
-            rows = self._conn.execute(_PENDING_QUERY, (Status.PENDING.value,)).fetchall()
-        return (_row_to_record(row) for row in rows)
+        return (_row_to_record(row)
+                for row in self._stream_rows("pending", _PENDING_QUERY, (Status.PENDING.value,)))
 
     def results(self) -> Iterator[RunResult]:
+        return (_row_to_result(row) for row in self._stream_rows("results", _LATEST_RESULTS_QUERY))
+
+    def latest_records(self) -> Iterator[Record]:
+        """Like :meth:`results`, but the finished ``Record`` alone (source/output/status/notes/
+        meta) -- not the full per-attempt ``RunResult`` (retrieved chunk text, reviews,
+        violations). For a caller that only needs what a record produced, not how, this reads a
+        fraction of the bytes per row that ``results()`` does."""
+        return (_row_to_latest_record(row)
+                for row in self._stream_rows("latest_records", _LATEST_RECORDS_QUERY))
+
+    def _stream_rows(self, label: str, sql: str,
+                     params: tuple[Any, ...] = ()) -> Iterator[tuple[Any, ...]]:
+        """fetchmany, not fetchall, for every multi-row query: a corpus-scale run/result history
+        must not be fully resident in memory just to iterate it once."""
         with self._lock:
-            rows = self._conn.execute(_LATEST_RESULTS_QUERY).fetchall()
-        return (_row_to_result(row) for row in rows)
+            try:
+                cursor = self._conn.execute(sql, params)
+            except sqlite3.Error as exc:
+                raise RunStoreError(f"{label} query failed: {exc}") from exc
+        while True:
+            with self._lock:
+                try:
+                    rows = cursor.fetchmany(1000)
+                except sqlite3.Error as exc:
+                    raise RunStoreError(f"{label} query failed: {exc}") from exc
+            if not rows:
+                return
+            yield from rows
 
     def _count_records_locked(self) -> int:
         return int(self._conn.execute("SELECT count(*) FROM records").fetchone()[0])

@@ -341,4 +341,4 @@ def export_jsonl(store: RunStore, path: Path) -> int:
     file, atomically (reuses :func:`write_catalog`'s temp-then-rename write) — so a script written
     against the legacy journal format (:func:`read_journal`, a recipe's ``eval.py``) keeps working
     unchanged over a DB-native run. Returns the number of results written."""
-    return write_catalog((result.record for result in store.results()), path)
+    return write_catalog(store.latest_records(), path)

@@ -10,7 +10,7 @@ harder problem) and is kept in sync via :meth:`~ragkit.core.ports.VectorIndex.re
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +86,7 @@ def import_reference(path: Path, pairing_store: PairingStore, *, index_field: st
     if batch:
         total += _flush(batch, pairing_store, vector, embedder)
     if vector is not None and embedder is not None:
-        reconcile_vector(pairing_store, vector, embedder)
+        reconcile_vector(pairing_store, vector, embedder, batch_size=batch_size)
     return total
 
 
@@ -110,18 +110,40 @@ def embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
     vector.upsert(ids, vecs, metas)
 
 
-def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex,
-                     embedder: EmbeddingClient) -> None:
+def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder: EmbeddingClient,
+                     *, batch_size: int = 1000,
+                     on_batch: Callable[[int, int], None] | None = None) -> int:
     """Close any gap between ``pairing_store`` (authoritative) and ``vector`` (derived): drop
     orphan vectors and re-embed whatever the store has that the index is missing. Safe to call
     even when nothing changed (an empty reconcile is a no-op) -- callers use it after any batch of
-    additions so a previous crash's gap is always eventually closed."""
-    missing = vector.reconcile(pairing_store.all_ids())
-    if not missing:
-        return
-    pairings = [p for chunk_id in missing if (p := pairing_store.get(chunk_id)) is not None]
-    if pairings:
-        embed_and_upsert(pairings, vector, embedder)
+    additions so a previous crash's gap is always eventually closed. Returns how many ids were
+    missing (and thus re-embedded).
+
+    ``missing`` is embedded and upserted in chunks of ``batch_size``, not as one call: after a
+    normal per-batch-synced import this set is small, but a caller reconciling from a wipe, a
+    crash that lost a large tail, or a from-scratch backend migration can have ``missing`` be the
+    *entire* corpus -- embedding and upserting millions of rows in one call would hold every one of
+    their vectors in RAM at once, the same shape of bug as :meth:`LanceVectorIndex.indexed_ids`
+    once did on the read side.
+
+    ``on_batch``, if given, is called with ``(done, total)`` once up front (``done=0``, so a
+    long-running caller can report the full scope before any work happens) and again after each
+    batch -- the one seam a caller needs to report progress on a multi-hour reconcile without this
+    function reimplementing its own chunking loop just to add printing (see
+    ``tools/embed_reference.sh``)."""
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    missing = sorted(vector.reconcile(pairing_store.all_ids()))
+    if on_batch is not None:
+        on_batch(0, len(missing))
+    for i in range(0, len(missing), batch_size):
+        chunk_ids = missing[i:i + batch_size]
+        pairings = [p for chunk_id in chunk_ids if (p := pairing_store.get(chunk_id)) is not None]
+        if pairings:
+            embed_and_upsert(pairings, vector, embedder)
+        if on_batch is not None:
+            on_batch(min(i + batch_size, len(missing)), len(missing))
+    return len(missing)
 
 
 class PairingRetrievers:
