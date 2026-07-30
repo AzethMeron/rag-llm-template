@@ -128,6 +128,31 @@ class TestWriteback:
         assert pairing is not None
         assert pairing.source == "q1" and pairing.target == "a1" and pairing.context == "ctx"
 
+    def test_a_subsequent_run_retrieves_the_written_back_pairing(self, tmp_path: Path) -> None:
+        # The accumulating-memory use case: writeback's whole point is that a LATER run's retriever
+        # -- built the same way assemble() builds one, over the same [pairings] path -- finds what
+        # an earlier run produced and verified.
+        from ragkit.core.ports import RunResult
+        from ragkit.ingest.reference import PairingRetrievers
+        from ragkit.store.pairings.sqlite import SqlitePairings
+
+        run_db = tmp_path / "run.db"
+        run_store = SqliteRunStore(str(run_db))
+        run_store.add_records([Record(record_id="1", source="What is the capital of Poland?")])
+        run_store.append_result(RunResult(
+            record=Record(record_id="1", source="What is the capital of Poland?",
+                         status=Status.VERIFIED, output="Warsaw"),
+            context_passage="ctx"))
+
+        pairings_db = tmp_path / "pairings.db"
+        code = main(["writeback", "--run-db", str(run_db), "--pairings-db", str(pairings_db),
+                     "--no-log-file"])
+        assert code == 0
+
+        retrievers = PairingRetrievers(SqlitePairings(str(pairings_db)))
+        hits = retrievers.lexical_retriever().retrieve("capital of Poland", k=1)
+        assert hits and "Warsaw" in hits[0].text
+
     def test_vector_path_without_embedding_url_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit, match="needs --embedding-url"):
             main(["writeback", "--run-db", str(tmp_path / "run.db"),
