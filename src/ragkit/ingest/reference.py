@@ -112,7 +112,9 @@ def embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
 
 def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder: EmbeddingClient,
                      *, batch_size: int = 1000,
-                     on_batch: Callable[[int, int], None] | None = None) -> int:
+                     on_batch: Callable[[int, int], None] | None = None,
+                     compact_every: int | None = None,
+                     on_compact: Callable[[], None] | None = None) -> int:
     """Close any gap between ``pairing_store`` (authoritative) and ``vector`` (derived): drop
     orphan vectors and re-embed whatever the store has that the index is missing. Safe to call
     even when nothing changed (an empty reconcile is a no-op) -- callers use it after any batch of
@@ -130,19 +132,34 @@ def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder:
     long-running caller can report the full scope before any work happens) and again after each
     batch -- the one seam a caller needs to report progress on a multi-hour reconcile without this
     function reimplementing its own chunking loop just to add printing (see
-    ``tools/embed_reference.sh``)."""
+    ``tools/embed_reference.sh``).
+
+    ``compact_every``, if given, calls ``vector.compact()`` (silently skipped if ``vector`` has no
+    such method -- a LanceDB-specific maintenance operation, not part of the general VectorIndex
+    port) after every ``compact_every`` batches, announced via ``on_compact`` first if given. A
+    table upserted in many small batches over a long run accumulates one on-disk fragment per
+    batch without bound; confirmed directly at real corpus scale that this alone can cost multiple
+    GB of RSS per subsequent batch once fragments number in the thousands. Periodic compaction
+    during the run, not just once at the end, is what keeps that bounded."""
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    if compact_every is not None and compact_every < 1:
+        raise ValueError(f"compact_every must be >= 1, got {compact_every}")
     missing = sorted(vector.reconcile(pairing_store.all_ids()))
     if on_batch is not None:
         on_batch(0, len(missing))
-    for i in range(0, len(missing), batch_size):
+    compact = getattr(vector, "compact", None)
+    for batches_done, i in enumerate(range(0, len(missing), batch_size), start=1):
         chunk_ids = missing[i:i + batch_size]
         pairings = [p for chunk_id in chunk_ids if (p := pairing_store.get(chunk_id)) is not None]
         if pairings:
             embed_and_upsert(pairings, vector, embedder)
         if on_batch is not None:
             on_batch(min(i + batch_size, len(missing)), len(missing))
+        if compact is not None and compact_every is not None and batches_done % compact_every == 0:
+            if on_compact is not None:
+                on_compact()
+            compact()
     return len(missing)
 
 

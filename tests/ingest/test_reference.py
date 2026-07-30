@@ -274,6 +274,105 @@ class TestImportReference:
         assert calls[-1] == (5, 5)  # final call reports completion
         assert all(done <= total for done, total in calls)
 
+    def test_reconcile_compacts_every_n_batches(self, tmp_path: Path) -> None:
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(10)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        import_reference(path, store)
+
+        compact_calls = 0
+        real_compact = vector.compact
+
+        def _tracking_compact() -> None:
+            nonlocal compact_calls
+            compact_calls += 1
+            real_compact()
+
+        vector.compact = _tracking_compact  # type: ignore[method-assign]
+
+        announced = 0
+        def _on_compact() -> None:
+            nonlocal announced
+            announced += 1
+
+        reconcile_vector(store, vector, embedder, batch_size=2, compact_every=3,
+                         on_compact=_on_compact)
+
+        assert compact_calls == 1  # 5 batches of 2 -> compacts once, after the 3rd batch
+        assert announced == 1
+        assert vector.count() == 10  # compaction never loses data
+
+    def test_reconcile_compacts_without_an_on_compact_callback(self, tmp_path: Path) -> None:
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(4)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        import_reference(path, store)
+
+        # compact_every=1 with no on_compact -- must compact every batch without needing the
+        # announce callback.
+        reconcile_vector(store, vector, embedder, batch_size=2, compact_every=1)
+        assert vector.count() == 4
+
+    def test_reconcile_compact_every_zero_or_none_disables_it(self, tmp_path: Path) -> None:
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(4)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        import_reference(path, store)
+
+        def _boom() -> None:
+            raise AssertionError("must not compact when compact_every is None")
+
+        vector.compact = _boom  # type: ignore[method-assign]
+        reconcile_vector(store, vector, embedder, batch_size=2, compact_every=None)
+        assert vector.count() == 4
+
+    def test_reconcile_rejects_a_bad_compact_every(self, tmp_path: Path) -> None:
+        from ragkit.ingest.reference import reconcile_vector
+
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        with pytest.raises(ValueError, match="compact_every must be >= 1"):
+            reconcile_vector(store, vector, embedder, compact_every=0)
+
+    def test_reconcile_skips_compact_on_a_vector_index_without_one(self, tmp_path: Path) -> None:
+        # Qdrant (and any driver without compact()) must not blow up just because compact_every
+        # was passed -- getattr(vector, "compact", None) is None and nothing is called.
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(4)])
+        store = SqlitePairings()
+        import_reference(path, store)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+
+        class _StubVectorIndexNoCompact:
+            def __init__(self) -> None:
+                self._ids: dict[str, list[float]] = {}
+
+            def reconcile(self, chunk_ids: object) -> set[str]:
+                return set(chunk_ids) - self._ids.keys()  # type: ignore[arg-type]
+
+            def upsert(self, ids: object, vectors: object, _metas: object) -> None:
+                self._ids.update(zip(ids, vectors, strict=True))  # type: ignore[arg-type]
+
+        vector = _StubVectorIndexNoCompact()
+        reconcile_vector(store, vector, embedder, batch_size=2,  # type: ignore[arg-type]
+                         compact_every=1)
+        assert len(vector._ids) == 4
+
 
 class TestPairingRetrievers:
     def test_lexical_retriever(self) -> None:
