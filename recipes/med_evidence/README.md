@@ -90,6 +90,23 @@ PYTHONPATH=src:. python -m recipes.med_evidence.eval \
     --journal work/med.jsonl --gold recipes/med_evidence/data/gold.jsonl
 ```
 
+### Two eval modes (why the numbers below aren't the PubMedQA leaderboard)
+
+This recipe's default is a **RAG task**: the model must *retrieve* the answer-bearing abstract among
+~600k distractors and *then* decide — strictly harder than PubMedQA, whose published numbers hand
+the gold abstract to the model. So the accuracy here is **not** directly comparable to the
+leaderboard (human ≈ 0.78; strong instruction-tuned LLMs ≈ 0.75–0.80; majority-class ≈ 0.55).
+
+For a **directly comparable** number, `reader_eval.py` reproduces the benchmark setup: a
+`SelfAbstractRetriever` gives each question its *own* gold abstract as the sole context (same panel,
+same grounding — only retrieval is swapped), isolating decision quality:
+
+```bash
+PYTHONPATH=src:. python -m recipes.med_evidence.reader_eval \
+    --config recipes/med_evidence/config --abstracts recipes/med_evidence/data/abstracts.jsonl \
+    --heldout recipes/med_evidence/data/heldout.jsonl --gold recipes/med_evidence/data/gold.jsonl
+```
+
 ### Measured baseline
 
 Over a **597k-doc corpus** (596,055 ClinicalTrials.gov studies + 1,000 PubMedQA abstracts), **60

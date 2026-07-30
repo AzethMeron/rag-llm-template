@@ -17,6 +17,7 @@ from ragkit.core.records import Record, Status, read_journal, write_catalog
 from ragkit.harness import pending_records, run_batch
 
 from recipes.med_evidence import eval as med_eval
+from recipes.med_evidence import reader_eval
 from recipes.med_evidence.plugins.validators import (
     DecisionEnumValidator,
     GroundedEvidenceValidator,
@@ -420,3 +421,72 @@ class TestAbstractsMemoryOnEachVectorDB:
                   install_signal_handlers=False)
         [result] = list(read_journal(journal))
         assert result.status is Status.VERIFIED
+
+
+class TestReaderEval:
+    """The PubMedQA-standard reader eval: the model is given its OWN gold abstract (no retrieval),
+    so the accuracy is comparable to the published benchmark."""
+
+    def test_self_retriever_returns_the_gold_abstract(self) -> None:
+        retriever = reader_eval.SelfAbstractRetriever({QUESTION: ABSTRACT})
+        hits = retriever.retrieve(QUESTION, k=5)
+        assert len(hits) == 1 and hits[0].text == ABSTRACT
+        assert retriever.retrieve("a question it never saw", k=5) == ()
+
+    def test_load_reader_set_joins_question_to_its_own_abstract(self, tmp_path: Path) -> None:
+        (tmp_path / "abstracts.jsonl").write_text(
+            json.dumps({"id": "p1", "text": ABSTRACT}) + "\n"
+            + json.dumps({"id": "p2", "text": "unrelated"}) + "\n", encoding="utf-8")
+        (tmp_path / "heldout.jsonl").write_text(
+            json.dumps({"record_id": "p1", "source": QUESTION, "meta": {"pmid": "p1"}}) + "\n",
+            encoding="utf-8")
+        records, by_q = reader_eval.load_reader_set(
+            tmp_path / "abstracts.jsonl", tmp_path / "heldout.jsonl")
+        assert [r.record_id for r in records] == ["p1"]
+        assert by_q[QUESTION] == ABSTRACT  # its own abstract, not the unrelated one
+
+    def test_load_reader_set_errors_on_a_missing_abstract(self, tmp_path: Path) -> None:
+        (tmp_path / "abstracts.jsonl").write_text("", encoding="utf-8")
+        (tmp_path / "heldout.jsonl").write_text(
+            json.dumps({"record_id": "p1", "source": QUESTION, "meta": {"pmid": "p1"}}) + "\n",
+            encoding="utf-8")
+        with pytest.raises(med_eval.EvalError, match="no abstract"):
+            reader_eval.load_reader_set(tmp_path / "abstracts.jsonl", tmp_path / "heldout.jsonl")
+
+    def test_load_reader_set_errors_on_missing_files(self, tmp_path: Path) -> None:
+        with pytest.raises(med_eval.EvalError, match="not found"):
+            reader_eval.load_reader_set(tmp_path / "nope.jsonl", tmp_path / "nope.jsonl")
+
+    def _write_set(self, tmp_path: Path, gold: str = "yes") -> Path:
+        config = _staged(tmp_path)
+        (tmp_path / "abstracts.jsonl").write_text(
+            json.dumps({"id": "p1", "text": ABSTRACT}) + "\n", encoding="utf-8")
+        (tmp_path / "heldout.jsonl").write_text(
+            json.dumps({"record_id": "p1", "source": QUESTION, "meta": {"pmid": "p1"}}) + "\n",
+            encoding="utf-8")
+        (tmp_path / "gold.jsonl").write_text(
+            json.dumps({"record_id": "p1", "decision": gold}) + "\n", encoding="utf-8")
+        return config
+
+    def test_reader_main_runs_against_the_gold_abstract_and_scores(
+            self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        config = self._write_set(tmp_path, gold="yes")
+        decision = {"decision": "yes", "rationale": "A significant reduction is reported.",
+                    "evidence": ["statin therapy significantly reduced the incidence of major "
+                                 "cardiovascular events"]}
+        rc = reader_eval.main(
+            ["--config", str(config), "--abstracts", str(tmp_path / "abstracts.jsonl"),
+             "--heldout", str(tmp_path / "heldout.jsonl"), "--gold", str(tmp_path / "gold.jsonl"),
+             "--journal", str(tmp_path / "work" / "r.jsonl")], client_factory=_factory(decision))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "reader / gold-context" in out and "accuracy 1.000" in out
+
+    def test_reader_main_reports_an_error_for_missing_gold(self, tmp_path: Path,
+                                                           capsys: pytest.CaptureFixture) -> None:
+        config = self._write_set(tmp_path)
+        rc = reader_eval.main(
+            ["--config", str(config), "--abstracts", str(tmp_path / "abstracts.jsonl"),
+             "--heldout", str(tmp_path / "heldout.jsonl"), "--gold", str(tmp_path / "absent.jsonl"),
+             "--journal", str(tmp_path / "work" / "r.jsonl")], client_factory=_factory({}))
+        assert rc == 1 and "error:" in capsys.readouterr().err
