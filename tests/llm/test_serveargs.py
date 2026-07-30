@@ -58,6 +58,34 @@ class TestRenderFlags:
         endpoint = EndpointSpec(name="local", base_url="http://127.0.0.1:8080/v1")
         assert "-ngl" not in render_flags(endpoint, models_dir="/m")
 
+    def test_models_preset_pointing_at_a_missing_file_is_refused(self, tmp_path: Path) -> None:
+        # A moved/deleted --models-preset file must fail fast here with a structured error naming
+        # the flag and path, not surface only inside llama-server's own startup output.
+        endpoint = EndpointSpec(name="embed", base_url="http://127.0.0.1:8081/v1",
+                                server_args=("--models-preset", str(tmp_path / "nope.ini")))
+        with pytest.raises(ServeArgsError, match="does not exist as a file"):
+            render_flags(endpoint, models_dir="/m")
+
+    def test_models_preset_pointing_at_a_real_file_is_accepted(self, tmp_path: Path) -> None:
+        preset = tmp_path / "presets.ini"
+        preset.write_text("[embed]\nmodel = x.gguf\n", encoding="utf-8")
+        endpoint = EndpointSpec(name="embed", base_url="http://127.0.0.1:8081/v1",
+                                server_args=("--models-preset", str(preset)))
+        flags = render_flags(endpoint, models_dir="/m")
+        assert flags[-2:] == ["--models-preset", str(preset)]
+
+    def test_models_preset_with_no_value_is_refused(self) -> None:
+        endpoint = EndpointSpec(name="embed", base_url="http://127.0.0.1:8081/v1",
+                                server_args=("--models-preset",))
+        with pytest.raises(ServeArgsError, match="has no value following it"):
+            render_flags(endpoint, models_dir="/m")
+
+    def test_an_unrelated_flag_is_never_checked_as_a_file(self) -> None:
+        # -ngl's value ("99") is not a path and must not be validated as one.
+        endpoint = EndpointSpec(name="local", base_url="http://127.0.0.1:8080/v1",
+                                server_args=("-ngl", "99"))
+        assert render_flags(endpoint, models_dir="/m")[-2:] == ["-ngl", "99"]
+
 
 class TestFlagsFor:
     def test_reads_the_named_endpoint_from_config(self, tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,6 +26,26 @@ from .pool import EndpointSpec, load_models
 
 class ServeArgsError(RagkitError):
     """The requested endpoint cannot be turned into a launch command."""
+
+
+# server_args flags known to take a file path as their next value. Checked before launch so a
+# missing/moved file (e.g. tools/embed_presets.ini) fails fast with a structured error naming the
+# flag and path, rather than surfacing only inside llama-server's own startup output.
+_FILE_TAKING_FLAGS = frozenset({"--models-preset"})
+
+
+def _validate_server_args_files(server_args: Sequence[str]) -> None:
+    for i, arg in enumerate(server_args):
+        if arg not in _FILE_TAKING_FLAGS:
+            continue
+        if i + 1 >= len(server_args):
+            raise ServeArgsError(f"server_args' {arg} has no value following it (expected a file "
+                                 f"path)")
+        path = server_args[i + 1]
+        if not Path(path).is_file():
+            raise ServeArgsError(
+                f"server_args' {arg} {path!r} does not exist as a file (checked relative to "
+                f"{Path.cwd()}, the directory this is launched from)")
 
 
 def host_port(base_url: str) -> tuple[str, int]:
@@ -44,6 +65,7 @@ def host_port(base_url: str) -> tuple[str, int]:
 def render_flags(endpoint: EndpointSpec, *, models_dir: str) -> list[str]:
     """The ``llama-server`` router-mode flags for ``endpoint``: bind address, resident cap, models
     directory, then the endpoint's own launch ``server_args`` verbatim."""
+    _validate_server_args_files(endpoint.server_args)
     host, port = host_port(endpoint.base_url)
     flags = ["--host", host, "--port", str(port), "--models-dir", models_dir,
              "--models-max", str(endpoint.resident_max), "--jinja"]

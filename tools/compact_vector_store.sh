@@ -7,11 +7,18 @@
 # read/write re-scans the whole growing fragment list -- confirmed directly against
 # legal_procurement's real corpus: 3,717 versions / 1,858 fragments for 2M rows meant simply
 # *opening and reconciling against* the table cost multiple GB of RSS per batch, before a single
-# new row was embedded. Compacting to 2 fragments fixed that immediately. Run this periodically
-# during a long embed job (e.g. every few hundred thousand rows), not just once at the end.
+# new row was embedded. Compacting to 2 fragments fixed that immediately.
+#
+# tools/embed_reference.sh already runs this periodically during its own run (--compact-every,
+# default 50 commits) -- use this script by hand only for a one-off compaction (after disabling
+# that with --compact-every 0), or against a store built/written some other way.
 #
 # Only meaningful for the lancedb driver -- Qdrant's HNSW index has no on-disk fragment-file model
 # to compact, so a qdrant-backed [vector] is reported as a no-op rather than an error.
+#
+# Do not run this against a table another process is actively writing to. LanceDB's behavior under
+# that contention has not been verified here beyond one accidental, harmless-seeming case -- treat
+# it as unsafe until proven otherwise, not as tolerated.
 #
 # Usage: tools/compact_vector_store.sh --config DIR
 #   --config DIR   a config directory whose storage.toml has a [vector] store

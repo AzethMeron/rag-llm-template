@@ -139,6 +139,15 @@ class LanceVectorIndex:
         which point simply *opening and reconciling against it* -- before embedding a single new
         row -- cost multiple GB of RSS per subsequent batch, because every read/write re-scans the
         whole growing fragment list. Compacting it to 2 fragments fixed that immediately.
+
+        **Not verified safe against a concurrent writer.** Calling this while a *different process*
+        is mid-``upsert()``/``delete()`` against the same on-disk table has not been tested against
+        LanceDB's optimistic-concurrency behavior under real contention (this session hit exactly
+        that scenario by accident -- two embed-job workers briefly writing to the same table -- and
+        it happened not to corrupt anything, but that was not a verified guarantee, just a lucky
+        outcome not to be relied on again). Only call this from the same process that owns the
+        table's writes (as :func:`~ragkit.ingest.reference.reconcile_vector`'s ``compact_every``
+        does, sequentially inside its own batch loop), or when no writer is active.
         """
         try:
             import lance  # noqa: F401 -- to_lance()/optimize() need pylance; fail with our own

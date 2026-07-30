@@ -89,9 +89,18 @@ has_module "$python" numpy \
 has_module "$python" lancedb \
     && report ok "lancedb is installed (default vector database)" \
     || report note "lancedb absent -- needed only to run real retrieval against the default vector store"
-command -v llama-server >/dev/null 2>&1 \
-    && report ok "llama-server on PATH (local inference)" \
-    || report note "no llama-server on PATH -- needed only for a real inference run (tools/serve_models.sh); the tests never contact a model"
+default_llama_build="${HOME}/.local/share/llama.cpp/build/bin/llama-server"
+if command -v llama-server >/dev/null 2>&1; then
+    report ok "llama-server on PATH (local inference)"
+elif [[ -x "$default_llama_build" ]]; then
+    commit="$(git -C "${HOME}/.local/share/llama.cpp" rev-parse --short HEAD 2>/dev/null || echo "?")"
+    report note "llama-server is built (${default_llama_build}, commit ${commit}) but not on" \
+        "PATH -- add \"${default_llama_build%/*}\" to PATH, or re-run tools/build_llama_cpp.sh"
+else
+    report note "no llama-server on PATH or built at the default location -- needed only for a" \
+        "real inference run (tools/serve_models.sh); build one with tools/build_llama_cpp.sh." \
+        "The tests never contact a model."
+fi
 
 if [[ "$status" == 0 ]]; then
     echo "environment is ready. Run the tests with tools/run_tests.sh" >&2
