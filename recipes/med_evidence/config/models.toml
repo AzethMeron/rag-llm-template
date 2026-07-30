@@ -17,3 +17,20 @@ endpoint = "local"
 model_id = "Qwen3.5-0.8B-Instruct-Q4_K_M"
 backend = "auto"
 context_window = 8192
+
+# Dense retrieval (opt-in): a separate embedding endpoint, since llama.cpp serves a --embedding
+# model as its own process, not through the chat router. Add a retrieval.toml with [retrieval]
+# kind = "dense" (or "hybrid") and [vector] in storage.toml to actually switch the recipe onto
+# it; the default remains lexical-only. (tests/test_recipe.py's TestAbstractsMemoryOnEachVectorDB
+# already exercises this path over both real vector drivers.)
+[endpoint.embed]
+provider = "llamacpp-router"
+base_url = "http://127.0.0.1:8081/v1"
+resident_max = 1
+parallel = 4
+
+[model.embedder]
+endpoint = "embed"
+model_id = "embed"
+kind = "embedding"
+context_window = 32768

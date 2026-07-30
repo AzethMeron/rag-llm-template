@@ -6,3 +6,11 @@
 [pairings]
 driver = "sqlite"
 path = "../data/abstracts.pairings.db"
+
+# Dense retrieval (opt-in -- see models.toml's [model.embedder]). Built by embedding every
+# pairing's source against [model.embedder]; not read unless a retrieval.toml switches the
+# recipe onto "dense"/"hybrid" kind.
+[vector]
+driver = "lancedb"
+path = "../data/abstracts.lance"
+dim = 1024
