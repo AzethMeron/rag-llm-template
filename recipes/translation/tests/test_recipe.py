@@ -134,6 +134,33 @@ class TestEndToEnd:
         assert hits and "Kot śpi na kanapie." in hits[0].text
 
 
+@pytest.mark.parametrize("pairings_driver", ["sqlite", "duckdb"])
+class TestReferenceMemoryOnEachPairingsDriver:
+    """The translation memory (config/storage.toml's [pairings]) retrieves identically whether the
+    driver is sqlite or duckdb -- only a storage.toml driver edit differs, proving the swap
+    property end-to-end over a real recipe (the unit-level conformance suite proves the same thing
+    at the driver level; this is the recipe-level guarantee storage-overhaul-plan.md asks for)."""
+
+    def test_translates_with_either_pairings_driver(self, tmp_path: Path,
+                                                     pairings_driver: str) -> None:
+        config = _staged_config(tmp_path)
+        (config / "storage.toml").write_text(
+            f'[pairings]\ndriver = "{pairings_driver}"\n'
+            f'path = "../data/reference.pairings.{pairings_driver}"\n', encoding="utf-8")
+        assembled = assemble(config, substitutions={"source_language": "English",
+                                                    "target_language": "Polish"},
+                             client_factory=_factory(json.dumps({"translation": "Kot śpi."})))
+        assert assembled.retriever is not None
+        hits = assembled.retriever.retrieve("The cat is sleeping on the sofa.", k=1)
+        assert hits and "Kot śpi na kanapie." in hits[0].text
+
+        store = SqliteRunStore(str(tmp_path / "run.db"))
+        store.add_records([Record(record_id="1", source="The cat is sleeping.")])
+        run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+        [result] = list(store.results())
+        assert result.record.status is Status.VERIFIED and result.record.output == "Kot śpi."
+
+
 class TestFaithfulToLlmTranslator:
     """The recipe reproduces llm-translator's panel, rules, prompts and context building."""
 
