@@ -16,12 +16,15 @@ from typing import Any
 
 from ragkit.core.config import ConfigError, load_toml, reject_unknown
 from ragkit.core.ports import (
-    DocumentStore, LexicalIndex, SchemaIntrospector, SqlStore, VectorIndex)
+    DocumentStore, LexicalIndex, PairingStore, SchemaIntrospector, SqlStore, VectorIndex)
 from ragkit.core.registry import Registry
 
 from .documents.sqlite import DocumentStoreError, SqliteDocuments
 from .filters import FilterError, to_sql
 from .lexical.fts5 import Fts5Index, LexicalIndexError
+from .pairings.common import PairingStoreError
+from .pairings.duckdb import DuckDBPairings
+from .pairings.sqlite import SqlitePairings
 from .sql.duckdb import DuckDBIntrospector, DuckDBStore
 from .sql.sqlite import SqliteIntrospector, SqliteStore, SqlStoreError
 from .vector.lancedb import LanceVectorIndex, VectorIndexError
@@ -39,6 +42,9 @@ LEXICAL_INDEXES: Registry[LexicalIndex] = Registry(
 DOCUMENT_STORES: Registry[DocumentStore] = Registry(
     "document store", DocumentStore,  # type: ignore[type-abstract]
     entry_point_group="ragkit.document_stores")
+PAIRING_STORES: Registry[PairingStore] = Registry(
+    "pairing store", PairingStore,  # type: ignore[type-abstract]
+    entry_point_group="ragkit.pairing_stores")
 SCHEMA_INTROSPECTORS: Registry[SchemaIntrospector] = Registry(
     "schema introspector", SchemaIntrospector,  # type: ignore[type-abstract]
     entry_point_group="ragkit.schema_introspectors")
@@ -49,6 +55,8 @@ VECTOR_INDEXES.register("lancedb", LanceVectorIndex)
 VECTOR_INDEXES.register("qdrant", QdrantVectorIndex)
 LEXICAL_INDEXES.register("fts5", Fts5Index)
 DOCUMENT_STORES.register("sqlite", SqliteDocuments)
+PAIRING_STORES.register("sqlite", SqlitePairings)
+PAIRING_STORES.register("duckdb", DuckDBPairings)
 SCHEMA_INTROSPECTORS.register("sqlite", SqliteIntrospector)
 SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 
@@ -56,12 +64,16 @@ SCHEMA_INTROSPECTORS.register("duckdb", DuckDBIntrospector)
 @dataclass(frozen=True, slots=True)
 class Storage:
     """The stores a run assembles: any may be absent (a lexical-only run has no vector index; a
-    run with no external data source has no introspector)."""
+    run with no external data source has no introspector). ``pairings`` is the DB-native reference
+    memory (co-located rows + search index); ``lexical``/``documents`` are the legacy split-store
+    pair, kept for recipes not yet migrated to ``[pairings]`` (see
+    docs/storage-overhaul-plan.md)."""
 
     sql: SqlStore | None = None
     vector: VectorIndex | None = None
     lexical: LexicalIndex | None = None
     documents: DocumentStore | None = None
+    pairings: PairingStore | None = None
     introspector: SchemaIntrospector | None = None
 
 
@@ -72,7 +84,7 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
     config directory), so a config is portable rather than tied to the caller's working directory;
     a ``:memory:`` path is left as-is."""
     data = load_toml(path, what="storage file")
-    reject_unknown(data, {"sql", "vector", "lexical", "documents", "introspector"},
+    reject_unknown(data, {"sql", "vector", "lexical", "documents", "pairings", "introspector"},
                    label="the storage file", path=path)
     base = base_dir or path.parent
     return Storage(
@@ -82,6 +94,8 @@ def load_storage(path: Path, *, base_dir: Path | None = None) -> Storage:
                        base=base),
         documents=_build(DOCUMENT_STORES, data.get("documents"), label="[documents]", path=path,
                          base=base),
+        pairings=_build(PAIRING_STORES, data.get("pairings"), label="[pairings]", path=path,
+                        base=base),
         introspector=_build(SCHEMA_INTROSPECTORS, data.get("introspector"),
                             label="[introspector]", path=path, base=base))
 
@@ -104,9 +118,11 @@ def _build(registry: Registry[Any], section: object, *, label: str, path: Path, 
 
 __all__ = [
     "Storage", "load_storage",
-    "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "DOCUMENT_STORES", "SCHEMA_INTROSPECTORS",
+    "SQL_STORES", "VECTOR_INDEXES", "LEXICAL_INDEXES", "DOCUMENT_STORES", "PAIRING_STORES",
+    "SCHEMA_INTROSPECTORS",
     "SqliteStore", "SqliteIntrospector", "DuckDBStore", "DuckDBIntrospector",
     "Fts5Index", "LanceVectorIndex", "QdrantVectorIndex", "SqliteDocuments",
+    "SqlitePairings", "DuckDBPairings",
     "SqlStoreError", "LexicalIndexError", "VectorIndexError", "DocumentStoreError",
-    "FilterError", "to_sql",
+    "PairingStoreError", "FilterError", "to_sql",
 ]

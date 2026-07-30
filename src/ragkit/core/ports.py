@@ -261,6 +261,58 @@ class DocumentStore(Protocol):
     def count(self) -> int: ...
 
 
+@dataclass(frozen=True, slots=True)
+class Pairing:
+    """One reference example held in a :class:`PairingStore`: an input, the target it pairs with
+    (empty for a lexical-only reference entry), and the context it was produced with. This is the
+    ``(source, context, target)`` triple the reference memory stores and a write-back step
+    produces. ``verified``/``created_at`` are write-back provenance (was this machine-produced and
+    accepted, and when); an imported reference entry leaves them at their defaults."""
+
+    chunk_id: str
+    source: str
+    target: str = ""
+    context: str = ""
+    meta: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
+    verified: bool = False
+    created_at: float = 0.0
+
+
+@runtime_checkable
+class PairingStore(Protocol):
+    """The reference-memory store: rows and a keyword search index co-located in one durable store,
+    so a hit and its display text can never drift apart the way two separately-written stores can.
+
+    ``search`` and ``document`` deliberately share :class:`LexicalIndex`'s and
+    :class:`DocumentStore`'s exact signatures: a driver that implements this port also *is* a valid
+    ``LexicalIndex`` and ``DocumentStore``, so the existing lexical/dense/hybrid retriever stack
+    runs over a pairing store unchanged, with no parallel retrieval code path to keep in sync.
+    """
+
+    def add(self, pairings: Iterable[Pairing]) -> int:
+        """Add pairings in one transaction (their search entries included); returns the number of
+        rows actually added (a pairing whose ``chunk_id`` already exists is left untouched, not
+        overwritten, so re-adding the same write-back result twice is idempotent)."""
+        ...
+
+    def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
+
+    def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None: ...
+
+    def get(self, chunk_id: str) -> Pairing | None:
+        """The full pairing for ``chunk_id`` (source, target, context, meta, verification,
+        provenance), or ``None`` if absent. Unlike ``document``, which flattens a pairing to display
+        text for a retriever, this is the write-back / inspection path that needs the whole row."""
+        ...
+
+    def all_ids(self) -> Iterator[str]:
+        """Every chunk id currently stored, for a caller reconciling a separate vector index
+        against this store's authoritative rows (:meth:`VectorIndex.reconcile`)."""
+        ...
+
+    def count(self) -> int: ...
+
+
 @runtime_checkable
 class SqlStore(Protocol):
     """A relational store. ``read_only`` marks a binding the framework must not write through;
