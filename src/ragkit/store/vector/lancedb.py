@@ -101,7 +101,15 @@ class LanceVectorIndex:
         return int(self._table.count_rows())
 
     def indexed_ids(self) -> set[str]:
-        return {row["id"] for row in self._table.to_arrow().select(["id"]).to_pylist()}
+        # table.to_arrow() takes no column argument -- it would materialize every column (the
+        # full 1024-d vector + meta JSON) for every row just to throw all but "id" away. At
+        # millions of rows that is tens of GB for a single call. search().select(["id"]) projects
+        # at the scan level so only the id column is ever read, and to_batches() streams it
+        # instead of building one giant pyarrow Table.
+        ids: set[str] = set()
+        for batch in self._table.search().select(["id"]).limit(None).to_batches():
+            ids.update(batch.column("id").to_pylist())
+        return ids
 
     def reconcile(self, chunk_ids: Iterable[str]) -> set[str]:
         authoritative = set(chunk_ids)

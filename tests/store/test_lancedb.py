@@ -67,6 +67,23 @@ class TestReconcile:
         index.upsert(["a"], [[1, 0, 0]], [{}])
         assert index.reconcile(["a"]) == set()
 
+    def test_indexed_ids_never_materializes_full_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test: indexed_ids() must project only the "id" column at the LanceDB scan
+        level. table.to_arrow() (no column argument) would instead pull every column -- including
+        the full-width vector and meta JSON -- for every row just to discard all but "id", which at
+        millions of rows is tens of GB for a single call (the cause of a real RAM-exhaustion/disk-
+        thrash incident). Failing this test by calling to_arrow() again would reintroduce that."""
+        index = _index(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
+
+        def _boom() -> None:
+            raise AssertionError("indexed_ids() must not call table.to_arrow()")
+
+        monkeypatch.setattr(index._table, "to_arrow", _boom)
+        assert index.indexed_ids() == {"a", "b"}
+
 
 class TestValidation:
     def test_dim_must_be_positive(self, tmp_path: Path) -> None:
