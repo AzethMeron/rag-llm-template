@@ -41,6 +41,8 @@ The scripts find `.venv/` on their own; you do not need to activate it first. To
 against real models:
 
 ```bash
+tools/build_llama_cpp.sh                                       # one-time: build llama-server (pinned commit)
+tools/fetch_models.sh                                          # one-time: download the pinned default GGUFs
 recipes/translation/fetch.sh                                  # download the real dataset (git-ignored)
 tools/serve_models.sh --config recipes/translation/config/models.toml --endpoint local --models-dir models
 PYTHONPATH=src python -m ragkit.cli import --catalog recipes/translation/data/heldout.jsonl \

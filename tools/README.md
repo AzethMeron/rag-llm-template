@@ -11,12 +11,13 @@ script *is* its `--help` text.
 | `check_environment.sh` | report, read-only, whether the environment can run the code and tests (probes SQLite FTS5 and loadable-extension support) |
 | `run_tests.sh` | run the suite (needs no server/GPU/network); `--coverage` for statement + branch |
 | `lint.sh` | static analysis: ruff (ruleset pinned in `ruff.toml`) + mypy `--strict` (pinned in `mypy.ini`); `--fix` to autofix ruff's findings |
+| `build_llama_cpp.sh` | build `llama-server` itself from a pinned `llama.cpp` commit (the one dependency that is a separate program, not a pip package — not covered by `requirements.txt`/`setup_python_env.sh`) |
 | `fetch_models.sh` | download the pinned default GGUF models into `./models` |
 | `serve_models.sh` | launch `llama-server` in **router mode**; `--config models.toml --endpoint <name>` reads the endpoint's launch flags from the same config the pool uses |
 | `init_storage.sh` | create/open the stores a `storage.toml` describes (sqlite/duckdb SQL, lancedb/qdrant vector, sqlite/duckdb pairings, sqlite run/lexicon) |
 | `migrate_storage.sh` | fold a pre-storage-overhaul recipe's on-disk artifacts (a legacy row store, a `lexicon.jsonl`, a catalog+journal pair) into the current DB-native stores — the one-time bridge for data that predates `[pairings]`/`[run]`/`[lexicon]` |
-| `embed_reference.sh` | embed a `[pairings]` store's rows into its `[vector]` index (dense/hybrid retrieval needs this; import alone only builds the lexical/BM25 side) — resumable, only embeds what `VectorIndex.reconcile` reports missing |
-| `compact_vector_store.sh` | consolidate a LanceDB `[vector]` store's on-disk fragments (one accumulates per `upsert`/`delete` call) into a few large ones and prune old versions — not optional: an uncompacted table costs multiple GB of RSS per batch just to reconcile against once it has thousands of fragments. Run periodically on a long, repeatedly-resumed `embed_reference.sh` job, not just once at the end. A no-op on a `qdrant`-backed store. |
+| `embed_reference.sh` | embed a `[pairings]` store's rows into its `[vector]` index (dense/hybrid retrieval needs this; import alone only builds the lexical/BM25 side) — resumable, only embeds what `VectorIndex.reconcile` reports missing; compacts a `lancedb` `[vector]` store automatically every 50 commits by default (`--compact-every`, `0` disables it) |
+| `compact_vector_store.sh` | consolidate a LanceDB `[vector]` store's on-disk fragments (one accumulates per `upsert`/`delete` call) into a few large ones and prune old versions — not optional: an uncompacted table costs multiple GB of RSS per batch just to reconcile against once it has thousands of fragments. `embed_reference.sh` already does this periodically during its own run (`--compact-every`, default 50); run this by hand for a one-off compaction, after disabling that (`--compact-every 0`), or against a store built some other way. A no-op on a `qdrant`-backed store. |
 | `lib/common.sh` | shared helpers, sourced by the others |
 
 ## Running a task
@@ -45,4 +46,11 @@ tools/check_environment.sh    # confirm it is ready
 tools/run_tests.sh            # run everything
 ```
 
-The scripts find `.venv/` on their own, so you do not need to activate it first.
+The scripts find `.venv/` on their own, so you do not need to activate it first. None of the above
+needs a model server — the suite never contacts one. A real inference run does:
+
+```bash
+tools/build_llama_cpp.sh      # one-time: build llama-server (needs cmake, git; CUDA if you have a GPU)
+tools/fetch_models.sh         # one-time: download the pinned default GGUFs
+tools/serve_models.sh --config recipes/<recipe>/config/models.toml --endpoint local --models-dir models
+```

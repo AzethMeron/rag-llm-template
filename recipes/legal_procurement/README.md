@@ -139,15 +139,24 @@ the embedder's output dim). The only step left to actually switch the recipe ont
 `retrieval.toml` with `[retrieval] kind = "dense"` / `[retrieval.dense] model = "embedder"`; for
 the best ranking use `kind = "hybrid"` with a reranker (the framework warns against equal-weight
 hybrid without one). Embedding the full corpus into `data/passages.lance` is itself a real,
-multi-hour job at this scale:
+multi-hour job at this scale, and needs the embedding server running on its own endpoint
+(`[endpoint.embed]` in `models.toml` already wires `tools/embed_presets.ini`, which names the model
+`embed` and turns on `--embeddings` — router mode alone would not):
 
 ```bash
+tools/serve_models.sh --config recipes/legal_procurement/config/models.toml \
+    --endpoint embed --models-dir models
 tools/embed_reference.sh --config recipes/legal_procurement/config \
     --embedding-url http://127.0.0.1:8081/v1 --embedding-model embed
 ```
 
 Resumable/idempotent (`VectorIndex.reconcile` finds exactly what's still missing), so it is safe
-to interrupt and re-run.
+to interrupt and re-run. `embed_reference.sh` also compacts the LanceDB vector store automatically
+every 50 commits by default (`--compact-every`, `0` disables it): an uncompacted table accumulates
+one on-disk fragment per upsert batch without bound, and this corpus's table is the concrete case
+that made it necessary — it once reached 3,717 versions / 1,858 fragments, costing multiple GB of
+RSS per batch just to open and reconcile against, before a single new row was embedded (see
+`tools/compact_vector_store.sh` to compact by hand).
 
 **Low-RAM at scale (the concrete evidence).** The full **7.1M-passage** polqa corpus was **ingested
 and queried at ~37 MB process RSS**, because the search index and the chunk rows live on disk and a
