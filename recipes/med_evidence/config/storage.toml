@@ -1,13 +1,8 @@
 # The abstracts memory scales to the whole ClinicalTrials.gov registry (~600k studies), so the
-# lexical index lives ON DISK next to the fetched data, not in RAM. It is streamed in once
-# (build-once) and the persisted index is reused on later runs. Delete data/abstracts.fts5 to
-# force a rebuild after re-fetching a different corpus size.
-[lexical]
-driver = "fts5"
-path = "../data/abstracts.fts5"
-
-# The chunk rows (the abstract text a hit resolves to) — the relational store every retrieval path
-# resolves through, kept on disk next to the index so nothing is held in RAM.
-[documents]
+# pairing store (rows + its FTS5 search index, co-located in one database) lives ON DISK next to the
+# fetched data, not in RAM. `[reference].file` is imported into it once (build-once, resumable) and
+# the persisted store is reused on later runs. Delete data/abstracts.pairings.db to force a
+# re-import after re-fetching a different corpus size.
+[pairings]
 driver = "sqlite"
-path = "../data/abstracts.docs.db"
+path = "../data/abstracts.pairings.db"
