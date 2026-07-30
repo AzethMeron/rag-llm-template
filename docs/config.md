@@ -240,22 +240,30 @@ directory, so a config is portable.
 |---|---|---|
 | `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only`, `schema_sql` (the external data source is `read_only = true`; `schema_sql` initialises the framework's own writable store and is refused on a read-only binding). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
 | `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
-| `[lexical]` | `fts5` | `path`, `tokenizer` (SQLite FTS5 BM25-only; `tokenizer` defaults to `unicode61`). A search index that returns ids only — a hit's display text is resolved through `[documents]`. |
-| `[documents]` | `sqlite` | `path` (default `:memory:`). The relational chunk-row store **every retrieval path resolves a hit through** — a search index (FTS5 BM25, or the vector ANN) returns ids, and this store turns an id back into its display text + metadata. Give it a `path` to keep the corpus on disk (required for a large corpus and for build-once reuse); with no `path` it is in-memory SQLite, the default for small corpora and tests. |
+| `[pairings]` | `sqlite` \| `duckdb` | `path`, `tokenizer` (sqlite only; defaults to `unicode61`). The reference memory: one row per `(source, target, context)` pairing, plus its FTS5 BM25 search index, **co-located in one database** — a hit's id, display text, and metadata all resolve through this one store. Give it a `path` to keep the corpus on disk (required for a large corpus and for build-once reuse); with no `path` it is in-memory, the default for small corpora and tests. Swapping `sqlite`↔`duckdb` is a one-line edit; both pass the same conformance suite. |
+| `[run]` | `sqlite` | `path` (default `:memory:`), `synchronous` (`FULL` \| `NORMAL`; default `FULL` = fsync every commit). The record catalogue + append-only result history a run reads/writes while it executes (WAL, foreign-key-enforced). |
+| `[lexicon]` | `sqlite` | `path` (default `:memory:`). Established terminology (term → rendering); usually co-located in the same file as `[pairings]` as its own table. |
 | `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
 
 Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a
 third-party driver — resolved through the registry, no framework change.
 
-The two database roles are kept apart: the framework's own writable store, and the external
-task data source (`read_only` — a write is refused at the port).
+Three database roles are kept apart: the framework's own reference memory (`[pairings]`/
+`[lexicon]`) and run state (`[run]`), and the external, read-only task data source (`[sql]` with
+`read_only`, a write refused at the port before the database).
 
-**On-disk streaming ingest, built once.** Ingest streams the reference corpus line-by-line in
-batches, so a multi-GB corpus never materialises in RAM — the inverted index, the vectors, and the
-chunk rows all live in their stores. When `[lexical]` and `[documents]` are given a `path`, the
-on-disk stores persist across runs and are **built once**: assembly re-ingests only when the
-document store is empty (`count == 0`), so an already-populated on-disk corpus is read once and
-reused. An in-memory store (no `path`) is empty at every startup and so is rebuilt each run.
+*Legacy, still supported*: `[lexical]` (`fts5`; `path`, `tokenizer`) + `[documents]` (`sqlite`;
+`path`) is the pre-overhaul **split** store a `PairingStore`-less recipe still falls back to — an
+index returning ids only, paired with a separate relational row store, kept in sync purely by
+write ordering rather than one transaction. Prefer `[pairings]` for anything new;
+`tools/migrate_storage.sh` folds an existing split store's rows into a pairing store directly.
+
+**On-disk streaming ingest, built once.** `[reference].file` is streamed into `[pairings]`
+line-by-line in batches, so a multi-GB corpus never materialises in RAM. When `[pairings]` is
+given a `path`, the on-disk store persists across runs and is **built once**: assembly re-imports
+only past what the store already holds (`count()` is the resume floor), so an already-populated
+on-disk corpus is read once and reused. An in-memory store (no `path`) is empty at every startup
+and so is rebuilt each run.
 
 ---
 
@@ -286,8 +294,9 @@ What the task produces, its extra validators, and an optional reference corpus.
 |---|---|---|---|
 | `file` | string | `""` | JSONL corpus (relative to the config dir) to retrieve from. |
 | `retriever` | string | `"lexical"` | `"lexical"` builds over the corpus; a **dotted path / entry-point name** selects a corpus-free custom retriever resolved through the `RETRIEVERS` registry. |
-| `index_field` | string | `"source"` | The JSON field matched on. |
-| `display_field` | string | `""` | The field a hit shows (falls back to a sensible default). |
+| `index_field` | string | `"source"` | The JSON field matched on (becomes a pairing's `source`). |
+| `target_field` | string | `"target"` | **`[pairings]` only.** The JSON field that becomes a pairing's `target`; a hit then displays as `"source -> target"` when present, else `source` alone. Absent from the legacy split-store path (see below). |
+| `display_field` | string | `""` | **Legacy split-store path only** (no `[pairings]` in `storage.toml`). The field a hit shows; falls back to `"source -> target"` (literal keys) or the `"text"` field. Ignored once `[pairings]` is configured — `target_field` takes over that role. |
 | `options` | table | `{}` | Options passed to a custom (dotted-path) retriever's `from_config`. |
 
 **Replacing the retriever without editing our code** — two seams, matching how the components are

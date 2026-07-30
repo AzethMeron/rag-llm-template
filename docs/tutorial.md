@@ -39,10 +39,13 @@ produce  ──▶  mechanical check (code)  ──▶  review panel (LLMs)  ─
   `max_revisions`; a malformed reply is repaired up to `max_repairs`.
 
 The unit of work is a **`Record`**: `{record_id, source, meta}` in, a produced `output` and a
-`status` out (`VERIFIED` / `PRODUCED` / `REJECTED` / `SKIPPED`). Inputs are a JSON-Lines *catalogue*;
-results are an append-only, resumable *journal*. Everything the loop needs — which models, the panel
-and its prompts, the rules, what context to build, which stores to read — is **config**, resolved
-through a registry so your own components plug in by name.
+`status` out (`VERIFIED` / `PRODUCED` / `REJECTED` / `SKIPPED`). A run's durable state lives in a
+`RunStore` (a database, not a file): `ragkit import` loads a JSON-Lines *catalogue* into it once,
+`ragkit run` reads and writes it directly (one ACID commit per result — a crash mid-run loses
+nothing already committed), and `ragkit export` writes the results back out as JSON Lines for an
+`eval.py` to score. Everything the loop needs — which models, the panel and its prompts, the
+rules, what context to build, which stores to read — is **config**, resolved through a registry so
+your own components plug in by name.
 
 ## 2. Anatomy of a recipe
 
@@ -57,11 +60,11 @@ recipes/<task>/
     rules.toml        # policy: numeric limits, forbidden regexes, prose advisories, style
     context.toml      # the ordered context blocks that build the prompt, + a char budget
     recipe.toml       # the output schema, the task validators, the optional reference corpus
-    storage.toml      # (optional) the external database + introspector
+    storage.toml      # (optional) the external database + introspector; reference memory ([pairings]/[lexicon]) and run state ([run])
     retrieval.toml    # (optional) config-driven lexical/dense/hybrid retrieval
   plugins/            # (optional) your task-specific Validator / OutputSchema / ContextBlock / ...
   fetch.sh            # a hardened downloader for the real dataset (git-ignored data/)
-  eval.py             # scores the produced journal against held-out gold
+  eval.py             # scores the exported journal against held-out gold
   tests/              # the recipe's own suite, against tiny committed fixtures
 ```
 
@@ -185,8 +188,9 @@ That is a complete pipeline. The catalogue is JSON-Lines, one `Record` per line:
 Run it (once models are served — [§7](#7-running-against-real-models)):
 
 ```bash
-PYTHONPATH=src python -m ragkit.cli --config recipes/triage/config \
-    -c work/tickets.jsonl -j work/out.jsonl
+PYTHONPATH=src python -m ragkit.cli import --catalog work/tickets.jsonl --run-db work/triage.db
+PYTHONPATH=src python -m ragkit.cli run --config recipes/triage/config --run-db work/triage.db
+PYTHONPATH=src python -m ragkit.cli export --run-db work/triage.db -j work/out.jsonl
 ```
 
 Each record's `output` is the filled form as canonical JSON, e.g. `{"category": "billing",
@@ -295,10 +299,28 @@ min_score = 0.3
 heading = "Similar past tickets and how they were triaged (examples, not the required answer):"
 ```
 
-That is the whole "RAG" wiring for the default lexical retriever. To retrieve **densely** over a
-real vector database instead, add a `retrieval.toml` and a `[vector]` store — see
-[§10](#10-swapping-components-by-config). The retriever is also injectable in code
-(`assemble(..., retriever=my_retriever)`) for a corpus-stateful retriever you build yourself.
+That is the whole "RAG" wiring for the default lexical retriever. With no `storage.toml`, the
+corpus rebuilds in memory every run — fine for a small example. For anything larger, add a
+`[pairings]` store so it imports once and persists (see [`docs/config.md`](config.md#storagetoml)):
+
+```toml
+# recipes/triage/config/storage.toml
+[pairings]
+driver = "sqlite"
+path = "../data/examples.pairings.db"
+```
+
+`display_field` above is read only by the legacy in-memory fallback (no `[pairings]` configured).
+`[pairings]` has no equivalent "show this arbitrary field alone" option — its display convention is
+always `"source -> target"` (or bare `source` with no target), matching a translation-memory-shaped
+pairing. `target_field = "label"` would show `"Refund the duplicate charge on my invoice -> billing
+/ high"`, not `"billing / high"` alone; if a bare label display matters more than persistence, stay
+on the legacy fallback.
+
+To retrieve **densely** over a real vector database instead, add a `retrieval.toml` and a
+`[vector]` store — see [§10](#10-swapping-components-by-config). The retriever is also injectable
+in code (`assemble(..., retriever=my_retriever)`) for a corpus-stateful retriever you build
+yourself.
 
 ## 6. Read from a database
 
@@ -342,8 +364,10 @@ llama.cpp in **router mode** (one process serves several models, loading each on
 ```bash
 tools/fetch_models.sh                       # download the pinned default GGUFs (once)
 tools/serve_models.sh --config recipes/triage/config/models.toml --endpoint local --models-dir models
-PYTHONPATH=src python -m ragkit.cli --config recipes/triage/config \
-    -c work/tickets.jsonl -j work/out.jsonl --concurrency 2
+PYTHONPATH=src python -m ragkit.cli import --catalog work/tickets.jsonl --run-db work/triage.db
+PYTHONPATH=src python -m ragkit.cli run --config recipes/triage/config --run-db work/triage.db \
+    --concurrency 2
+PYTHONPATH=src python -m ragkit.cli export --run-db work/triage.db -j work/out.jsonl
 ```
 
 The pool checks, **before contacting the server**, that you are not asking one endpoint to hold more
@@ -393,7 +417,7 @@ A **corpus-free** custom retriever (its own backend) is named by dotted path in
 **corpus-stateful** one is injected: `assemble(config_dir, retriever=my_retriever)`, the same way
 `client_factory` and `extra_validators` are injected.
 
-### A database driver — `SqlStore` / `VectorIndex` / `LexicalIndex`
+### A database driver — `SqlStore` / `VectorIndex` / `PairingStore` / `RunStore` / `LexiconStore`
 Implement the port, put the third-party dependency **lazily inside your driver module only**
 (the boundary test enforces confinement), and select it in `storage.toml` by dotted path
 (`driver = "mypkg:MyVectorIndex"`) or register a built-in name. The conformance suite
@@ -412,8 +436,9 @@ scripted client with `assemble(..., client_factory=...)`:
 ```python
 import json, httpx
 from ragkit.cli.app import assemble
-from ragkit.core.records import Record, read_journal, write_catalog, Status
-from ragkit.harness import pending_records, run_batch
+from ragkit.core.records import Record, Status
+from ragkit.harness import run_batch
+from ragkit.store.run.sqlite import SqliteRunStore
 
 def factory(_base_url, _timeout):
     def handler(request):
@@ -428,13 +453,12 @@ def factory(_base_url, _timeout):
 
 def test_triage_verifies(tmp_path):
     assembled = assemble("recipes/triage/config", client_factory=factory)
-    catalog, journal = tmp_path / "c.jsonl", tmp_path / "j.jsonl"
-    write_catalog([Record(record_id="1", source="Charged twice, refund please.")], catalog)
-    run_batch(assembled.harness, pending_records(catalog, journal), journal,
-              install_signal_handlers=False)
-    [result] = list(read_journal(journal))
-    assert result.status is Status.VERIFIED
-    assert json.loads(result.output)["category"] == "billing"
+    store = SqliteRunStore(str(tmp_path / "run.db"))
+    store.add_records([Record(record_id="1", source="Charged twice, refund please.")])
+    run_batch(assembled.harness, store.pending(), store, install_signal_handlers=False)
+    [result] = list(store.results())
+    assert result.record.status is Status.VERIFIED
+    assert json.loads(result.record.output)["category"] == "billing"
 ```
 
 Run with `tools/run_tests.sh recipes/triage`. Keep `src/` at 100% statement+branch coverage (the
@@ -457,6 +481,10 @@ driver = "duckdb"          # was "sqlite"
 driver = "qdrant"          # was "lancedb"; both pass the same conformance suite
 path = "../data/v.qdrant"
 dim = 1024
+
+[pairings]
+driver = "duckdb"          # was "sqlite"; the reference memory, identical retrieval either way
+path = "../data/reference.pairings.duckdb"
 ```
 
 **The retrieval stack** — swap the whole lexical/dense/hybrid assembly from `retrieval.toml`, with

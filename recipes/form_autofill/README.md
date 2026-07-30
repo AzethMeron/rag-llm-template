@@ -41,8 +41,11 @@ block, swapped by a one-line `storage.toml` driver edit.
 ```bash
 tools/serve_models.sh --config recipes/form_autofill/config/models.toml --endpoint local \
     --models-dir models
-PYTHONPATH=src:. python -m ragkit.cli --config recipes/form_autofill/config \
-    -c recipes/form_autofill/data/heldout.jsonl -j work/form.jsonl
+PYTHONPATH=src:. python -m ragkit.cli import --catalog recipes/form_autofill/data/heldout.jsonl \
+    --run-db work/form_autofill.db
+PYTHONPATH=src:. python -m ragkit.cli run --config recipes/form_autofill/config \
+    --run-db work/form_autofill.db
+PYTHONPATH=src:. python -m ragkit.cli export --run-db work/form_autofill.db -j work/form.jsonl
 ```
 
 ## Evaluation

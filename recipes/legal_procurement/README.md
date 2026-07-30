@@ -67,29 +67,30 @@ corpus-agnostic; only `data/passages.jsonl` and the gold change.
 
 Tiny in-test fixtures back the recipe's own tests, so they need no download or network; those tests
 also retrieve the memory over **both real vector indexes** (LanceDB and Qdrant), swapped by a
-one-line `storage.toml` driver edit, alongside the default `fts5` lexical path.
+one-line `storage.toml` driver edit, alongside the default `sqlite` pairing-store path.
 
 ## Storage (on-disk, low-RAM)
 
-The corpus is millions of passages / gigabytes of text, so `config/storage.toml` keeps both the
-search index and the chunk rows **on disk** next to the fetched data, never in RAM:
+The corpus is millions of passages / gigabytes of text, so `config/storage.toml` keeps the pairing
+store — the passage rows and the FTS5 search index that resolves a hit's text + metadata, co-located
+in one database so they can never drift apart — **on disk** next to the fetched data, never in RAM:
 
-- `[lexical]` (`fts5`, `path = ../data/passages.fts5`) — the BM25 search index; returns ids only.
-- `[documents]` (`sqlite`, `path = ../data/passages.docs.db`) — the relational chunk-row store
-  **every retrieval path resolves a hit through**, turning an id back into the passage text +
-  metadata.
+- `[pairings]` (`sqlite`, `path = ../data/passages.pairings.db`).
 
-The corpus is streamed in once and the persisted stores are **reused on later runs** (build-once).
-Delete `data/passages.fts5` and `data/passages.docs.db` to force a rebuild after re-fetching a
-different corpus size.
+`[reference].file` (`data/passages.jsonl`) is streamed into it once and the persisted store is
+**reused on later runs** (build-once, resumable). Delete `data/passages.pairings.db` to force a
+re-import after re-fetching a different corpus size.
 
 ## Running
 
 ```bash
 tools/serve_models.sh --config recipes/legal_procurement/config/models.toml \
     --endpoint local --models-dir models
-PYTHONPATH=src:. python -m ragkit.cli --config recipes/legal_procurement/config \
-    -c recipes/legal_procurement/data/heldout.jsonl -j work/legal.jsonl
+PYTHONPATH=src:. python -m ragkit.cli import --catalog recipes/legal_procurement/data/heldout.jsonl \
+    --run-db work/legal_procurement.db
+PYTHONPATH=src:. python -m ragkit.cli run --config recipes/legal_procurement/config \
+    --run-db work/legal_procurement.db
+PYTHONPATH=src:. python -m ragkit.cli export --run-db work/legal_procurement.db -j work/legal.jsonl
 ```
 
 ## Evaluation
@@ -140,5 +141,5 @@ without one).
 
 **Low-RAM at scale (the concrete evidence).** The full **7.1M-passage** polqa corpus was **ingested
 and queried at ~37 MB process RSS**, because the search index and the chunk rows live on disk and a
-hit resolves through the `[documents]` store rather than a RAM map — the streaming, on-disk ingest
+hit resolves through the `[pairings]` store rather than a RAM map — the streaming, on-disk import
 holds no corpus-sized structure in memory.

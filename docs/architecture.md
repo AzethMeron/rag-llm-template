@@ -22,8 +22,9 @@ cli  →  harness  →  {retrieve, llm, store, core}
                      llm → core        store → core        core → stdlib only
 ```
 
-- **`core`** is the contract: the ports (Protocols), the `Record` and its durable
-  catalogue/journal, the component registry, structured errors, the strict config loaders,
+- **`core`** is the contract: the ports (Protocols), the `Record` and its JSON Lines
+  catalogue/journal (the import/export format at a run's edges — durability itself lives in
+  `store`'s `RunStore`), the component registry, structured errors, the strict config loaders,
   and the stdlib primitives (display width, placeholders, terminology). It depends on nothing
   outside the standard library, so it can never break because a machine-learning or storage
   dependency was upgraded — or is absent.
@@ -50,11 +51,19 @@ compatible with the no-global-mutable-state rule. See `src/ragkit/core/registry.
 A `Record` is one task instance — a line to translate, a question to turn into SQL, a form to
 fill — carrying its input, its produced output, a status lifecycle
 (`PENDING → PRODUCED/VERIFIED/REJECTED/SKIPPED`), provenance for reinjection, and a free-form
-`meta` mapping for anything task-specific. Catalogues and journals are JSON Lines: streamable,
-appendable, and resumable. `write_catalog` is atomic (temp sibling → fsync → rename → fsync
-dir); `read_journal` tolerates a torn *final* record (a process killed mid-write) but refuses a
-malformed one anywhere else, because skipping that would discard a completed result while
-reporting success. See `src/ragkit/core/records.py`.
+`meta` mapping for anything task-specific.
+
+A run's durable state lives in a `RunStore` (see *Storage*, below), not in a file: `ragkit
+import` loads a fetch script's JSONL catalogue into it once; `ragkit run` reads
+`pending()`/writes `append_result()` against it, one ACID commit per result, so
+`completed_ids()` after a crash reflects exactly what was actually committed — no torn write, no
+replay; `ragkit export` writes the store's results back out as a `journal.jsonl`-compatible file
+for a recipe's `eval.py`. JSON Lines is therefore the **import/export format at a run's edges**,
+not the thing a run reads and writes while it executes. `write_catalog`/`read_journal` (in
+`src/ragkit/core/records.py`) still do the file I/O for that bridge: `write_catalog` is atomic
+(temp sibling → fsync → rename → fsync dir); `read_journal` tolerates a torn *final* record (a
+process killed mid-write) but refuses a malformed one anywhere else, because skipping that would
+discard a completed result while reporting success.
 
 ## Where each LLM setting lives
 
@@ -92,33 +101,59 @@ what it ranks.**
   injected deterministic order (no hidden RNG), never the system names, and A/B-ing a system against
   itself is refused.
 
-## Storage: two roles, two real drivers per port
+## Storage: three roles, real drivers per port
 
-Two database *roles* are kept apart: the framework's own writable store (records/chunks/metadata),
-and an **external, read-only** task data source (the DB that NL→SQL queries or form-autofill reads
-— a write through it is refused at the port, before the database). Each storage port ships **two
-real, interchangeable drivers** — `SqlStore` = `sqlite` | `duckdb`, `VectorIndex` = `lancedb` |
-`qdrant`, `LexicalIndex` = `fts5` — so swapping a database is a one-line `storage.toml` edit,
-proven by a conformance suite that runs every implementation through identical operations. A third
-party's own driver is selected the same way, by dotted path.
+Three database *roles* are kept apart, never mixed behind one port:
 
-## Retrieval resolves through one relational store; ingest streams
+- **External task data** — `SqlStore`, **read-only** (the DB an NL→SQL query or a form-autofill
+  lookup reads; a write through it is refused at the port, before the database). Two real,
+  interchangeable drivers: `sqlite` | `duckdb`. Unrelated to the framework's own state and never
+  written by it.
+- **Reference memory** — `PairingStore`, the framework's writable "what has been established"
+  store: one row per `(source, target, context)` pairing plus metadata, retrieved by lexical/
+  dense/hybrid search. See the next section for why this is co-located rather than split. Two
+  real drivers: `sqlite` | `duckdb`; a `VectorIndex` (`lancedb` | `qdrant`), when configured, is a
+  separate ANN store kept in sync via `VectorIndex.reconcile`.
+- **Run state** — `RunStore`, the record catalogue and append-only result history a run reads and
+  writes while it executes (WAL SQLite; see *The `Record`, and durability*, above).
+
+A fourth, smaller DB-native store, `LexiconStore` (established terminology — a term/rendering
+mapping, a different shape and key than a pairing), is usually co-located in the same physical
+database file as `PairingStore` as its own table, though nothing requires that. Every port is
+resolved through its own registry and bound by `storage.toml` (`[sql]`, `[pairings]`, `[vector]`,
+`[run]`, `[lexicon]`); a `path` puts a store on disk, no `path` gives an in-memory store for tests
+and small corpora. A conformance suite runs every driver of every port — including an in-memory
+reference implementation — through identical operations, so a config-only driver swap (`sqlite`
+↔ `duckdb` for `[pairings]`, say) is behaviourally proven, not just type-checked. A third party's
+own driver is selected the same way, by dotted path.
+
+## Reference memory: rows and search index, co-located
 
 A search index answers only *which ids matched*: FTS5's BM25 index and the vector ANN each return
-`(chunk_id, score)`, never text. **Every retrieval path (lexical, dense, hybrid) resolves a hit's
-display text + metadata through one relational `DocumentStore`** (`store/documents/sqlite.py`,
-SQLite by default) — turning an id back into its row is an indexed primary-key lookup, so a corpus
-of any size lives in the database rather than a RAM map. The `DocumentStore` port
-(`add_documents` / `document` / `count`) is resolved through its own registry and bound by the
-`[documents]` table in `storage.toml`; a `path` puts it on disk, no `path` gives an in-memory
-SQLite store for small corpora and tests.
+`(chunk_id, score)`, never text — resolving an id back into its display text + metadata is what
+**`PairingStore.document()`** does, an indexed primary-key lookup, so a corpus of any size lives in
+the database rather than a RAM map. What makes `PairingStore` DB-*native* rather than a derived
+cache: the row and the FTS5 entry that indexes it are **one database, one transaction** — an
+FTS5 *external-content* table kept in sync by `AFTER INSERT/UPDATE/DELETE` triggers inside the
+same statement's implicit transaction as the row write (`store/pairings/sqlite.py`). There is no
+window where a row exists without its index entry or vice versa, and an aborted write leaves
+neither behind — the co-location invariant a *split* row store + search index (the pre-overhaul
+`DocumentStore` + `LexicalIndex` pair, still `store/documents/sqlite.py` + `store/lexical/
+fts5.py`) could only approximate through write ordering, never guarantee. `PairingStore`
+structurally satisfies both older ports (`search`, `document`), so `LexicalRetriever` /
+`DenseRetriever` / `HybridRetriever` are reused verbatim over either.
 
-Ingest is built to match: the corpus builder (`ingest/corpus.py`) streams items in batches and
-writes the inverted index, the vectors, and the rows straight to their stores, so the source is
-never fully materialised. When the on-disk stores already hold the corpus, assembly reuses them
-(built once, keyed on the document store being non-empty) rather than re-reading it. This is what
-lets the recipes below ingest and query a multi-GB, multi-million-row corpus at a few tens of MB of
-process RSS.
+Import is built to match: `ingest/reference.py`'s `import_reference` streams a recipe's
+`[reference].file` JSONL into the pairing store in batches, resumable from `PairingStore.count()`
+as the durable floor — an interrupted multi-hour import costs seconds to resume, not a restart.
+When a `[vector]` store is configured, each batch is embedded and upserted alongside, and
+`VectorIndex.reconcile` closes any gap a crash left between the two. This is what lets the
+recipes below ingest and query a multi-GB, multi-million-row corpus at a few tens of MB of
+process RSS. A recipe with no `[pairings]` in its `storage.toml` falls back to the pre-overhaul
+split store (in-memory, or on disk via `[lexical]`/`[documents]`) — every retrieval recipe
+shipped with this project has been migrated onto `PairingStore` (`tools/migrate_storage.sh`
+folds an existing split store's rows in directly, without re-reading the original corpus), so the
+split path exists for a config that predates the migration, not as the recommended one.
 
 ## Where to look next
 

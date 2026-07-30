@@ -45,16 +45,19 @@ This downloads the pairs and writes, under `data/`:
 
 A tiny committed `sample/reference.jsonl` backs the recipe's own tests, so they need no download.
 Those tests also run the translation memory end-to-end over **both real vector indexes** (LanceDB
-and Qdrant), swapped by a one-line `storage.toml` driver edit, alongside the default `fts5` lexical
-path.
+and Qdrant), swapped by a one-line `storage.toml` driver edit, alongside the default `sqlite`
+pairing-store path.
 
 ## Running
 
 ```bash
 tools/serve_models.sh --models-dir models
-PYTHONPATH=src:. python -m ragkit.cli --config recipes/translation/config \
-    -c recipes/translation/data/heldout.jsonl -j work/translation.jsonl \
+PYTHONPATH=src:. python -m ragkit.cli import --catalog recipes/translation/data/heldout.jsonl \
+    --run-db work/translation.db
+PYTHONPATH=src:. python -m ragkit.cli run --config recipes/translation/config \
+    --run-db work/translation.db \
     --set source_language=English --set target_language=Polish
+PYTHONPATH=src:. python -m ragkit.cli export --run-db work/translation.db -j work/translation.jsonl
 ```
 
 For a **different-script** pair (Japanese/Chinese/Russian → English), swap the `[[validator]]` in
