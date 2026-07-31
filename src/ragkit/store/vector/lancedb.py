@@ -140,12 +140,18 @@ class LanceVectorIndex:
         row -- cost multiple GB of RSS per subsequent batch, because every read/write re-scans the
         whole growing fragment list. Compacting it to 2 fragments fixed that immediately.
 
-        **Not verified safe against a concurrent writer.** Calling this while a *different process*
-        is mid-``upsert()``/``delete()`` against the same on-disk table has not been tested against
-        LanceDB's optimistic-concurrency behavior under real contention (this session hit exactly
-        that scenario by accident -- two embed-job workers briefly writing to the same table -- and
-        it happened not to corrupt anything, but that was not a verified guarantee, just a lucky
-        outcome not to be relied on again). Only call this from the same process that owns the
+        **Confirmed unsafe against a concurrent writer -- this actually corrupted data, once.**
+        Calling this (or even just running two independent ``upsert()``-driven jobs) while a
+        *different process* is mid-``upsert()``/``delete()`` against the same on-disk table is not
+        just untested, it is confirmed broken: this session hit that scenario by accident (two
+        embed-job workers briefly writing to the same table after a bash-wrapper-vs-child-process
+        kill mistake) and it silently produced 5,000 duplicate rows -- same id, two rows each,
+        `count_rows()` inflated by exactly that many, `reconcile()`'s set-based orphan/missing
+        logic blind to it since it compares distinct ids, not row counts. No error was ever
+        raised; it was only caught later by an exact ``pairings.count() == vector.count()`` audit
+        after a job finished. "No error surfaced" is not evidence of no corruption with this
+        write pattern -- always audit row counts after any concurrent-access incident, don't take
+        a clean exit as proof nothing broke. Only call this from the same process that owns the
         table's writes (as :func:`~ragkit.ingest.reference.reconcile_vector`'s ``compact_every``
         does, sequentially inside its own batch loop), or when no writer is active.
         """

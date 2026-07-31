@@ -16,9 +16,11 @@
 # Only meaningful for the lancedb driver -- Qdrant's HNSW index has no on-disk fragment-file model
 # to compact, so a qdrant-backed [vector] is reported as a no-op rather than an error.
 #
-# Do not run this against a table another process is actively writing to. LanceDB's behavior under
-# that contention has not been verified here beyond one accidental, harmless-seeming case -- treat
-# it as unsafe until proven otherwise, not as tolerated.
+# Do not run this against a table another process is actively writing to. This is not a theoretical
+# caution: two embed-job workers accidentally writing to the same legal_procurement table
+# concurrently (this repo's own incident) silently produced 5,000 duplicate rows -- same id, two
+# rows each -- with no error raised anywhere; it surfaced only much later via an exact
+# pairings.count() == vector.count() audit. A clean exit is not evidence nothing broke here.
 #
 # Usage: tools/compact_vector_store.sh --config DIR
 #   --config DIR   a config directory whose storage.toml has a [vector] store
