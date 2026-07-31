@@ -37,3 +37,20 @@ endpoint = "embed"
 model_id = "embed"
 kind = "embedding"
 context_window = 32768
+
+# Hybrid retrieval's rerank stage (opt-in -- see README.md "Dense (semantic) retrieval is the real
+# lever"): a third llama-server process, since reranking is its own endpoint, not the chat router
+# or the embedding one.
+[endpoint.rerank]
+provider = "llamacpp-router"
+base_url = "http://127.0.0.1:8082/v1"
+resident_max = 1
+parallel = 4
+# Same reasoning as [endpoint.embed]'s server_args -- see tools/rerank_presets.ini's own comment.
+server_args = ["--models-preset", "tools/rerank_presets.ini"]
+
+[model.rerank]
+endpoint = "rerank"
+model_id = "rerank"
+kind = "rerank"
+context_window = 8192
