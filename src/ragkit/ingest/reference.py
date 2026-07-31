@@ -140,7 +140,12 @@ def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder:
     table upserted in many small batches over a long run accumulates one on-disk fragment per
     batch without bound; confirmed directly at real corpus scale that this alone can cost multiple
     GB of RSS per subsequent batch once fragments number in the thousands. Periodic compaction
-    during the run, not just once at the end, is what keeps that bounded."""
+    during the run, not just once at the end, is what keeps that bounded. If ``compact()`` itself
+    raises, the exception propagates uncaught -- the whole call aborts rather than silently
+    skipping a failed compaction. Every batch up to that point already committed (embed-then-upsert
+    happens before the compaction check), so nothing already embedded is lost, and a rerun resumes
+    from exactly the remaining gap -- but the caller sees the failure immediately, not a silently
+    degraded (uncompacted) run."""
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
     if compact_every is not None and compact_every < 1:

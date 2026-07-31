@@ -321,6 +321,37 @@ class TestImportReference:
         reconcile_vector(store, vector, embedder, batch_size=2, compact_every=1)
         assert vector.count() == 4
 
+    def test_reconcile_propagates_a_compact_failure_without_losing_prior_batches(
+            self, tmp_path: Path) -> None:
+        # A failed compaction must not be silently swallowed (the caller needs to know a
+        # multi-hour job aborted), but everything embedded before the failing compact() call is
+        # already committed (embed-then-upsert happens before the compaction check) and must
+        # survive so a rerun only re-does the remaining gap.
+        from ragkit.ingest.reference import reconcile_vector
+
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": f"text {i}"} for i in range(6)])
+        store = SqlitePairings()
+        vector = LanceVectorIndex(str(tmp_path / "v"), dim=2)
+        embedder = _embedder(lambda t: [1.0, 0.0])
+        import_reference(path, store)
+
+        def _boom() -> None:
+            raise RuntimeError("simulated compaction failure")
+
+        vector.compact = _boom  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="simulated compaction failure"):
+            # compact_every=1 with batch_size=2 -- fails right after the first batch commits.
+            reconcile_vector(store, vector, embedder, batch_size=2, compact_every=1)
+
+        assert vector.count() == 2  # the one batch that committed before compact() blew up
+
+        # Resume with compaction disabled -- the rest of the corpus still gets embedded.
+        added = reconcile_vector(store, vector, embedder, batch_size=2, compact_every=None)
+        assert added == 4
+        assert vector.count() == 6
+
     def test_reconcile_compact_every_zero_or_none_disables_it(self, tmp_path: Path) -> None:
         from ragkit.ingest.reference import reconcile_vector
 

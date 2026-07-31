@@ -131,6 +131,13 @@ correct-but-spliced records. These remain honest baselines, not tuned results �
 classic PubMedQA where the abstract is handed to the model; further gains would come from
 dense/hybrid retrieval and a stronger decoder.
 
+`config/models.toml`'s `[model.author]` is pinned to this same **Qwen3-14B-Q5_K_M** (fetch with
+`tools/fetch_models.sh --only med_author`, ~10.5GB — too large for the default fetch-everything
+set) so the checked-in config reproduces the table above, not a smaller stand-in. The
+**directly-comparable PubMedQA reader number** (`reader_eval.py`, gold abstract given as context —
+see above) has not yet been run against a real model; the table above is `eval.py`'s (the harder,
+retrieval-included) RAG task only.
+
 ### Enabling dense retrieval
 
 Like `legal_procurement`, dense is **opt-in, not the default** (a one-time GPU cost to embed the
@@ -138,11 +145,19 @@ corpus, kept out so `eval.py` runs with no GPU) — `models.toml` already has `[
 and `storage.toml` already has `[vector]` (`driver = "lancedb"`, `dim` = the embedder's output
 dim). The only step left to switch the recipe onto it is a `retrieval.toml` with `[retrieval]
 kind = "dense"` / `[retrieval.dense] model = "embedder"` (or `kind = "hybrid"` with a reranker).
-Embedding the ~600k-abstract corpus into `data/abstracts.lance`:
+Embedding the ~600k-abstract corpus into `data/abstracts.lance` needs the embedding server running
+on its own endpoint (`[endpoint.embed]` in `models.toml` already wires `tools/embed_presets.ini`,
+which names the model `embed` and turns on `--embeddings` — router mode alone would not):
 
 ```bash
+tools/serve_models.sh --config recipes/med_evidence/config/models.toml \
+    --endpoint embed --models-dir models
 tools/embed_reference.sh --config recipes/med_evidence/config \
     --embedding-url http://127.0.0.1:8081/v1 --embedding-model embed
 ```
 
-Resumable/idempotent, safe to interrupt and re-run.
+Resumable/idempotent, safe to interrupt and re-run. `embed_reference.sh` also compacts the LanceDB
+vector store automatically every 50 commits by default (`--compact-every`, `0` disables it) — a
+long, many-times-resumed run otherwise accumulates on-disk fragments without bound (see
+`tools/compact_vector_store.sh` to compact by hand; `legal_procurement`'s corpus is the concrete
+case that made this necessary).
