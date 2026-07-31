@@ -29,7 +29,7 @@ done
 # fetch it explicitly with --only med_author rather than expecting a bare `fetch_models.sh` to want
 # it every time).
 declare -A REPO FILE
-REPO[ci]="Qwen/Qwen3-0.6B-GGUF";                 FILE[ci]="Qwen3-0.6B-Q4_K_M.gguf"
+REPO[ci]="Qwen/Qwen3-0.6B-GGUF";                 FILE[ci]="Qwen3-0.6B-Q8_0.gguf"
 REPO[producer]="Qwen/Qwen3.5-2B-Instruct-GGUF";  FILE[producer]="Qwen3.5-2B-Instruct-Q4_K_M.gguf"
 REPO[reviewer]="Qwen/Qwen3.5-0.8B-Instruct-GGUF";FILE[reviewer]="Qwen3.5-0.8B-Instruct-Q4_K_M.gguf"
 REPO[embed]="Qwen/Qwen3-Embedding-0.6B-GGUF";    FILE[embed]="Qwen3-Embedding-0.6B-Q8_0.gguf"
