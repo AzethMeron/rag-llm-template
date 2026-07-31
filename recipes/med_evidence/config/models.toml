@@ -6,9 +6,13 @@ base_url = "http://127.0.0.1:8080/v1"
 resident_max = 4
 parallel = 2
 
+# Qwen3-14B (fetch with tools/fetch_models.sh --only med_author -- too large, ~10.5GB, to be part
+# of the default fetch-everything set), not the smaller default every other recipe uses: this is
+# the model the README's "Measured baseline" table's numbers were produced with, so the recipe's
+# checked-in config reproduces that result rather than silently drifting from what's documented.
 [model.author]
 endpoint = "local"
-model_id = "Qwen3.5-2B-Instruct-Q4_K_M"
+model_id = "Qwen3-14B-Q5_K_M"
 backend = "auto"
 context_window = 8192
 

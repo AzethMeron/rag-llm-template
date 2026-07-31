@@ -131,6 +131,13 @@ correct-but-spliced records. These remain honest baselines, not tuned results �
 classic PubMedQA where the abstract is handed to the model; further gains would come from
 dense/hybrid retrieval and a stronger decoder.
 
+`config/models.toml`'s `[model.author]` is pinned to this same **Qwen3-14B-Q5_K_M** (fetch with
+`tools/fetch_models.sh --only med_author`, ~10.5GB — too large for the default fetch-everything
+set) so the checked-in config reproduces the table above, not a smaller stand-in. The
+**directly-comparable PubMedQA reader number** (`reader_eval.py`, gold abstract given as context —
+see above) has not yet been run against a real model; the table above is `eval.py`'s (the harder,
+retrieval-included) RAG task only.
+
 ### Enabling dense retrieval
 
 Like `legal_procurement`, dense is **opt-in, not the default** (a one-time GPU cost to embed the
