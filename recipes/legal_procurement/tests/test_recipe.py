@@ -1,6 +1,6 @@
 """The legal-procurement recipe: the citation-grounding validator (adversarial), the
-retrieval-quality eval (Recall@20/MRR@10/NDCG@10 against gold), and an end-to-end run that answers
-from a legal-passage memory and rejects a fabricated citation."""
+retrieval-quality eval (Recall@20/MRR@10/NDCG@10/Acc@10 against gold), and an end-to-end run that
+answers from a legal-passage memory and rejects a fabricated citation."""
 from __future__ import annotations
 
 import json
@@ -146,20 +146,23 @@ class TestEvaluate:
         report = lp_eval.evaluate(retriever, queries, gold, k=20)
         assert report.queries == 2
         assert report.recall_at_k == pytest.approx(0.5)  # q1 hit, q2 miss
+        assert report.hit_rate_at_10 == pytest.approx(0.5)  # same hit/miss split at top-10
         assert report.mrr == pytest.approx(0.5)           # q1 rank-1, q2 none
         assert report.ndcg == pytest.approx(0.5)
-        for value in (report.recall_at_k, report.mrr, report.ndcg):
+        for value in (report.recall_at_k, report.hit_rate_at_10, report.mrr, report.ndcg):
             assert 0.0 <= value <= 1.0
 
     def test_a_perfect_ranking_scores_one(self) -> None:
         retriever = _RankRetriever(["ref-1", "ref-2", "ref-3"])
         report = lp_eval.evaluate(retriever, [("q1", "a")], {"q1": frozenset({"ref-1"})}, k=20)
         assert report.recall_at_k == 1.0 and report.mrr == 1.0 and report.ndcg == 1.0
+        assert report.hit_rate_at_10 == 1.0
 
     def test_empty_report_is_zero(self) -> None:
         report = lp_eval.Report((), k=20)
         assert report.queries == 0
         assert report.recall_at_k == 0.0 and report.mrr == 0.0 and report.ndcg == 0.0
+        assert report.hit_rate_at_10 == 0.0
 
     def test_over_the_real_assembled_retriever(self, tmp_path: Path) -> None:
         config = _staged(tmp_path)
@@ -170,7 +173,7 @@ class TestEvaluate:
         gold = {"q1": frozenset({"ref-1"}), "q2": frozenset({"ref-2"})}
         report = lp_eval.evaluate(retriever, queries, gold, k=20)
         assert report.queries == 2
-        for value in (report.recall_at_k, report.mrr, report.ndcg):
+        for value in (report.recall_at_k, report.hit_rate_at_10, report.mrr, report.ndcg):
             assert 0.0 <= value <= 1.0
         assert report.recall_at_k > 0.0  # the lexical retriever finds the gold passages
 
@@ -255,7 +258,8 @@ class TestEvalMain:
                              "--gold", str(gold)])
         out = capsys.readouterr().out
         assert code == 0
-        assert "Recall@20" in out and "MRR@10" in out and "NDCG@10" in out and "queries 2" in out
+        assert ("Recall@20" in out and "MRR@10" in out and "NDCG@10" in out
+                and "Acc@10" in out and "queries 2" in out)
 
     def test_missing_gold_errors(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config, heldout, _ = _eval_data(tmp_path)

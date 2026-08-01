@@ -49,6 +49,15 @@ def recall_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> floa
     return len(top & relevant) / len(relevant)
 
 
+def hit_rate_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
+    """1.0 if at least one relevant id appears in the top ``k``, else 0.0 -- a binary per-query
+    hit/miss, unlike ``recall_at_k``'s fraction of *all* relevant ids captured. This is the "top-k
+    accuracy" metric reported by PolQA (Rybak et al., 2022) and similar OpenQA retrieval papers;
+    kept alongside recall_at_k/mrr/ndcg so a recipe can report a literature-comparable number
+    instead of only this framework's own recall/MRR/NDCG convention."""
+    return 1.0 if set(ranked[:k]) & relevant else 0.0
+
+
 def reciprocal_rank(ranked: Sequence[str], relevant: frozenset[str]) -> float:
     """``1 / rank`` of the first relevant id (rank counted from 1), or 0 if none is retrieved."""
     for index, doc_id in enumerate(ranked, start=1):
@@ -86,6 +95,7 @@ class RetrievalScores:
     k: int
     queries: int
     recall_at_k: float
+    hit_rate_at_k: float
     mrr: float
     map: float
     ndcg_at_k: float
@@ -118,17 +128,18 @@ def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, s
 
     scores: dict[str, RetrievalScores] = {}
     for name, retriever in systems.items():
-        recalls, rrs, aps, ndcgs = [], [], [], []
+        recalls, hits, rrs, aps, ndcgs = [], [], [], [], []
         for qid, text in queries.items():
             relevant = qrels.relevant[qid]
             ranked = [hit.chunk_id for hit in retriever.retrieve(text, k=k)]
             recalls.append(recall_at_k(ranked, relevant, k))
+            hits.append(hit_rate_at_k(ranked, relevant, k))
             rrs.append(reciprocal_rank(ranked, relevant))
             aps.append(average_precision(ranked, relevant))
             ndcgs.append(ndcg_at_k(ranked, relevant, k))
         scores[name] = RetrievalScores(
-            k=k, queries=len(queries), recall_at_k=_mean(recalls), mrr=_mean(rrs),
-            map=_mean(aps), ndcg_at_k=_mean(ndcgs))
+            k=k, queries=len(queries), recall_at_k=_mean(recalls), hit_rate_at_k=_mean(hits),
+            mrr=_mean(rrs), map=_mean(aps), ndcg_at_k=_mean(ndcgs))
     return scores
 
 

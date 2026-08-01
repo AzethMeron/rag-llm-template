@@ -125,6 +125,42 @@ class LanceVectorIndex:
         # method exists for interface symmetry with the other stores.
         return None
 
+    def create_index(self, *, num_partitions: int | None = None, replace: bool = True) -> None:
+        """Build an IVF_FLAT ANN index on the vector column.
+
+        ``search()`` (see above) silently falls back to an O(n) brute-force scan of every row
+        whenever no index exists -- correct, but at millions of rows a single query then reads the
+        entire vector column (confirmed: a 7.1M-row/1024-d table without an index made a 956-query
+        eval CPU-bound and multi-hour, at 0% GPU use, because the "GPU-backed" retrieval pipeline
+        never got past a full in-process table scan per query). IVF_FLAT (not IVF_PQ) is used
+        because it needs no minimum training-set size and loses no precision to quantization --
+        IVF_PQ requires >=256 rows per partition to train and this store's smallest real tables
+        (recipe unit tests) have far fewer. ``num_partitions`` defaults to ``sqrt(row count)``, the
+        standard IVF heuristic balancing per-partition scan cost against the number of partitions
+        probed.
+
+        Not built automatically on upsert(): training needs a representative sample of the already-
+        written data and is itself an expensive batch operation, so callers build it once after a
+        corpus is (mostly) loaded, not on every write -- same reasoning as compact() below.
+
+        Do not call this while another process is concurrently writing to the table -- same
+        concurrent-access hazard as compact() (see its docstring): this table's real corruption
+        incident came from exactly this class of concurrent access.
+        """
+        # See the module docstring: lancedb is imported lazily, only inside this module.
+        from lancedb.index import IvfFlat  # type: ignore[import-untyped]
+
+        row_count = self.count()
+        if row_count == 0:
+            raise VectorIndexError("cannot build a vector index on an empty table")
+        partitions = num_partitions if num_partitions is not None else max(1, int(row_count ** 0.5))
+        try:
+            self._table.create_index(
+                "vector", config=IvfFlat(distance_type=self._metric, num_partitions=partitions),
+                replace=replace)
+        except Exception as exc:
+            raise VectorIndexError(f"could not build the vector index: {exc}") from exc
+
     def compact(self) -> None:
         """Consolidate the small fragments left by many incremental ``upsert()``/``delete()``
         calls (each is a separate write transaction) into a few large ones, and prune old

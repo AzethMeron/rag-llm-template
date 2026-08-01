@@ -2,12 +2,18 @@
 gold-relevant legal passages for each held-out question.
 
 This is the recipe that exercises the framework's retrieval-metrics layer
-(:mod:`ragkit.eval.retrieval`). The headline is three standard rank-quality numbers, each at its
+(:mod:`ragkit.eval.retrieval`). The headline is four rank-quality numbers, each at its
 conventional depth, averaged over the evaluated questions:
 
 * **Recall@20** — the fraction of a question's gold passages that appear in the top 20 retrieved;
 * **MRR@10** — the mean reciprocal rank of the first gold passage within the top 10;
-* **NDCG@10** — the normalised discounted cumulative gain of the top 10 (binary relevance).
+* **NDCG@10** — the normalised discounted cumulative gain of the top 10 (binary relevance);
+* **Acc@10** — 1/0 per question for whether *any* gold passage lands in the top 10, averaged. This
+  is NOT the same statistic as Recall@20 (different depth, and binary hit vs. fraction-of-all-
+  relevant) — it exists so this recipe's number is directly comparable to papers that report
+  "top-k accuracy" for their own (typically task-fine-tuned) retriever, e.g. PolQA's polqa corpus
+  (Rybak et al., 2022) reports 51-62% top-10 accuracy for a HerBERT retriever fine-tuned on PolQA's
+  own training set — not directly comparable to Recall@20, but directly comparable to Acc@10.
 
 The retriever is built the SAME way the recipe builds it (``assemble(config).retriever``), so the
 number reflects the recipe's own configuration, not a re-implementation. Gold judgments come from
@@ -34,10 +40,11 @@ from pathlib import Path
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retriever
 from ragkit.core.records import read_journal
-from ragkit.eval.retrieval import ndcg_at_k, recall_at_k, reciprocal_rank
+from ragkit.eval.retrieval import hit_rate_at_k, ndcg_at_k, recall_at_k, reciprocal_rank
 
 _NDCG_K = 10
 _MRR_K = 10
+_HIT_RATE_K = 10  # matches PolQA's (Rybak et al., 2022) "top-10 accuracy" retriever metric
 
 
 class EvalError(Exception):
@@ -48,6 +55,7 @@ class EvalError(Exception):
 class QueryScore:
     record_id: str
     recall: float
+    hit: float
     reciprocal_rank: float
     ndcg: float
 
@@ -66,6 +74,14 @@ class Report:
         return self._mean(lambda s: s.recall)
 
     @property
+    def hit_rate_at_10(self) -> float:
+        # Binary per-query hit/miss at top-10, NOT recall_at_k's fraction-of-all-relevant --
+        # matches the literature's "top-10 accuracy" (e.g. PolQA, Rybak et al., 2022) so this
+        # number is directly comparable to a paper's reported retriever accuracy, unlike
+        # recall_at_k which uses this framework's own multi-relevant convention and depth.
+        return self._mean(lambda s: s.hit)
+
+    @property
     def mrr(self) -> float:
         return self._mean(lambda s: s.reciprocal_rank)
 
@@ -80,8 +96,9 @@ class Report:
 def evaluate(retriever: Retriever, queries: Sequence[tuple[str, str]],
              gold: Mapping[str, frozenset[str]], *, k: int = 20) -> Report:
     """Score each ``(record_id, question)`` whose id has gold judgments, retrieving at a depth that
-    covers every reported metric (``max(k, 10)``). Recall is at ``k``; MRR and NDCG at 10."""
-    depth = max(k, _MRR_K, _NDCG_K)
+    covers every reported metric (``max(k, 10)``). Recall is at ``k``; hit rate, MRR, and NDCG at
+    10."""
+    depth = max(k, _MRR_K, _NDCG_K, _HIT_RATE_K)
     scores: list[QueryScore] = []
     for record_id, question in queries:
         relevant = gold.get(record_id)
@@ -91,6 +108,7 @@ def evaluate(retriever: Retriever, queries: Sequence[tuple[str, str]],
         scores.append(QueryScore(
             record_id=record_id,
             recall=recall_at_k(ranked, relevant, k),
+            hit=hit_rate_at_k(ranked, relevant, _HIT_RATE_K),
             reciprocal_rank=reciprocal_rank(ranked[:_MRR_K], relevant),
             ndcg=ndcg_at_k(ranked, relevant, _NDCG_K)))
     return Report(tuple(scores), k=k)
@@ -182,7 +200,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise EvalError(f"the recipe at {args.config} wires no retriever to evaluate")
         report = evaluate(retriever, queries, gold, k=args.k)
         summary = (f"queries {report.queries} | Recall@{report.k} {report.recall_at_k:.3f} | "
-                   f"MRR@{_MRR_K} {report.mrr:.3f} | NDCG@{_NDCG_K} {report.ndcg:.3f}")
+                   f"MRR@{_MRR_K} {report.mrr:.3f} | NDCG@{_NDCG_K} {report.ndcg:.3f} | "
+                   f"Acc@{_HIT_RATE_K} {report.hit_rate_at_10:.3f} (literature-comparable "
+                   f"top-{_HIT_RATE_K} hit rate, e.g. PolQA)")
         if args.journal is not None:
             grounded, produced = grounding_rate(
                 retriever, args.journal, gold, dict(queries), k=args.k)

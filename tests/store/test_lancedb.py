@@ -159,6 +159,44 @@ class TestCompact:
             index.compact()
 
 
+class TestCreateIndex:
+    def test_build_index_and_search_still_finds_nearest(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        vectors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 1, 1]]
+        index.upsert([f"c{i}" for i in range(5)], vectors, [{} for _ in vectors])
+        assert index._table.list_indices() == []
+
+        index.create_index(num_partitions=1)
+
+        assert len(index._table.list_indices()) == 1
+        assert index.search([0, 0, 1], k=1)[0][0] == "c2"
+        assert index.count() == 5  # index build must not touch row count
+
+    def test_create_index_on_empty_table_is_a_structured_error(self, tmp_path: Path) -> None:
+        with pytest.raises(VectorIndexError, match="empty table"):
+            _index(tmp_path).create_index()
+
+    def test_default_num_partitions_is_sqrt_row_count(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        vectors = [[float(i % 2), float((i + 1) % 2), 0.0] for i in range(9)]
+        index.upsert([f"c{i}" for i in range(9)], vectors, [{} for _ in vectors])
+        index.create_index()  # 9 rows -> sqrt(9) = 3 partitions, no explicit override
+        [info] = index._table.list_indices()
+        assert info.index_type == "IvfFlat"
+
+    def test_build_failure_is_a_structured_error(self, tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{}])
+
+        def flaky(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("index boom")
+
+        monkeypatch.setattr(index._table, "create_index", flaky)
+        with pytest.raises(VectorIndexError, match="could not build the vector index"):
+            index.create_index()
+
+
 class TestConfig:
     def test_from_config(self, tmp_path: Path) -> None:
         index = LanceVectorIndex.from_config({"path": str(tmp_path / "v"), "dim": 4})
