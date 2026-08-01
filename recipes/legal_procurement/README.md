@@ -131,9 +131,47 @@ retrieval is the real lever.** On an identical controlled 25k-passage set (100 q
 | **dense** (Qwen3-Embedding-0.6B) | **0.230** | 0.545 | 0.240 |
 | hybrid (RRF) | 0.215 | **0.568** | **0.242** |
 
-Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best. **Dense is opt-in,
-not the default** (a one-time GPU cost to embed the corpus, kept out so `eval.py` runs with no
-GPU) — `models.toml` already has `[model.embedder]` (`kind = "embedding"`, pointed at a locally
+Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best.
+
+### Full-scale results (2026-08-01) — dense and hybrid at 7.1M passages / 956 questions
+
+The 25k/100-question table above was a controlled subset; here dense and hybrid+reranker
+(`bge-reranker-v2-m3`) are run at the **same full scale** as the BM25 baseline above (needs a
+LanceDB ANN index built first — `tools/build_vector_index.sh` — or dense retrieval brute-force
+scans the entire 7.1M-row vector column per query):
+
+| Retriever | Recall@20 | MRR@10 | NDCG@10 |
+|---|---:|---:|---:|
+| lexical BM25 (same as above) | 0.332 | 0.393 | 0.250 |
+| **dense** (Qwen3-Embedding-0.6B) | **0.342** | 0.480 | 0.288 |
+| **hybrid + reranker** | 0.511 | **0.750** | **0.503** |
+
+At this scale dense's Recall gain over lexical shrinks to +3% relative (retrieval gets harder as
+the distractor pool grows 280× versus the 25k-passage subset), but ranking quality (MRR/NDCG)
+still improves meaningfully; hybrid+reranker is the real lever at full scale, roughly doubling
+MRR and NDCG over the lexical floor — a different picture than the small-scale table suggests.
+
+**Against the PolQA paper (Rybak et al., 2022/2024, LREC-COLING).** The paper reports "top-10
+accuracy" — a binary per-query hit/miss (did *any* gold passage land in the top 10) — which is a
+different statistic and depth than this recipe's own Recall@20/MRR@10/NDCG@10. For a literature-
+comparable number, `eval.py` also reports **Acc@10** (`ragkit.eval.retrieval.hit_rate_at_k`), the
+same statistic and depth as the paper:
+
+| Retriever | Training | Acc@10 |
+|---|---|---:|
+| Paper: HerBERT, *Standard* strategy | supervised, fine-tuned on PolQA's own train set | 51.47% |
+| Paper: HerBERT, *Efficient* strategy (best) | supervised, fine-tuned on PolQA's own train set | **62.02%** |
+| **Ours — dense** (Qwen3-Embedding-0.6B) | zero-shot, no PolQA training at all | **66.5%** |
+| **Ours — hybrid + reranker** | zero-shot, no PolQA training at all | **86.0%** |
+
+Both corpora match in size (the paper's 7,097,322 candidate passages vs. our table's 7,097,288 —
+34 fewer from minor ingest-side filtering). On the paper's own metric, our **zero-shot** dense
+retriever already beats the paper's best **fine-tuned** retriever (66.5% vs. 62.0%), and
+hybrid+reranker clears it by 24 points — notable, though scoped to this one dataset/domain
+(Polish Wikipedia trivia questions), not a universal claim about zero-shot vs. fine-tuning.
+
+**Dense is opt-in, not the default** (a one-time GPU cost to embed the corpus, kept out so
+`eval.py` runs with no GPU) — `models.toml` already has `[model.embedder]` (`kind = "embedding"`, pointed at a locally
 served embedding model) and `storage.toml` already has `[vector]` (`driver = "lancedb"`, `dim` =
 the embedder's output dim). The only step left to actually switch the recipe onto it is a
 `retrieval.toml` with `[retrieval] kind = "dense"` / `[retrieval.dense] model = "embedder"`; for
