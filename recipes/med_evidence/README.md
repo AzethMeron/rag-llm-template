@@ -133,10 +133,39 @@ dense/hybrid retrieval and a stronger decoder.
 
 `config/models.toml`'s `[model.author]` is pinned to this same **Qwen3-14B-Q5_K_M** (fetch with
 `tools/fetch_models.sh --only med_author`, ~10.5GB — too large for the default fetch-everything
-set) so the checked-in config reproduces the table above, not a smaller stand-in. The
-**directly-comparable PubMedQA reader number** (`reader_eval.py`, gold abstract given as context —
-see above) has not yet been run against a real model; the table above is `eval.py`'s (the harder,
-retrieval-included) RAG task only.
+set) so the checked-in config reproduces the table above, not a smaller stand-in.
+
+### Full-scale results (2026-08-01) — all 1000 gold questions
+
+Both eval modes run against the **full 1000-question PubMedQA gold set** (the 60-question table
+above was a smaller controlled sample), same Qwen3-14B author:
+
+| Eval | accuracy | answered_accuracy | decided |
+|---|---:|---:|---:|
+| `eval.py` (RAG: retrieve, then decide) | 0.528 | 0.645 | 897/1000 |
+| `reader_eval.py` (gold abstract given — directly comparable to PubMedQA) | 0.680 | 0.716 | 954/1000 |
+
+**Against the PubMedQA paper (Jin et al., 2019, EMNLP)** — `reader_eval.py`'s setup matches the
+paper's task exactly, so this comparison is apples-to-apples:
+
+| | Accuracy |
+|---|---:|
+| Majority-class baseline | 55.2% |
+| Best fine-tuned model (BioBERT + long-answer bag-of-words, supervised) | 68.1% |
+| **Ours — Qwen3-14B, zero-shot, no PubMedQA-specific training at all** | **68.0%** |
+| Human performance | 78.0% |
+
+Qwen3-14B, used zero-shot, lands within 0.1 point of the paper's best *fine-tuned* baseline, well
+clear of majority-class, and ~10 points under human performance — a strong result for a
+general-purpose model with no task-specific training.
+
+`eval.py`'s number is **not** comparable to the PubMedQA leaderboard for the same reason as the
+60-question table above: it makes the model retrieve the answer-bearing abstract among ~600k
+distractors before deciding, strictly harder than the paper's task. Caveat on this run: the
+substitute reviewer model standing in for a still-broken default (see `tools/fetch_models.sh`'s
+known `producer`/`reviewer` issue) frequently produced degenerate output during the
+faithfulness-review step and had to abstain, so the review/grounding gate wasn't operating at full
+strength.
 
 ### Enabling dense retrieval
 
