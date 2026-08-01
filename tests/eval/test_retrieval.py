@@ -11,6 +11,7 @@ from ragkit.eval import (
     Qrels,
     average_precision,
     evaluate_retrieval,
+    hit_rate_at_k,
     ndcg_at_k,
     recall_at_k,
     reciprocal_rank,
@@ -32,6 +33,13 @@ class TestMetrics:
         assert recall_at_k(["a", "b", "c"], frozenset({"a", "x"}), 3) == 0.5
         assert recall_at_k(["a", "b", "c"], frozenset({"z"}), 3) == 0.0
         assert recall_at_k(["a", "b", "c"], frozenset({"a"}), 1) == 1.0
+
+    def test_hit_rate_at_k(self) -> None:
+        assert hit_rate_at_k(["a", "b", "c"], frozenset({"a", "x"}), 3) == 1.0
+        assert hit_rate_at_k(["a", "b", "c"], frozenset({"z"}), 3) == 0.0
+        assert hit_rate_at_k(["a", "b", "c"], frozenset({"c"}), 2) == 0.0  # c is outside top 2
+        # unlike recall_at_k, a single hit among several relevant ids still scores 1.0
+        assert hit_rate_at_k(["a", "x", "y"], frozenset({"a", "b"}), 3) == 1.0
 
     def test_reciprocal_rank(self) -> None:
         assert reciprocal_rank(["b", "a"], frozenset({"a"})) == 0.5
@@ -70,7 +78,9 @@ class TestEvaluateRetrieval:
         systems, queries, qrels = self._setup()
         scores = evaluate_retrieval(systems, queries, qrels, k=2)
         assert scores["good"].mrr == 1.0 and scores["good"].recall_at_k == 1.0
+        assert scores["good"].hit_rate_at_k == 1.0
         assert scores["bad"].mrr == 0.0 and scores["bad"].recall_at_k == 0.0
+        assert scores["bad"].hit_rate_at_k == 0.0
         assert scores["good"].queries == 2 and scores["good"].k == 2
 
     def test_refuses_ground_truth_from_a_system_under_eval(self) -> None:
