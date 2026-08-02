@@ -241,7 +241,14 @@ class SearchIndex(Protocol):
     """The read side of a keyword search index: maps a query to ``(chunk_id, score)`` best-first,
     higher-is-better. This is the *narrow* interface a :class:`Retriever` built over a search index
     actually depends on (never the write side) — a :class:`PairingStore` satisfies it (its rows and
-    search index are co-located, but a retriever never indexes or deletes through it directly)."""
+    search index are co-located, but a retriever never indexes or deletes through it directly).
+
+    ``score`` is in ``[0, 1)``, the same convention :class:`VectorIndex` follows and for the same
+    reason: a ``min_score`` floor is only meaningful against a bounded scale, so an implementation
+    returning a raw engine score (a BM25 magnitude, a term-overlap count) would make every floor
+    configured against another driver wrong. :func:`ragkit.store.lexical.bm25.bm25_to_relevance`
+    is the shared map from a raw, higher-is-better magnitude into that range. Absolute values
+    still differ between engines that compute different raw scores; the *range* does not."""
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]: ...
 

@@ -117,7 +117,9 @@ class SqlitePairings:
                     (as_match(query), k)).fetchall()
             except sqlite3.Error as exc:
                 raise PairingStoreError(f"FTS5 query failed: {exc}", query=query) from exc
-        return [(chunk_id, bm25_to_relevance(score)) for chunk_id, score in rows]
+        # FTS5's bm25() is negated (<= 0, more negative is better); the shared transform takes the
+        # positive magnitude, which is the convention DuckDB's match_bm25 already returns.
+        return [(chunk_id, bm25_to_relevance(-score)) for chunk_id, score in rows]
 
     def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None:
         with self._lock:

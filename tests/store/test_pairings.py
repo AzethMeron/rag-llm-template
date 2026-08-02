@@ -257,20 +257,29 @@ class TestSqliteConcurrency:
             holder.join(timeout=5)
 
 
-class TestDuckDBWeakerAtomicity:
-    """Documented tradeoff (see the module docstring): unlike the SQLite driver, DuckDB does not
-    roll back a whole batch when one row in it fails -- a partial write can survive."""
+class TestDuckDBBatchAtomicity:
+    """Regression: DuckDB does not roll back a failed executemany on its own, so a mid-batch
+    failure used to leave a partial write and return an added-count describing it -- breaking
+    PairingStore.add's "in one transaction" promise that the SQLite driver honours. An explicit
+    BEGIN/COMMIT/ROLLBACK now makes it all-or-nothing on both drivers."""
 
-    def test_a_partial_batch_failure_can_leave_a_partial_write(self) -> None:
+    def test_a_partial_batch_failure_leaves_nothing_behind(self) -> None:
         store = DuckDBPairings()
         good = Pairing(chunk_id="ok", source="alpha beta")
         bad = Pairing(chunk_id="bad", source=object())  # type: ignore[arg-type]  # unbindable
         with pytest.raises(PairingStoreError, match="could not add pairings"):
             store.add([good, bad])
-        assert store.count() == 1
-        assert store.get("ok") is not None
-        # The index is still rebuilt over whatever survived, so it is never stale either.
-        assert store.search("alpha", k=5)
+        assert store.count() == 0
+        assert store.get("ok") is None
+        assert store.search("alpha", k=5) == []
+
+    def test_the_store_is_still_usable_after_a_rolled_back_batch(self) -> None:
+        store = DuckDBPairings()
+        bad = Pairing(chunk_id="bad", source=object())  # type: ignore[arg-type]
+        with pytest.raises(PairingStoreError):
+            store.add([bad])
+        assert store.add([Pairing(chunk_id="ok", source="alpha beta")]) == 1
+        assert [cid for cid, _ in store.search("alpha", k=5)] == ["ok"]
 
 
 class TestDuckDBConcurrency:
@@ -299,17 +308,60 @@ class TestDuckDBConcurrency:
         store.close()
 
 
-class TestDuckDBRebuildFailure:
-    def test_a_rebuild_failure_after_a_successful_write_is_structured(
+class TestDuckDBDeferredIndex:
+    """The FTS index is rebuilt by the first search after a write, not inside every add.
+
+    Rebuilding per add made a batched load quadratic: DuckDB's fts extension re-indexes the whole
+    table each time, so a 7M-row corpus at 5k per batch re-indexed a growing table ~1,400 times.
+    Deferring keeps `search`'s contract identical -- it never sees a row the index is missing."""
+
+    def test_add_does_not_rebuild_the_index(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = DuckDBPairings()
+        rebuilds = _count_rebuilds(store, monkeypatch)
+        for i in range(5):
+            store.add([Pairing(chunk_id=f"c{i}", source=f"alpha {i}")])
+        assert rebuilds == [], "add() must not rebuild the FTS index"
+
+    def test_many_batches_then_a_search_rebuilds_exactly_once(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
         store = DuckDBPairings()
+        rebuilds = _count_rebuilds(store, monkeypatch)
+        for i in range(10):
+            store.add([Pairing(chunk_id=f"c{i}", source=f"alpha beta {i}")])
+        store.search("alpha", k=5)
+        store.search("beta", k=5)  # still clean -- no write since the rebuild
+        assert len(rebuilds) == 1
+
+    def test_search_still_sees_every_row_ever_added(self) -> None:
+        store = DuckDBPairings()
+        store.add([Pairing(chunk_id="c1", source="alpha")])
+        assert [cid for cid, _ in store.search("alpha", k=5)] == ["c1"]
+        store.add([Pairing(chunk_id="c2", source="alpha again")])
+        assert {cid for cid, _ in store.search("alpha", k=5)} == {"c1", "c2"}
+
+    def test_a_rebuild_failure_surfaces_from_search_as_a_structured_error(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = DuckDBPairings()
+        store.add([Pairing(chunk_id="c1", source="a")])
 
         def flaky() -> None:
             raise RuntimeError("rebuild boom")
 
         monkeypatch.setattr(store, "_rebuild_fts", flaky)
-        with pytest.raises(PairingStoreError, match="could not add pairings"):
-            store.add([Pairing(chunk_id="c1", source="a")])
+        with pytest.raises(PairingStoreError, match="fts query failed"):
+            store.search("a", k=1)
+
+
+def _count_rebuilds(store: DuckDBPairings, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+    real = store._rebuild_fts
+
+    def spy() -> None:
+        seen.append(1)
+        real()
+
+    monkeypatch.setattr(store, "_rebuild_fts", spy)
+    return seen
 
 
 class TestDuckDBErrors:

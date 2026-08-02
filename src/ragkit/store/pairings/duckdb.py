@@ -3,13 +3,20 @@ swappable by a config edit exactly like every other port.
 
 Unlike the SQLite driver's FTS5 triggers (kept in sync incrementally, inside the same transaction
 as every write), DuckDB's ``fts`` extension builds a **separate index structure that must be
-rebuilt** after a write (``PRAGMA create_fts_index(..., overwrite=1)``); this driver rebuilds it on
-every :meth:`add`, so ``search`` never observes a base-table row not yet in the index. It is
-correctness-equivalent but **not** the SQLite driver's atomicity guarantee: DuckDB does not roll
-back a whole ``executemany`` batch when one row in it fails (each row lands or fails on its own),
-so a partial batch can leave a partial write — documented here rather than hidden, and covered by
-its own test rather than the conformance suite (which only asserts what every driver honours).
-``get``/``document``/``count``/``all_ids`` are unaffected either way: they read the base table
+rebuilt** wholesale (``PRAGMA create_fts_index(..., overwrite=1)``). Rebuilding it inside every
+:meth:`add` made a batched load quadratic — a 7M-row corpus at 5k per batch re-indexed the whole
+growing table ~1,400 times. The rebuild is therefore **deferred**: a write only marks the index
+stale, and :meth:`search` rebuilds first if it is. A bulk load followed by queries now pays one
+rebuild instead of one per batch, while ``search`` still never observes a base-table row that is
+missing from the index — the port's contract is unchanged, so no caller has to know. (An
+alternating add/search workload still rebuilds per search; that is inherent to DuckDB's FTS
+design, and the realistic import-then-query shape is what this fixes.)
+
+:meth:`add` is all-or-nothing, like the SQLite driver's. DuckDB does not roll back a failed
+``executemany`` on its own — each row lands or fails independently — so the batch is wrapped in an
+explicit ``BEGIN``/``COMMIT``/``ROLLBACK``, which does.
+
+``get``/``document``/``count``/``all_ids`` are unaffected by any of this: they read the base table
 directly, never the search index.
 """
 from __future__ import annotations
@@ -22,6 +29,7 @@ from typing import Any
 
 from ragkit.core.ports import Pairing
 
+from ..lexical.bm25 import bm25_to_relevance
 from .common import PairingStoreError, pairing_display
 
 _SCHEMA = """
@@ -64,12 +72,6 @@ def _load_fts(conn: Any) -> None:
                 "instead.") from exc
 
 
-def _bm25_to_relevance(score: float) -> float:
-    """DuckDB's ``match_bm25`` is already higher-is-better but unbounded; ``score / (1 + score)``
-    is a monotone, order-preserving map into ``[0, 1)`` (score is always >= 0 for a match)."""
-    return score / (1.0 + score)
-
-
 class DuckDBPairings:
     """A :class:`~ragkit.core.ports.PairingStore` over DuckDB + its ``fts`` extension."""
 
@@ -77,12 +79,15 @@ class DuckDBPairings:
 
     def __init__(self, path: str = ":memory:") -> None:
         self._lock = threading.Lock()
+        # Starts stale rather than building here: an existing on-disk store is not re-indexed just
+        # to be opened, and a caller that only reads rows (get/count/all_ids) never pays for an
+        # index it does not use. The first search builds it.
+        self._fts_stale = True
         duckdb = _require_duckdb()
         try:
             self._conn = duckdb.connect(path)
             _load_fts(self._conn)
             self._conn.execute(_SCHEMA)
-            self._rebuild_fts()
         except PairingStoreError:
             raise
         except Exception as exc:
@@ -109,33 +114,36 @@ class DuckDBPairings:
         with self._lock:
             try:
                 before = self._count_locked()
+                # Explicit transaction: DuckDB does not roll back a failed executemany by itself,
+                # so without this a mid-batch failure left a partial write -- and the returned
+                # added-count described that partial result, breaking PairingStore.add's
+                # "in one transaction" promise that the SQLite driver honours.
+                self._conn.execute("BEGIN")
                 self._conn.executemany(
                     "INSERT INTO pairings"
                     "(chunk_id, source, context, target, meta, verified, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", rows)
+                self._conn.execute("COMMIT")
             except Exception as exc:
-                # Rebuilt even after a partial-batch failure, so search reflects whatever the base
-                # table actually holds rather than lagging it (see the module docstring) -- but a
-                # rebuild failure here (e.g. the connection is also closed) must not replace and
-                # mask the add failure actually being reported.
-                self._safe_rebuild_fts()
+                self._safe_rollback()
                 raise PairingStoreError(f"could not add pairings: {exc}") from exc
-            try:
-                self._rebuild_fts()
-                return self._count_locked() - before
-            except Exception as exc:
-                raise PairingStoreError(f"could not add pairings: {exc}") from exc
+            self._fts_stale = True  # rebuilt by the next search, not here -- see the docstring
+            return self._count_locked() - before
 
-    def _safe_rebuild_fts(self) -> None:
-        # An add() failure is already being reported; a rebuild failure here must not replace it.
+    def _safe_rollback(self) -> None:
+        """Roll back, unless the connection itself is unusable -- letting *that* failure replace
+        the real one would mask the actual cause (the same guard the SQLite driver uses)."""
         with contextlib.suppress(Exception):
-            self._rebuild_fts()
+            self._conn.execute("ROLLBACK")
 
     def search(self, query: str, *, k: int) -> list[tuple[str, float]]:
         if k <= 0 or not query.strip():
             return []
         with self._lock:
             try:
+                if self._fts_stale:
+                    self._rebuild_fts()
+                    self._fts_stale = False
                 rows = self._conn.execute(
                     "SELECT chunk_id, score FROM ("
                     "  SELECT chunk_id, fts_main_pairings.match_bm25(chunk_id, ?) AS score "
@@ -144,7 +152,7 @@ class DuckDBPairings:
                     [query, k]).fetchall()
             except Exception as exc:
                 raise PairingStoreError(f"fts query failed: {exc}", query=query) from exc
-        return [(chunk_id, _bm25_to_relevance(score)) for chunk_id, score in rows]
+        return [(chunk_id, bm25_to_relevance(score)) for chunk_id, score in rows]
 
     def document(self, chunk_id: str) -> tuple[str, Mapping[str, Any]] | None:
         with self._lock:
