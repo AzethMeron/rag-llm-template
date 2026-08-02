@@ -21,6 +21,7 @@ from ragkit.harness import (
 )
 from ragkit.harness.context import ContextAssembler, RetrievedBlock
 from ragkit.harness.context.assembler import _PlacedBlock
+from ragkit.llm.errors import LlmError
 from ragkit.store.run.sqlite import SqliteRunStore
 
 from .conftest import ACCEPT, build_harness, build_pool, ok
@@ -34,6 +35,20 @@ def _store(records: list[Record]) -> SqliteRunStore:
     store = SqliteRunStore()
     store.add_records(records)
     return store
+
+
+class _FailOn:
+    """A pluggable validator that raises for one record's source and passes every other — the
+    "one bad record in a big batch" shape."""
+
+    def __init__(self, source: str, exc: BaseException) -> None:
+        self._source = source
+        self._exc = exc
+
+    def validate(self, record: Record, _output: str, _context: dict) -> list:
+        if record.source == self._source:
+            raise self._exc
+        return []
 
 
 class TestRunBatch:
@@ -54,14 +69,29 @@ class TestRunBatch:
         assert results["a"].record.output == "R" and results["b"].record.output == "R"
 
     def test_worker_failure_propagates_after_appending(self) -> None:
-        # The first record's server dies (a bare LlmError); the run stops but any completed record
-        # is appended first.
-        harness = build_harness(produce=[ok({"output": "R"})], review=[])
-        # Make process raise a non-content error by exhausting the scripted queue on the 2nd call.
+        # The second record's server dies (a bare LlmError); the run stops, but the first record's
+        # completed result is appended first and stays completed for the resume.
+        harness = build_harness(produce=[ok({"output": "R"})] * 2, review=[ACCEPT],
+                                extra_validators=[_FailOn("line 1", LlmError("server is down"))])
         store = _store(_records(2))
-        with pytest.raises(AssertionError):  # the scripted queue raises when exhausted
+        with pytest.raises(LlmError, match="server is down"):
             run_batch(harness, store.pending(), store, concurrency=1,
                       install_signal_handlers=False)
+        assert store.completed_ids() == {"0"}  # record 1 stays PENDING for the resume
+
+    def test_a_poison_record_does_not_block_the_batch(self) -> None:
+        # Regression: a plugin defect on one record used to leave it PENDING and abort the run, so
+        # every resume re-hit the same deterministic exception -- a batch that could never finish.
+        harness = build_harness(produce=[ok({"output": "R"})] * 3, review=[ACCEPT] * 3,
+                                extra_validators=[_FailOn("line 1", ValueError("plugin bug"))])
+        store = _store(_records(3))
+        progress = run_batch(harness, store.pending(), store, install_signal_handlers=False)
+        assert progress.done == 3 and progress.verified == 2 and progress.rejected == 1
+        assert store.completed_ids() == {"0", "1", "2"}
+        poisoned = next(r for r in store.results() if r.record.record_id == "1")
+        assert poisoned.record.status is Status.REJECTED
+        assert "unexpected ValueError in validate()" in (poisoned.error or "")
+        assert "plugin bug" in (poisoned.error or "")
 
     def test_concurrency_completes_all(self) -> None:
         harness = build_harness(produce=[ok({"output": "R"})] * 5, review=[ACCEPT] * 5)
@@ -94,16 +124,17 @@ class TestRunBatch:
 
     def test_failure_after_a_partial_append_leaves_completed_results_intact(self) -> None:
         # A worker failure must not discard results already appended for other members of the
-        # same batch -- exercised with concurrency=2 so one record can succeed while another's
-        # scripted queue exhausts and raises.
-        harness = build_harness(produce=[ok({"output": "R"})], review=[ACCEPT])
+        # same batch -- exercised with concurrency=2 so one record can succeed while the other
+        # hits infrastructure failure.
+        harness = build_harness(produce=[ok({"output": "R"})] * 2, review=[ACCEPT],
+                                extra_validators=[_FailOn("line 1", LlmError("server is down"))])
         store = _store(_records(2))
-        with pytest.raises(AssertionError):
+        with pytest.raises(LlmError, match="server is down"):
             run_batch(harness, store.pending(), store, concurrency=2,
                       install_signal_handlers=False)
-        # Exactly one produce+review reply is scripted, so exactly one of the two records
-        # completes and is appended before the other's exhausted queue fails the run.
-        assert len(store.completed_ids()) == 1
+        # Record 0 completes and is appended; record 1's infrastructure failure stops the run
+        # without burning it, so it stays PENDING for the resume.
+        assert store.completed_ids() == {"0"}
 
     def test_the_captured_context_reaches_the_run_store(self) -> None:
         # End-to-end: a wired retriever's hits and the assembled passage flow from the harness's
