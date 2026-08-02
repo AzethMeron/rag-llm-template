@@ -278,6 +278,26 @@ class TestVectorIndexConformance:
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
         assert index.reconcile(["a", "new"]) == {"new"}  # b dropped, new reported missing
 
+    def test_reconcile_is_a_noop_when_nothing_drifted(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        index = factory(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
+        assert index.reconcile(["a", "b"]) == set()
+        assert index.count() == 2  # nothing dropped on the way through
+
+    def test_reconcile_from_an_empty_index_reports_everything_missing(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        # The from-a-wipe/migration case, which is the one whose memory profile matters.
+        index = factory(tmp_path)
+        assert index.reconcile(["a", "b", "c"]) == {"a", "b", "c"}
+
+    def test_reconcile_drops_every_orphan(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        index = factory(tmp_path)
+        index.upsert(["a", "b", "c"], [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [{}, {}, {}])
+        assert index.reconcile([]) == set()
+        assert index.count() == 0
+
     def test_upsert_refuses_a_duplicate_id_within_one_batch(
             self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
         """The drivers used to disagree here, which is the kind of divergence a happy-path-only

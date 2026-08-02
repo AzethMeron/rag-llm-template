@@ -128,6 +128,14 @@ def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder:
     their vectors in RAM at once, the same shape of bug as :meth:`LanceVectorIndex.indexed_ids`
     once did on the read side.
 
+    **Memory profile of the reconcile itself.** The one unavoidable non-streamed allocation is the
+    id set ``VectorIndex.reconcile`` returns, which at 7.1M short ids is a few hundred MB. Only
+    one such set is built: the drivers consume their indexed ids as a stream and strike them off
+    (see ``store.vector.common.reconcile_against``), where the obvious set-difference form used to
+    hold the authoritative *and* indexed sets at once, roughly doubling the peak. ``sorted()`` on
+    top adds a pointer array (~8 bytes per id, not another copy of the strings) and buys
+    deterministic, resumable batch order, which is worth it.
+
     ``on_batch``, if given, is called with ``(done, total)`` once up front (``done=0``, so a
     long-running caller can report the full scope before any work happens) and again after each
     batch -- the one seam a caller needs to report progress on a multi-hour reconcile without this

@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
 from ragkit.core.ports import Filter
 
 from ..filters import to_sql
-from .common import VectorIndexError, validate_upsert
+from .common import VectorIndexError, reconcile_against, validate_upsert
 
 _NPROBE_FRACTION = 0.05
 """Share of the IVF partitions a query probes by default. 5% is the usual operating point where
@@ -188,24 +188,17 @@ class LanceVectorIndex:
     def count(self) -> int:
         return int(self._table.count_rows())
 
-    def indexed_ids(self) -> set[str]:
+    def iter_indexed_ids(self) -> Iterator[str]:
         # table.to_arrow() takes no column argument -- it would materialize every column (the
         # full 1024-d vector + meta JSON) for every row just to throw all but "id" away. At
         # millions of rows that is tens of GB for a single call. search().select(["id"]) projects
         # at the scan level so only the id column is ever read, and to_batches() streams it
         # instead of building one giant pyarrow Table.
-        ids: set[str] = set()
         for batch in self._table.search().select(["id"]).limit(None).to_batches():
-            ids.update(batch.column("id").to_pylist())
-        return ids
+            yield from batch.column("id").to_pylist()
 
     def reconcile(self, chunk_ids: Iterable[str]) -> set[str]:
-        authoritative = set(chunk_ids)
-        indexed = self.indexed_ids()
-        orphans = indexed - authoritative
-        if orphans:
-            self.delete(sorted(orphans))
-        return authoritative - indexed  # missing: the caller's to re-embed or refuse
+        return reconcile_against(chunk_ids, self.iter_indexed_ids(), self.delete)
 
     def close(self) -> None:
         # LanceDB holds no long-lived handle that needs explicit release for a local table; the

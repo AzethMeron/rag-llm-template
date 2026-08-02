@@ -17,12 +17,12 @@ deterministic UUID5 of it (so an upsert of the same chunk id overwrites in place
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from ragkit.core.ports import Filter, FilterOp, Predicate
 
-from .common import VectorIndexError, validate_upsert
+from .common import VectorIndexError, reconcile_against, validate_upsert
 
 _ID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")  # fixed: deterministic point ids
 _CHUNK_ID_FIELD = "_cid"  # payload key holding the chunk id; the port names it "id"
@@ -101,23 +101,17 @@ class QdrantVectorIndex:
     def count(self) -> int:
         return int(self._client.count(self._collection).count)
 
-    def indexed_ids(self) -> set[str]:
-        found: set[str] = set()
+    def iter_indexed_ids(self) -> Iterator[str]:
         offset = None
         while True:
             points, offset = self._client.scroll(
                 self._collection, limit=256, offset=offset, with_payload=True, with_vectors=False)
-            found.update(point.payload[_CHUNK_ID_FIELD] for point in points)
+            yield from (point.payload[_CHUNK_ID_FIELD] for point in points)
             if offset is None:
-                return found
+                return
 
     def reconcile(self, chunk_ids: Iterable[str]) -> set[str]:
-        authoritative = set(chunk_ids)
-        indexed = self.indexed_ids()
-        orphans = indexed - authoritative
-        if orphans:
-            self.delete(sorted(orphans))
-        return authoritative - indexed  # missing: the caller's to re-embed or refuse
+        return reconcile_against(chunk_ids, self.iter_indexed_ids(), self.delete)
 
     def close(self) -> None:
         self._client.close()

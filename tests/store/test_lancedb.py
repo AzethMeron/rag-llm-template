@@ -34,42 +34,6 @@ class TestBasics:
         assert index.count() == 1
 
 
-class TestUpsertIsOneTransaction:
-    """Regression: upsert was `delete(ids)` then `add(rows)` -- two transactions, so a crash
-    between them removed the old vectors without adding the new, and each call wrote two
-    fragments instead of one. It is now a single native merge_insert."""
-
-    def test_upsert_does_not_delete_first(self, tmp_path: Path,
-                                          monkeypatch: pytest.MonkeyPatch) -> None:
-        index = _index(tmp_path)
-        index.upsert(["a"], [[1, 0, 0]], [{}])
-
-        def _boom(_ids: object) -> None:
-            raise AssertionError("upsert must not delete-then-add; that is the torn-write window")
-
-        monkeypatch.setattr(index, "delete", _boom)
-        index.upsert(["a", "b"], [[0, 0, 1], [0, 1, 0]], [{}, {}])
-        assert index.count() == 2
-        assert index.search([0, 0, 1], k=1)[0][0] == "a"  # the replacement, not the old vector
-
-    def test_matched_and_unmatched_rows_in_one_call(self, tmp_path: Path) -> None:
-        index = _index(tmp_path)
-        index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{"v": 1}, {"v": 1}])
-        index.upsert(["a", "c"], [[0, 0, 1], [1, 1, 0]], [{"v": 2}, {"v": 2}])
-        assert index.count() == 3
-        assert index.indexed_ids() == {"a", "b", "c"}
-
-    def test_a_backend_failure_is_a_structured_error(self, tmp_path: Path,
-                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-        index = _index(tmp_path)
-
-        def flaky(_on: object) -> None:
-            raise RuntimeError("merge boom")
-
-        monkeypatch.setattr(index._table, "merge_insert", flaky)
-        with pytest.raises(VectorIndexError, match="could not upsert 1 row"):
-            index.upsert(["a"], [[1, 0, 0]], [{}])
-
     def test_delete(self, tmp_path: Path) -> None:
         index = _index(tmp_path)
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
@@ -118,23 +82,60 @@ class TestUpsertIsOneTransaction:
         assert index.search([1, 0, 0], k=0) == []
 
 
+class TestUpsertIsOneTransaction:
+    """Regression: upsert was `delete(ids)` then `add(rows)` -- two transactions, so a crash
+    between them removed the old vectors without adding the new, and each call wrote two
+    fragments instead of one. It is now a single native merge_insert."""
+
+    def test_upsert_does_not_delete_first(self, tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{}])
+
+        def _boom(_ids: object) -> None:
+            raise AssertionError("upsert must not delete-then-add; that is the torn-write window")
+
+        monkeypatch.setattr(index, "delete", _boom)
+        index.upsert(["a", "b"], [[0, 0, 1], [0, 1, 0]], [{}, {}])
+        assert index.count() == 2
+        assert index.search([0, 0, 1], k=1)[0][0] == "a"  # the replacement, not the old vector
+
+    def test_matched_and_unmatched_rows_in_one_call(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{"v": 1}, {"v": 1}])
+        index.upsert(["a", "c"], [[0, 0, 1], [1, 1, 0]], [{"v": 2}, {"v": 2}])
+        assert index.count() == 3
+        assert set(index.iter_indexed_ids()) == {"a", "b", "c"}
+
+    def test_a_backend_failure_is_a_structured_error(self, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+
+        def flaky(_on: object) -> None:
+            raise RuntimeError("merge boom")
+
+        monkeypatch.setattr(index._table, "merge_insert", flaky)
+        with pytest.raises(VectorIndexError, match="could not upsert 1 row"):
+            index.upsert(["a"], [[1, 0, 0]], [{}])
+
+
 class TestReconcile:
     def test_drops_orphans_and_reports_missing(self, tmp_path: Path) -> None:
         index = _index(tmp_path)
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
         missing = index.reconcile(["a", "c"])  # b is an orphan; c is missing
         assert missing == {"c"}
-        assert index.indexed_ids() == {"a"}
+        assert set(index.iter_indexed_ids()) == {"a"}
 
     def test_no_drift_returns_empty(self, tmp_path: Path) -> None:
         index = _index(tmp_path)
         index.upsert(["a"], [[1, 0, 0]], [{}])
         assert index.reconcile(["a"]) == set()
 
-    def test_indexed_ids_never_materializes_full_table(
+    def test_iterating_ids_never_materializes_the_full_table(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Regression test: indexed_ids() must project only the "id" column at the LanceDB scan
+        """Regression test: iter_indexed_ids() must project only the "id" column at the LanceDB scan
         level. table.to_arrow() (no column argument) would instead pull every column -- including
         the full-width vector and meta JSON -- for every row just to discard all but "id", which at
         millions of rows is tens of GB for a single call (the cause of a real RAM-exhaustion/disk-
@@ -143,10 +144,10 @@ class TestReconcile:
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
 
         def _boom() -> None:
-            raise AssertionError("indexed_ids() must not call table.to_arrow()")
+            raise AssertionError("iter_indexed_ids() must not call table.to_arrow()")
 
         monkeypatch.setattr(index._table, "to_arrow", _boom)
-        assert index.indexed_ids() == {"a", "b"}
+        assert set(index.iter_indexed_ids()) == {"a", "b"}
 
 
 class TestValidation:
@@ -193,7 +194,7 @@ class TestCompact:
         after_files = list((tmp_path / "vec.lance" / "chunks.lance" / "data").glob("*"))
         assert len(after_files) < len(before_files)
         assert index.count() == 5
-        assert index.indexed_ids() == {f"c{i}" for i in range(5)}
+        assert set(index.iter_indexed_ids()) == {f"c{i}" for i in range(5)}
         assert index.search([0, 0, 1], k=1)[0][0] == "c2"
 
     def test_compact_on_an_empty_table_is_a_noop(self, tmp_path: Path) -> None:
