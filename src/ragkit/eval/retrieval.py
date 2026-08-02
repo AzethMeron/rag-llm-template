@@ -106,7 +106,8 @@ def ndcg_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalScores:
-    """Metrics for one system, averaged over the evaluated queries."""
+    """Metrics for one system, averaged over the evaluated queries. Each depth is recorded
+    alongside its metric, so a report is self-describing when they differ."""
 
     k: int
     queries: int
@@ -115,10 +116,15 @@ class RetrievalScores:
     mrr: float
     map: float
     ndcg_at_k: float
+    hit_rate_k: int
+    """Depth ``hit_rate_at_k`` was measured at — ``k`` unless the caller asked otherwise."""
+    rank_k: int
+    """Depth ``mrr``, ``map`` and ``ndcg_at_k`` were measured at."""
 
 
 def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, str], qrels: Qrels,
-                       *, k: int = 10) -> dict[str, RetrievalScores]:
+                       *, k: int = 10, hit_rate_k: int | None = None,
+                       rank_k: int | None = None) -> dict[str, RetrievalScores]:
     """Score each named retriever over ``queries`` against ``qrels``, returning per-system metrics.
 
     Refuses, before doing any work, a configuration that would be true by construction: ground
@@ -126,9 +132,18 @@ def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, s
     (:class:`CircularEvaluationError` — see it for the guard's nominal scope). Separately refuses
     a query with no ground-truth relevant ids (:class:`IncompleteGroundTruthError`), since scoring
     it would silently invent a 0 (or a 1) for a question the gold set never answered.
+
+    **Per-metric depths.** ``k`` is recall's depth; ``hit_rate_k`` and ``rank_k`` (MRR, MAP, NDCG)
+    default to it. They exist because the conventional depths genuinely differ — a recipe reporting
+    Recall@20 alongside a literature-comparable Acc@10 and MRR@10 needs all three at once, and
+    without this it had to reimplement the metric loop and so lost the guards above. Retrieval
+    happens once per query, at the deepest of the three; each metric slices what it needs.
     """
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}")
+    for name, depth in (("k", k), ("hit_rate_k", hit_rate_k), ("rank_k", rank_k)):
+        if depth is not None and depth < 1:
+            raise ValueError(f"{name} must be >= 1, got {depth}")
+    hit_depth = k if hit_rate_k is None else hit_rate_k
+    rank_depth = k if rank_k is None else rank_k
     if not systems:
         raise ValueError("no systems to evaluate")
     if qrels.source in systems:
@@ -143,20 +158,22 @@ def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, s
             f"(e.g. {sorted(missing)[:3]}); scoring them would report a made-up number. Provide "
             f"judgments for every evaluated query, or drop it from the query set.")
 
+    depth = max(k, hit_depth, rank_depth)
     scores: dict[str, RetrievalScores] = {}
     for name, retriever in systems.items():
         recalls, hits, rrs, aps, ndcgs = [], [], [], [], []
         for qid, text in queries.items():
             relevant = qrels.relevant[qid]
-            ranked = [hit.chunk_id for hit in retriever.retrieve(text, k=k)]
+            ranked = [hit.chunk_id for hit in retriever.retrieve(text, k=depth)]
             recalls.append(recall_at_k(ranked, relevant, k))
-            hits.append(hit_rate_at_k(ranked, relevant, k))
-            rrs.append(reciprocal_rank(ranked, relevant))
-            aps.append(average_precision(ranked, relevant))
-            ndcgs.append(ndcg_at_k(ranked, relevant, k))
+            hits.append(hit_rate_at_k(ranked, relevant, hit_depth))
+            rrs.append(reciprocal_rank(ranked[:rank_depth], relevant))
+            aps.append(average_precision(ranked[:rank_depth], relevant))
+            ndcgs.append(ndcg_at_k(ranked, relevant, rank_depth))
         scores[name] = RetrievalScores(
             k=k, queries=len(queries), recall_at_k=_mean(recalls), hit_rate_at_k=_mean(hits),
-            mrr=_mean(rrs), map=_mean(aps), ndcg_at_k=_mean(ndcgs))
+            mrr=_mean(rrs), map=_mean(aps), ndcg_at_k=_mean(ndcgs),
+            hit_rate_k=hit_depth, rank_k=rank_depth)
     return scores
 
 

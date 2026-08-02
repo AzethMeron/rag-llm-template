@@ -106,6 +106,28 @@ class TestEvaluateRetrieval:
         with pytest.raises(IncompleteGroundTruthError):
             evaluate_retrieval(systems, queries, holes, k=2)
 
+    def test_each_metric_can_have_its_own_depth(self) -> None:
+        # The reason legal_procurement used to fork the metric loop (and so bypass the guards):
+        # Recall@20 alongside a literature-comparable Acc@10 and MRR@10.
+        systems = {"s": _StubRetriever({"first": ["x", "y", "a"]})}
+        queries, qrels = {"q1": "first"}, Qrels({"q1": frozenset({"a"})}, source="gold")
+        scores = evaluate_retrieval(systems, queries, qrels, k=3, hit_rate_k=2, rank_k=2)["s"]
+        assert scores.recall_at_k == 1.0    # "a" is within the top 3
+        assert scores.hit_rate_at_k == 0.0  # ...but not within the top 2
+        assert scores.mrr == 0.0            # nor within the rank window
+        assert (scores.k, scores.hit_rate_k, scores.rank_k) == (3, 2, 2)
+
+    def test_the_per_metric_depths_default_to_k(self) -> None:
+        systems, queries, qrels = self._setup()
+        scores = evaluate_retrieval(systems, queries, qrels, k=2)["good"]
+        assert (scores.k, scores.hit_rate_k, scores.rank_k) == (2, 2, 2)
+
+    @pytest.mark.parametrize("depths", [{"hit_rate_k": 0}, {"rank_k": -1}])
+    def test_a_non_positive_per_metric_depth_is_refused(self, depths: dict) -> None:
+        systems, queries, qrels = self._setup()
+        with pytest.raises(ValueError, match="must be >= 1"):
+            evaluate_retrieval(systems, queries, qrels, k=2, **depths)
+
     def test_rejects_bad_k_and_empty_systems(self) -> None:
         _, queries, qrels = self._setup()
         with pytest.raises(ValueError, match="k must be >= 1"):

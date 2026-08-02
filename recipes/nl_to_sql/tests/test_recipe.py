@@ -10,6 +10,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from ragkit.eval.gold import EvalError
+
 from ragkit.cli.app import assemble
 from ragkit.core.records import Record, Status
 from ragkit.harness import run_batch
@@ -232,38 +234,11 @@ class TestExecutionAccuracy:
 
     def test_bad_gold_is_a_configuration_error(self, tmp_path: Path) -> None:
         store = _eval_store(tmp_path)
-        with pytest.raises(sqleval.EvalError, match="gold SQL"):
+        with pytest.raises(EvalError, match="gold SQL"):
             sqleval.evaluate([("q1", "SELECT 1", "SELECT bad FROM nowhere")], store)
 
     def test_accuracy_of_empty_report_is_zero(self) -> None:
         assert sqleval.Report(()).accuracy == 0.0
-
-
-class TestLoadGold:
-    def _write(self, tmp_path: Path, text: str) -> Path:
-        path = tmp_path / "gold.jsonl"
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def test_reads_rows(self, tmp_path: Path) -> None:
-        path = self._write(tmp_path, '{"record_id": "q1", "sql": "SELECT 1"}\n\n')
-        assert sqleval.load_gold(path) == {"q1": "SELECT 1"}
-
-    def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(sqleval.EvalError, match="not found"):
-            sqleval.load_gold(tmp_path / "nope.jsonl")
-
-    def test_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(sqleval.EvalError, match="invalid JSON"):
-            sqleval.load_gold(self._write(tmp_path, "{not json}\n"))
-
-    def test_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(sqleval.EvalError, match="needs 'record_id' and 'sql'"):
-            sqleval.load_gold(self._write(tmp_path, '{"record_id": "q1"}\n'))
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        with pytest.raises(sqleval.EvalError, match="empty"):
-            sqleval.load_gold(self._write(tmp_path, "\n\n"))
 
 
 class TestEvalMain:

@@ -18,6 +18,7 @@ from ragkit.harness import run_batch
 from ragkit.store.run.sqlite import SqliteRunStore
 
 from recipes.med_evidence import eval as med_eval
+from ragkit.eval.gold import EvalError
 from recipes.med_evidence import reader_eval
 from recipes.med_evidence.plugins.validators import (
     DecisionEnumValidator,
@@ -208,33 +209,6 @@ class TestDecisionEval:
         empty = med_eval.Report(())
         assert (empty.accuracy == 0.0 and empty.abstain_rate == 0.0
                 and empty.answered_accuracy == 0.0)
-
-
-class TestLoadGold:
-    def _write(self, tmp_path: Path, text: str) -> Path:
-        path = tmp_path / "gold.jsonl"
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def test_reads_rows(self, tmp_path: Path) -> None:
-        path = self._write(tmp_path, '{"record_id":"q1","decision":"yes"}\n\n')
-        assert med_eval.load_gold(path) == {"q1": "yes"}
-
-    def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(med_eval.EvalError, match="not found"):
-            med_eval.load_gold(tmp_path / "no.jsonl")
-
-    def test_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(med_eval.EvalError, match="invalid JSON"):
-            med_eval.load_gold(self._write(tmp_path, "{bad\n"))
-
-    def test_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(med_eval.EvalError, match="needs 'record_id'"):
-            med_eval.load_gold(self._write(tmp_path, '{"record_id":"q1"}\n'))
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        with pytest.raises(med_eval.EvalError, match="empty"):
-            med_eval.load_gold(self._write(tmp_path, "\n"))
 
 
 def _factory(decision: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
@@ -449,11 +423,11 @@ class TestReaderEval:
         (tmp_path / "heldout.jsonl").write_text(
             json.dumps({"record_id": "p1", "source": QUESTION, "meta": {"pmid": "p1"}}) + "\n",
             encoding="utf-8")
-        with pytest.raises(med_eval.EvalError, match="no abstract"):
+        with pytest.raises(EvalError, match="no abstract"):
             reader_eval.load_reader_set(tmp_path / "abstracts.jsonl", tmp_path / "heldout.jsonl")
 
     def test_load_reader_set_errors_on_missing_files(self, tmp_path: Path) -> None:
-        with pytest.raises(med_eval.EvalError, match="not found"):
+        with pytest.raises(EvalError, match="not found"):
             reader_eval.load_reader_set(tmp_path / "nope.jsonl", tmp_path / "nope.jsonl")
 
     def _write_set(self, tmp_path: Path, gold: str = "yes") -> Path:

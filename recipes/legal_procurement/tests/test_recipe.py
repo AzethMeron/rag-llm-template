@@ -11,6 +11,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from ragkit.eval.gold import EvalError
+
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retrieved
 from ragkit.core.records import Record, Status
@@ -146,23 +148,41 @@ class TestEvaluate:
         report = lp_eval.evaluate(retriever, queries, gold, k=20)
         assert report.queries == 2
         assert report.recall_at_k == pytest.approx(0.5)  # q1 hit, q2 miss
-        assert report.hit_rate_at_10 == pytest.approx(0.5)  # same hit/miss split at top-10
+        assert report.hit_rate_at_k == pytest.approx(0.5)  # same hit/miss split at top-10
         assert report.mrr == pytest.approx(0.5)           # q1 rank-1, q2 none
-        assert report.ndcg == pytest.approx(0.5)
-        for value in (report.recall_at_k, report.hit_rate_at_10, report.mrr, report.ndcg):
+        assert report.ndcg_at_k == pytest.approx(0.5)
+        for value in (report.recall_at_k, report.hit_rate_at_k, report.mrr, report.ndcg_at_k):
             assert 0.0 <= value <= 1.0
 
     def test_a_perfect_ranking_scores_one(self) -> None:
         retriever = _RankRetriever(["ref-1", "ref-2", "ref-3"])
         report = lp_eval.evaluate(retriever, [("q1", "a")], {"q1": frozenset({"ref-1"})}, k=20)
-        assert report.recall_at_k == 1.0 and report.mrr == 1.0 and report.ndcg == 1.0
-        assert report.hit_rate_at_10 == 1.0
+        assert report.recall_at_k == 1.0 and report.mrr == 1.0 and report.ndcg_at_k == 1.0
+        assert report.hit_rate_at_k == 1.0
 
-    def test_empty_report_is_zero(self) -> None:
-        report = lp_eval.Report((), k=20)
-        assert report.queries == 0
-        assert report.recall_at_k == 0.0 and report.mrr == 0.0 and report.ndcg == 0.0
-        assert report.hit_rate_at_10 == 0.0
+    def test_a_question_with_no_gold_is_skipped_not_scored_as_a_miss(self) -> None:
+        # q3 has no gold judgments; scoring it would invent a 0. The shared evaluator refuses a
+        # query with no gold, so this recipe filters those out before calling it.
+        retriever = _RankRetriever(["ref-1"])
+        report = lp_eval.evaluate(retriever, [("q1", "a"), ("q3", "c")],
+                                  {"q1": frozenset({"ref-1"})}, k=20)
+        assert report.queries == 1 and report.recall_at_k == 1.0
+
+    def test_the_metrics_keep_their_own_depths(self) -> None:
+        # Recall at the caller's k, hit rate and the rank metrics at 10 -- the reason this recipe
+        # used to fork the metric loop instead of using the shared evaluator.
+        report = lp_eval.evaluate(_RankRetriever(["ref-1"]), [("q1", "a")],
+                                  {"q1": frozenset({"ref-1"})}, k=20)
+        assert report.k == 20 and report.hit_rate_k == 10 and report.rank_k == 10
+
+    def test_gold_from_a_system_under_evaluation_is_refused(self) -> None:
+        # The guard the forked loop bypassed entirely. Reached by naming the gold source as the
+        # system the recipe evaluates.
+        from ragkit.eval.retrieval import CircularEvaluationError, Qrels, evaluate_retrieval
+        with pytest.raises(CircularEvaluationError):
+            evaluate_retrieval({lp_eval._SYSTEM: _RankRetriever(["ref-1"])}, {"q1": "a"},
+                               Qrels(relevant={"q1": frozenset({"ref-1"})},
+                                     source=lp_eval._SYSTEM), k=20)
 
     def test_over_the_real_assembled_retriever(self, tmp_path: Path) -> None:
         config = _staged(tmp_path)
@@ -173,40 +193,9 @@ class TestEvaluate:
         gold = {"q1": frozenset({"ref-1"}), "q2": frozenset({"ref-2"})}
         report = lp_eval.evaluate(retriever, queries, gold, k=20)
         assert report.queries == 2
-        for value in (report.recall_at_k, report.hit_rate_at_10, report.mrr, report.ndcg):
+        for value in (report.recall_at_k, report.hit_rate_at_k, report.mrr, report.ndcg_at_k):
             assert 0.0 <= value <= 1.0
         assert report.recall_at_k > 0.0  # the lexical retriever finds the gold passages
-
-
-class TestLoadGold:
-    def _write(self, tmp_path: Path, text: str) -> Path:
-        path = tmp_path / "gold.jsonl"
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def test_reads_rows(self, tmp_path: Path) -> None:
-        path = self._write(tmp_path, '{"record_id":"q1","relevant":["ref-1","ref-2"]}\n\n')
-        assert lp_eval.load_gold(path) == {"q1": frozenset({"ref-1", "ref-2"})}
-
-    def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="not found"):
-            lp_eval.load_gold(tmp_path / "no.jsonl")
-
-    def test_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="invalid JSON"):
-            lp_eval.load_gold(self._write(tmp_path, "{bad\n"))
-
-    def test_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="needs 'record_id'"):
-            lp_eval.load_gold(self._write(tmp_path, '{"record_id":"q1"}\n'))
-
-    def test_relevant_must_be_nonempty_list(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="non-empty list"):
-            lp_eval.load_gold(self._write(tmp_path, '{"record_id":"q1","relevant":[]}\n'))
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="empty"):
-            lp_eval.load_gold(self._write(tmp_path, "\n"))
 
 
 class TestLoadHeldout:
@@ -220,19 +209,19 @@ class TestLoadHeldout:
         assert lp_eval.load_heldout(path) == [("q1", "Pytanie?")]
 
     def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="not found"):
+        with pytest.raises(EvalError, match="not found"):
             lp_eval.load_heldout(tmp_path / "no.jsonl")
 
     def test_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="needs 'record_id'"):
+        with pytest.raises(EvalError, match="needs 'record_id'"):
             lp_eval.load_heldout(self._write(tmp_path, '{"record_id":"q1"}\n'))
 
     def test_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="invalid JSON"):
+        with pytest.raises(EvalError, match="invalid JSON"):
             lp_eval.load_heldout(self._write(tmp_path, "{bad\n"))
 
     def test_empty_file(self, tmp_path: Path) -> None:
-        with pytest.raises(lp_eval.EvalError, match="empty"):
+        with pytest.raises(EvalError, match="empty"):
             lp_eval.load_heldout(self._write(tmp_path, "\n"))
 
 

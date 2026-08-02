@@ -16,19 +16,17 @@ crash. Run: ``PYTHONPATH=src:. python -m recipes.translation.eval \\
 """
 from __future__ import annotations
 
-import argparse
-import json
-import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
-from ragkit.core.records import read_journal
+from ragkit.eval.gold import (
+    Pair,
+    join_journal_with_gold,
+    journal_gold_parser,
+    load_label_gold,
+    run_report,
+)
 from ragkit.retrieve import trigram_similarity
-
-
-class EvalError(Exception):
-    """The evaluation cannot run as configured (missing/malformed gold)."""
 
 
 def _norm(text: str) -> str:
@@ -45,6 +43,9 @@ class Outcome:
 
 @dataclass(frozen=True, slots=True)
 class Report:
+    """Not a ClassificationReport: translation scores *text* against a reference, so there is no
+    predicted label to compare -- only exact match after normalisation, and a graded similarity."""
+
     outcomes: tuple[Outcome, ...]
 
     @property
@@ -64,58 +65,33 @@ class Report:
         return sum(o.similarity for o in self.outcomes) / self.total if self.total else 0.0
 
 
-def evaluate(pairs: Iterable[tuple[str, str | None, str]]) -> Report:
+def evaluate(pairs: Iterable[Pair]) -> Report:
     """Score ``(record_id, produced_or_None, gold_target)`` triples."""
     outcomes = []
     for record_id, produced, gold in pairs:
         if produced is None:
             outcomes.append(Outcome(record_id, produced=False, exact=False, similarity=0.0))
             continue
+        reference = _norm(str(gold))
         outcomes.append(Outcome(
-            record_id, produced=True, exact=_norm(produced) == _norm(gold),
-            similarity=trigram_similarity(_norm(produced), _norm(gold))))
+            record_id, produced=True, exact=_norm(produced) == reference,
+            similarity=trigram_similarity(_norm(produced), reference)))
     return Report(tuple(outcomes))
 
 
-def load_gold(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise EvalError(f"gold file not found: {path}")
-    gold: dict[str, str] = {}
-    for line_no, line in enumerate(path.read_text("utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise EvalError(f"{path}:{line_no}: invalid JSON in gold file: {exc}") from exc
-        if "record_id" not in row or "target" not in row:
-            raise EvalError(f"{path}:{line_no}: a gold row needs 'record_id' and 'target'")
-        gold[str(row["record_id"])] = str(row["target"])
-    if not gold:
-        raise EvalError(f"gold file is empty: {path}")
-    return gold
-
-
-def _pairs(journal: Path, gold: Mapping[str, str]) -> list[tuple[str, str | None, str]]:
-    produced: dict[str, str | None] = {}
-    for record in read_journal(journal):
-        produced[record.record_id] = record.output if record.status.is_injectable else None
-    return [(rid, produced.get(rid), target) for rid, target in gold.items()]
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Translation quality vs held-out gold.")
-    parser.add_argument("--journal", type=Path, required=True, help="run journal (JSONL)")
-    parser.add_argument("--gold", type=Path, required=True, help="gold translations (JSONL)")
+    parser = journal_gold_parser("Translation quality vs held-out gold.",
+                                 gold_help="gold translations (JSONL)")
     args = parser.parse_args(argv)
-    try:
-        report = evaluate(_pairs(args.journal, load_gold(args.gold)))
-    except EvalError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    print(f"translated {report.produced}/{report.total} | exact match {report.exact_match:.3f} | "
-          f"mean trigram similarity to gold {report.mean_similarity:.3f}")
-    return 0
+
+    def build() -> str:
+        gold = load_label_gold(args.gold, field="target")
+        report = evaluate(join_journal_with_gold(args.journal, gold))
+        return (f"translated {report.produced}/{report.total} | "
+                f"exact match {report.exact_match:.3f} | "
+                f"mean trigram similarity to gold {report.mean_similarity:.3f}")
+
+    return run_report(build)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via main() in tests

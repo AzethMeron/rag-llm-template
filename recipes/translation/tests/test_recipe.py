@@ -312,26 +312,6 @@ class TestEvalGoldAndMain:
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_load_gold(self, tmp_path: Path) -> None:
-        p = self._gold(tmp_path, '{"record_id":"a","source":"x","target":"Kot śpi."}\n\n')
-        assert tr_eval.load_gold(p) == {"a": "Kot śpi."}
-
-    def test_load_gold_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(tr_eval.EvalError, match="not found"):
-            tr_eval.load_gold(tmp_path / "no.jsonl")
-
-    def test_load_gold_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(tr_eval.EvalError, match="invalid JSON"):
-            tr_eval.load_gold(self._gold(tmp_path, "{bad\n"))
-
-    def test_load_gold_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(tr_eval.EvalError, match="needs 'record_id'"):
-            tr_eval.load_gold(self._gold(tmp_path, '{"record_id":"a"}\n'))
-
-    def test_load_gold_empty(self, tmp_path: Path) -> None:
-        with pytest.raises(tr_eval.EvalError, match="empty"):
-            tr_eval.load_gold(self._gold(tmp_path, "\n"))
-
     def test_main_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         journal = tmp_path / "j.jsonl"
         rec = Record(record_id="a", source="x", output="Kot śpi.", status=Status.VERIFIED)
