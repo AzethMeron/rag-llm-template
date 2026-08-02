@@ -161,11 +161,12 @@ general-purpose model with no task-specific training.
 
 `eval.py`'s number is **not** comparable to the PubMedQA leaderboard for the same reason as the
 60-question table above: it makes the model retrieve the answer-bearing abstract among ~600k
-distractors before deciding, strictly harder than the paper's task. Caveat on this run: the
-substitute reviewer model standing in for a still-broken default (see `tools/fetch_models.sh`'s
-known `producer`/`reviewer` issue) frequently produced degenerate output during the
-faithfulness-review step and had to abstain, so the review/grounding gate wasn't operating at full
-strength.
+distractors before deciding, strictly harder than the paper's task. Caveat on this run: the small
+Qwen3-0.6B reviewer (see `config/models.toml` for why this recipe pairs a 14B author with a
+0.6B reviewer) frequently produced degenerate output during the faithfulness-review step and had
+to abstain, so the review/grounding gate wasn't operating at full strength. The harness handles
+that correctly — an unusable reviewer reply degrades the record to `PRODUCED`, never to a false
+`VERIFIED` — but the decision numbers above are effectively author-only.
 
 ### Enabling dense retrieval
 

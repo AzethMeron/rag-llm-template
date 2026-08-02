@@ -16,12 +16,13 @@ model_id = "Qwen3-14B-Q5_K_M"
 backend = "auto"
 context_window = 8192
 
-# Qwen3.5-0.8B-Instruct-GGUF (the previous model_id here) does not actually exist on HuggingFace --
-# discovered when fetch_models.sh's "reviewer" entry (which points at the same nonexistent repo)
-# 401'd. Every "producer"/"reviewer" default across every recipe shares this same broken repo
-# reference and needs a proper fix; using the verified-real, appropriately small Qwen3-0.6B here in
-# the meantime (fetch_models.sh's "ci" entry, itself corrected: Q8_0 is the only quant that
-# repo actually has, not the Q4_K_M it previously named).
+# Deliberately smaller than the shared "reviewer" default (Qwen3-1.7B-Q8_0), for two reasons that
+# are specific to this recipe. This is fetch_models.sh's "ci" entry, already downloaded.
+#   1. VRAM: the author above is a 10.5 GB 14B. Pairing it with the 1.7 GB default reviewer plus
+#      both KV caches leaves very little headroom on the 16 GB card this recipe is sized for.
+#   2. Reproducibility: the README's "Measured baseline" table was produced with this pairing.
+# (Historically this also worked around fetch_models.sh naming a Qwen3.5 GGUF family that does not
+# exist; that is fixed at the source now, so what remains is the choice above, not a stopgap.)
 [model.reviewer]
 endpoint = "local"
 model_id = "Qwen3-0.6B-Q8_0"

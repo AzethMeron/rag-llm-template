@@ -11,14 +11,16 @@ parallel = 2
 
 [model.translator]
 endpoint = "local"
-model_id = "Qwen3.5-2B-Instruct-Q4_K_M"
+model_id = "Qwen3-4B-Q4_K_M"
 backend = "auto"
 context_window = 8192
-approx_vram_mb = 2600
+# Resident weights only (the 2,381 MiB GGUF, rounded up for runtime overhead); the guard adds no
+# KV-cache allowance, so leave headroom beyond the sum of these.
+approx_vram_mb = 2500
 
 [model.reviewer]
 endpoint = "local"
-model_id = "Qwen3.5-0.8B-Instruct-Q4_K_M"
+model_id = "Qwen3-1.7B-Q8_0"
 backend = "auto"
 context_window = 8192
-approx_vram_mb = 900
+approx_vram_mb = 1800
