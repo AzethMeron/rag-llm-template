@@ -8,6 +8,7 @@ import pytest
 from ragkit.core.ports import Retrieved
 from ragkit.eval import (
     CircularEvaluationError,
+    IncompleteGroundTruthError,
     Qrels,
     average_precision,
     evaluate_retrieval,
@@ -92,7 +93,17 @@ class TestEvaluateRetrieval:
     def test_refuses_a_query_with_no_ground_truth(self) -> None:
         systems, queries, _ = self._setup()
         holes = Qrels(relevant={"q1": frozenset({"a"})}, source="gold")  # q2 missing
-        with pytest.raises(CircularEvaluationError, match="no ground-truth"):
+        with pytest.raises(IncompleteGroundTruthError, match="no ground-truth"):
+            evaluate_retrieval(systems, queries, holes, k=2)
+
+    def test_incomplete_gold_is_not_reported_as_circularity(self) -> None:
+        # Distinct types, on purpose: "the gold set is incomplete" is a data problem with a
+        # different fix from "the gold set is not independent", and a caller handling one must
+        # not silently absorb the other.
+        systems, queries, _ = self._setup()
+        holes = Qrels(relevant={"q1": frozenset({"a"})}, source="gold")
+        assert not issubclass(IncompleteGroundTruthError, CircularEvaluationError)
+        with pytest.raises(IncompleteGroundTruthError):
             evaluate_retrieval(systems, queries, holes, k=2)
 
     def test_rejects_bad_k_and_empty_systems(self) -> None:

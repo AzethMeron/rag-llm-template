@@ -6,6 +6,7 @@ from __future__ import annotations
 from .judge import AbItem, AbSummary, AbVerdict, JudgeError, evaluate_ab
 from .retrieval import (
     CircularEvaluationError,
+    IncompleteGroundTruthError,
     Qrels,
     RetrievalScores,
     average_precision,
@@ -17,7 +18,8 @@ from .retrieval import (
 )
 
 __all__ = [
-    "CircularEvaluationError", "Qrels", "RetrievalScores", "evaluate_retrieval",
+    "CircularEvaluationError", "IncompleteGroundTruthError", "Qrels", "RetrievalScores",
+    "evaluate_retrieval",
     "recall_at_k", "hit_rate_at_k", "reciprocal_rank", "average_precision", "ndcg_at_k",
     "AbItem", "AbSummary", "AbVerdict", "JudgeError", "evaluate_ab",
 ]

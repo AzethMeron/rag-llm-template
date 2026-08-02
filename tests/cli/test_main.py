@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ragkit.cli.app import CliError
 from ragkit.cli.main import _configure_logging, _substitutions, build_parser, main
 from ragkit.core.records import Record, Status, read_journal, write_catalog
 from ragkit.store.run.sqlite import SqliteRunStore
@@ -54,8 +55,14 @@ class TestSubstitutions:
         assert _substitutions(None) == {}
 
     def test_missing_equals_is_refused(self) -> None:
-        with pytest.raises(SystemExit, match="key=value"):
+        with pytest.raises(CliError, match="key=value"):
             _substitutions(["bogus"])
+
+    def test_an_empty_key_is_refused(self) -> None:
+        # `--set =x` used to register a substitution under the empty key, which matches no
+        # {placeholder} and so silently did nothing.
+        with pytest.raises(CliError, match="non-empty key"):
+            _substitutions(["=value"])
 
 
 class TestImport:
@@ -153,11 +160,14 @@ class TestWriteback:
         hits = retrievers.lexical_retriever().retrieve("capital of Poland", k=1)
         assert hits and "Warsaw" in hits[0].text
 
-    def test_vector_path_without_embedding_url_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(SystemExit, match="needs --embedding-url"):
-            main(["writeback", "--run-db", str(tmp_path / "run.db"),
-                 "--pairings-db", str(tmp_path / "p.db"),
-                 "--vector-path", str(tmp_path / "v.lance"), "--no-log-file"])
+    def test_vector_path_without_embedding_url_is_refused(
+            self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Reported through main()'s structured RagkitError path (printed, logged, exit 1) rather
+        # than as a bare SystemExit that bypasses both.
+        assert main(["writeback", "--run-db", str(tmp_path / "run.db"),
+                     "--pairings-db", str(tmp_path / "p.db"),
+                     "--vector-path", str(tmp_path / "v.lance"), "--no-log-file"]) == 1
+        assert "needs --embedding-url" in capsys.readouterr().err
 
     def test_vector_path_without_a_dim_is_the_drivers_own_structured_error(
             self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -228,10 +238,26 @@ class TestRun:
         code = main(["run", "--config", str(empty), "--no-log-file"])
         assert code == 1 and "ragkit:" in capsys.readouterr().err
 
-    def test_bad_substitution_exits(self, tmp_path: Path) -> None:
+    def test_bad_substitution_is_reported_and_exits_non_zero(
+            self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Through main()'s structured RagkitError path -- printed and logged -- rather than as a
+        # bare SystemExit that bypasses both.
         config = write_config(tmp_path / "cfg")
-        with pytest.raises(SystemExit):
-            main(["run", "--config", str(config), "--set", "novalue", "--no-log-file"])
+        assert main(["run", "--config", str(config), "--set", "novalue", "--no-log-file"]) == 1
+        assert "key=value" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(("flag", "value"), [
+        ("--limit", "-1"), ("--limit", "0"), ("--concurrency", "0"), ("--concurrency", "-2"),
+        ("--limit", "many"),
+    ])
+    def test_non_positive_counts_are_refused_before_any_work(
+            self, tmp_path: Path, flag: str, value: str) -> None:
+        # `--limit -1` used to reach `records[:-1]`, quietly dropping the LAST record and running
+        # everything else: a silently wrong run, not an error. argparse rejects it now, before
+        # the config is even read.
+        config = write_config(tmp_path / "cfg")
+        with pytest.raises(SystemExit):  # argparse's own usage error, exit code 2
+            main(["run", "--config", str(config), flag, value, "--no-log-file"])
 
     def test_full_run_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                            capsys: pytest.CaptureFixture[str]) -> None:

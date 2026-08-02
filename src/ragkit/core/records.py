@@ -175,6 +175,22 @@ class Record:
             raise CatalogError(
                 f"meta must be a JSON object, got {type(meta).__name__}",
                 path=path, line_no=line_no)
+        notes = raw.get("notes", ())
+        if not isinstance(notes, (list, tuple)):
+            # tuple("abc") is ("a", "b", "c"): a JSON *string* here used to become one note per
+            # character rather than being refused.
+            raise CatalogError(
+                f"notes must be a JSON array, got {type(notes).__name__}",
+                path=path, line_no=line_no)
+        for field in ("line_no", "span_start", "span_end"):
+            value = raw.get(field, 0)
+            if not isinstance(value, int) or isinstance(value, bool):
+                # __post_init__ raises a bare TypeError for a non-int span, which the `except
+                # ValueError` below does not catch -- so `ragkit import` crashed with an
+                # unstructured traceback instead of naming the file, line, and field.
+                raise CatalogError(
+                    f"{field} must be an integer, got {type(value).__name__} {value!r}",
+                    path=path, line_no=line_no)
         try:
             return cls(
                 record_id=raw["record_id"],
@@ -185,12 +201,13 @@ class Record:
                 line_no=raw.get("line_no", 0),
                 span_start=raw.get("span_start", 0),
                 span_end=raw.get("span_end", 0),
-                notes=tuple(raw.get("notes", ())),
+                notes=tuple(notes),
                 meta=meta,
             )
-        except ValueError as exc:
-            # An unknown status value, mostly -- Status(...) raises ValueError. Reported with
-            # its location rather than as a bare traceback.
+        except (ValueError, TypeError) as exc:
+            # An unknown status value, mostly -- Status(...) raises ValueError. TypeError too,
+            # for whatever __post_init__ checks the explicit validation above does not cover.
+            # Reported with its location rather than as a bare traceback.
             raise CatalogError(f"bad field value: {exc}", path=path, line_no=line_no) from exc
 
 

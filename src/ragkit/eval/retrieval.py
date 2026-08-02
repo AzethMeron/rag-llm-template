@@ -24,7 +24,23 @@ from ragkit.core.ports import Retriever
 
 
 class CircularEvaluationError(RagkitError):
-    """The evaluation is configured so a result would be true by construction."""
+    """The evaluation is configured so a result would be true by construction.
+
+    **The guard behind this is nominal, and that is worth knowing.** It compares
+    :attr:`Qrels.source` against the names of the systems being ranked — a *label* check. Ground
+    truth genuinely produced by a system under evaluation, but labelled anything else, passes.
+    It catches the mistake (an evaluator wiring its own retriever's output back in as gold), not
+    an adversary, and it cannot verify provenance it is not told about.
+    """
+
+
+class IncompleteGroundTruthError(RagkitError):
+    """A query being evaluated has no ground-truth judgments.
+
+    Its own type, not :class:`CircularEvaluationError`: "the gold set is incomplete" is a data
+    problem with a different fix from "the gold set is not independent", and a caller handling
+    circularity should not silently absorb it.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,10 +121,11 @@ def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, s
                        *, k: int = 10) -> dict[str, RetrievalScores]:
     """Score each named retriever over ``queries`` against ``qrels``, returning per-system metrics.
 
-    Refuses, before doing any work, a configuration that would be true by construction: ground truth
-    produced by a system under evaluation (:class:`CircularEvaluationError`). Also refuses a query
-    with no ground-truth relevant ids, since scoring it would silently invent a 0 (or a 1) for a
-    question the gold set never answered.
+    Refuses, before doing any work, a configuration that would be true by construction: ground
+    truth *labelled* as coming from a system under evaluation
+    (:class:`CircularEvaluationError` — see it for the guard's nominal scope). Separately refuses
+    a query with no ground-truth relevant ids (:class:`IncompleteGroundTruthError`), since scoring
+    it would silently invent a 0 (or a 1) for a question the gold set never answered.
     """
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
@@ -121,7 +138,7 @@ def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, s
             f"systems it ranks; supply gold judgments from a source that is not being evaluated.")
     missing = [qid for qid in queries if not qrels.relevant.get(qid)]
     if missing:
-        raise CircularEvaluationError(
+        raise IncompleteGroundTruthError(
             f"{len(missing)} quer(y/ies) have no ground-truth relevant ids "
             f"(e.g. {sorted(missing)[:3]}); scoring them would report a made-up number. Provide "
             f"judgments for every evaluated query, or drop it from the query set.")

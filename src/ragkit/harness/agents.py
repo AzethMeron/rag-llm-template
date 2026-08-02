@@ -35,7 +35,7 @@ from ragkit.core.ports import (
     SqlStore,
 )
 from ragkit.core.records import Record, Status
-from ragkit.core.rules import Violation
+from ragkit.core.rules import Violation, blocking
 from ragkit.llm.errors import (
     LlmContentError,
     LlmError,
@@ -50,7 +50,7 @@ from .context import ContextAssembler
 from .memory import OutputMemory
 from .roles import Panel, Persona
 from .rules import RuleSet
-from .validators import ValidatorPipeline, blocking, partition_on_exhaustion
+from .validators import ValidatorPipeline, partition_on_exhaustion
 
 logger = logging.getLogger(__name__)
 
