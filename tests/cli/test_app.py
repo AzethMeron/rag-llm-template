@@ -136,6 +136,17 @@ class TestRetrievalToml:
         with pytest.raises(ConfigError, match="reference corpus not found"):
             assemble(config, client_factory=scripted_factory())
 
+    def test_rerank_under_a_dense_kind_is_refused_at_assembly(self, tmp_path: Path) -> None:
+        # End to end: the misconfiguration is reported by `assemble`, not silently assembled into
+        # a dense stack that never reranks.
+        config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
+                              reference=_REF, storage=_VECTOR_STORAGE + _PAIRINGS_STORAGE,
+                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n[retrieval.rerank]\nenabled = true\n'
+                                        'model = "reranker"\n')
+        with pytest.raises(ConfigError, match="only the hybrid stack builds"):
+            assemble(config, client_factory=retrieval_factory())
+
     def test_wrong_kind_of_rerank_model_is_refused(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg", models=RETRIEVAL_MODELS, recipe=_RECIPE_WITH_REF,
                               reference=_REF, storage=_VECTOR_STORAGE + _PAIRINGS_STORAGE,
@@ -273,8 +284,7 @@ class TestPairingsStorage:
     def test_pairings_lexical_stack_from_config(self, tmp_path: Path) -> None:
         config = write_config(tmp_path / "cfg", recipe=_RECIPE_WITH_REF, reference=_REF,
                               storage='[pairings]\ndriver = "sqlite"\npath = "p.db"\n',
-                              retrieval='[retrieval]\nkind = "lexical"\n[retrieval.lexical]\n'
-                                        'min_score = 0.1\n')
+                              retrieval='[retrieval]\nkind = "lexical"\n')
         assembled = assemble(config, client_factory=scripted_factory())
         from ragkit.retrieve.retrievers import LexicalRetriever
         assert isinstance(assembled.retriever, LexicalRetriever)

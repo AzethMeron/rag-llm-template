@@ -236,6 +236,9 @@ def _build_retrieval(settings: RetrievalSettings, recipe: _Recipe, config_dir: P
 
     retrievers = _load_pairing_retrievers(recipe, path, storage, vector=vector, embedder=embedder)
 
+    # The single-arm stacks take no per-arm floor, candidate pool, MMR trade-off, or reranker: those
+    # tune fusion, and `load_retrieval` refuses them for any kind but hybrid, so there is nothing
+    # here that a user could have set and this branch would drop (see `tuning._APPLICABILITY`).
     if settings.kind == "lexical":
         return retrievers.lexical_retriever()
     if settings.kind == "dense":

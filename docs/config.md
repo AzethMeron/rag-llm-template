@@ -320,16 +320,22 @@ floors.
 
 ### `[retrieval]`
 
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `kind` | `"lexical" \| "dense" \| "hybrid"` | `"lexical"` | Which stack to build. |
-| `candidate_pool` | int ≥ 1 | `40` | Candidates fetched per arm before fusion (hybrid). |
-| `mmr_lambda` | float in `[0,1]` | `0.7` | MMR relevance-vs-diversity trade-off (hybrid). |
-
-| Sub-table | Key | Type | Default | Meaning |
+| Key | Type | Default | Applies to | Meaning |
 |---|---|---|---|---|
-| `[retrieval.lexical]` | `min_score` | float in `[0,1]` | `0.30` | Lexical-arm fusion floor. |
-| `[retrieval.dense]` | `model` | string | required for dense/hybrid | Embedding model (`models.toml`, `kind="embedding"`). |
-| `[retrieval.dense]` | `min_score` | float in `[0,1]` | `0.55` | Dense-arm fusion floor. |
-| `[retrieval.rerank]` | `enabled` | bool | `false` | Add a cross-encoder rerank stage (hybrid). |
-| `[retrieval.rerank]` | `model` | string | required if enabled | Rerank model (`models.toml`, `kind="rerank"`). |
+| `kind` | `"lexical" \| "dense" \| "hybrid"` | `"lexical"` | all | Which stack to build. |
+| `candidate_pool` | int ≥ 1 | `40` | `hybrid` | Candidates fetched per arm before fusion. |
+| `mmr_lambda` | float in `[0,1]` | `0.7` | `hybrid` | MMR relevance-vs-diversity trade-off. |
+
+| Sub-table | Key | Type | Default | Applies to | Meaning |
+|---|---|---|---|---|---|
+| `[retrieval.lexical]` | `min_score` | float in `[0,1]` | `0.30` | `hybrid` | Lexical-arm fusion floor. |
+| `[retrieval.dense]` | `model` | string | required for dense/hybrid | `dense`, `hybrid` | Embedding model (`models.toml`, `kind="embedding"`). |
+| `[retrieval.dense]` | `min_score` | float in `[0,1]` | `0.55` | `hybrid` | Dense-arm fusion floor. |
+| `[retrieval.rerank]` | `enabled` | bool | `false` | `hybrid` | Add a cross-encoder rerank stage. |
+| `[retrieval.rerank]` | `model` | string | required if enabled | `hybrid` | Rerank model (`models.toml`, `kind="rerank"`). |
+
+**A key outside its kind's "Applies to" column is refused, not ignored.** Only the hybrid stack
+fuses two arms, so only it has a candidate pool, per-arm floors, MMR, and a rerank stage. Setting
+`[retrieval.rerank].enabled = true` under `kind = "dense"` is a `ConfigError`, not a dense stack
+that quietly never reranks. To put a floor under a **single-arm** stack, set the retrieved block's
+`min_score` in [`context.toml`](#contexttoml) — that is the run's final relevance floor either way.
