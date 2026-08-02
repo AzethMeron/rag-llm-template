@@ -29,7 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from .errors import RagkitError
+from .errors import LocatedError
 
 if TYPE_CHECKING:
     # Deferred: ports.py imports Record from this module, so a module-level import here would be
@@ -73,15 +73,8 @@ class Status(str, Enum):
         return self in (Status.VERIFIED, Status.SKIPPED)
 
 
-class CatalogError(RagkitError):
+class CatalogError(LocatedError):
     """A catalogue or journal is malformed or internally inconsistent."""
-
-    def __init__(self, reason: str, *, path: Path | None = None,
-                 line_no: int | None = None) -> None:
-        location = f"{path}:{line_no}" if path and line_no else (str(path) if path else None)
-        super().__init__(reason, location=location)
-        self.path = path
-        self.line_no = line_no
 
 
 _EMPTY_META: Mapping[str, Any] = MappingProxyType({})
@@ -305,8 +298,8 @@ def read_journal(journal: Path) -> Iterator[Record]:
         except CatalogError as exc:
             if index == len(lines) - 1 and not raw.endswith("\n"):
                 return
-            # CatalogError already renders its own location, so take the bare reason rather
-            # than the formatted message, or the path prints twice.
+            # CatalogError renders its own path/line_no context, so take the bare reason rather
+            # than the formatted message, or the location prints twice.
             raise CatalogError(f"corrupt journal record: {exc.reason}",
                                path=journal, line_no=index + 1) from exc
 

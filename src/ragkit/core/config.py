@@ -26,10 +26,10 @@ from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any
 
-from .errors import RagkitError
+from .errors import LocatedError
 
 
-class ConfigError(RagkitError):
+class ConfigError(LocatedError):
     """A configuration file is missing, malformed, or internally inconsistent.
 
     Carries the ``path`` and, where known, the ``label`` of the section at fault, so the
@@ -39,7 +39,6 @@ class ConfigError(RagkitError):
     def __init__(self, reason: str, *, path: Path | None = None,
                  label: str | None = None) -> None:
         super().__init__(reason, path=path, label=label)
-        self.path = path
         self.label = label
 
 

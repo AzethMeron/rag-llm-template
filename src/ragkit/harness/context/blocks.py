@@ -169,8 +169,11 @@ class EstablishedBlock:
         stand_in = str(context.get("stand_in", "they"))
         neighbours = (_meta_strings(record, "context_before", self._before, from_end=True)
                       + _meta_strings(record, "context_after", self._after, from_end=False))
+        # Truthiness, not `is not None`: a recorded but *empty* output rendered as a dangling
+        # "line -> " with nothing after the arrow, which teaches the model that producing nothing
+        # is an acceptable answer.
         rendered = [f"  {_mask(line, stand_in)} -> {_mask(output, stand_in)}"
-                    for line in neighbours if (output := memory.get(line)) is not None]
+                    for line in neighbours if (output := memory.get(line))]
         if not rendered:
             return None
         return _section(self._heading, "\n".join(rendered))
@@ -279,7 +282,13 @@ class SqlRowsBlock:
         if not isinstance(store, SqlStore):
             raise ContextBlockError("the wired 'sql_store' does not satisfy the SqlStore port")
         params = [record.meta.get(key) for key in self._param_keys]
-        rows = store.query(self._query, params)[:self._limit]
+        # The limit is applied by the database, not by slicing the result in Python: the old form
+        # fetched every matching row across the port and then discarded all but `limit`, so a
+        # broad query materialised its whole result set to show twenty lines. Wrapping in a
+        # subquery leaves the caller's own SQL untouched (verified against both shipped drivers,
+        # including a WITH clause and a query that already carries its own LIMIT).
+        rows = store.query(f"SELECT * FROM ({self._query.rstrip().rstrip(';')}) LIMIT ?",
+                           [*params, self._limit])
         if not rows:
             return None
         body = "\n".join("  " + ", ".join(f"{k}={v!r}" for k, v in row.items()) for row in rows)

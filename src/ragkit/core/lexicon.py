@@ -18,18 +18,11 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .errors import RagkitError
+from .errors import LocatedError
 
 
-class LexiconError(RagkitError):
+class LexiconError(LocatedError):
     """A lexicon source could not be read or parsed."""
-
-    def __init__(self, reason: str, *, path: Path | None = None,
-                 line_no: int | None = None) -> None:
-        location = f"{path}:{line_no}" if path and line_no else (str(path) if path else None)
-        super().__init__(reason, location=location)
-        self.path = path
-        self.line_no = line_no
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,6 +49,12 @@ class TestJsonl:
         with pytest.raises(ExtractError, match="no 'text' field"):
             list(JsonlExtractor().extract('{"other": 1}'))
 
+    def test_a_missing_id_field_is_a_structured_error(self) -> None:
+        # Regression: this escaped as a bare KeyError naming only the key, inconsistent with
+        # every other failure in this module.
+        with pytest.raises(ExtractError, match="line 1: record has no id field 'k'"):
+            list(JsonlExtractor(id_field="k").extract('{"text": "t"}'))
+
 
 class TestHtml:
     def test_strips_tags_and_captures_headings(self) -> None:
@@ -56,6 +62,31 @@ class TestHtml:
         [doc] = list(HtmlExtractor().extract(html))
         assert "Title" in doc.text and "Body" in doc.text and "ignore" not in doc.text
         assert doc.meta["headings"] == ["Title"]
+
+    def test_inline_markup_stays_in_one_paragraph_with_its_spaces(self) -> None:
+        """Regression: every text node was stripped and emitted separately, then joined with
+        "\\n\\n". So `<p>The <b>quick</b> brown fox</p>` became three "paragraphs" and lost the
+        spaces around the bold run -- which then defeated the structure chunker downstream,
+        since it splits on exactly those blank lines."""
+        [doc] = list(HtmlExtractor().extract("<p>The <b>quick</b> brown fox</p>"))
+        assert doc.text == "The quick brown fox"
+
+    def test_block_tags_still_separate_paragraphs(self) -> None:
+        [doc] = list(HtmlExtractor().extract("<p>First para.</p><p>Second para.</p>"))
+        assert doc.text == "First para.\n\nSecond para."
+
+    def test_a_heading_is_one_paragraph_even_with_inline_markup(self) -> None:
+        [doc] = list(HtmlExtractor().extract("<h1>A <em>bold</em> title</h1><p>Body.</p>"))
+        assert doc.meta["headings"] == ["A bold title"]
+        assert doc.text == "A bold title\n\nBody."
+
+    def test_trailing_text_with_no_closing_block_tag_survives(self) -> None:
+        [doc] = list(HtmlExtractor().extract("<div>Wrapped</div>trailing words"))
+        assert doc.text == "Wrapped\n\ntrailing words"
+
+    def test_list_items_are_separate_paragraphs(self) -> None:
+        [doc] = list(HtmlExtractor().extract("<ul><li>One</li><li>Two <i>and</i> a half</li></ul>"))
+        assert doc.text == "One\n\nTwo and a half"
 
 
 class TestMarkdown:

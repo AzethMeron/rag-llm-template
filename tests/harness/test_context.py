@@ -99,6 +99,21 @@ class TestBlocks:
     def test_established_none_without_memory(self) -> None:
         assert EstablishedBlock().render(_rec("m", context_before=["x"]), {}) is None
 
+    def test_established_skips_a_neighbour_whose_output_was_empty(self) -> None:
+        # Regression: filtering on `is not None` let a recorded-but-empty output render as a
+        # dangling "line -> " with nothing after the arrow, teaching the model that producing
+        # nothing is an acceptable answer.
+        memory = OutputMemory({"blank line": "", "good line": "GOOD"})
+        record = _rec("m", context_before=["blank line", "good line"])
+        out = EstablishedBlock().render(record, {"memory": memory})
+        assert out is not None
+        assert "good line -> GOOD" in out and "blank line ->" not in out
+
+    def test_established_renders_nothing_when_every_output_is_empty(self) -> None:
+        memory = OutputMemory({"blank": ""})
+        assert EstablishedBlock().render(_rec("m", context_before=["blank"]),
+                                         {"memory": memory}) is None
+
     def test_retrieved_renders_hits(self) -> None:
         retriever = _StubRetriever([Retrieved("c1", "an example", 0.9)])
         out = RetrievedBlock().render(_rec(), {"retriever": retriever})
@@ -141,6 +156,45 @@ class TestBlocks:
     def test_sql_rows_needs_a_query(self) -> None:
         with pytest.raises(ContextBlockError, match="non-empty 'query'"):
             SqlRowsBlock(query="  ")
+
+    def test_sql_rows_pushes_the_limit_into_the_query(self) -> None:
+        # Regression: the block fetched every matching row across the port and then sliced
+        # [:limit] in Python, so a broad query materialised its whole result set to show a few
+        # lines. The database applies the limit now.
+        seen: dict = {}
+
+        class _Recording(_StubStore):
+            def query(self, sql: str, params: object = ()) -> list[dict]:
+                seen["sql"], seen["params"] = sql, params
+                return [{"name": "Ann"}]
+
+        block = SqlRowsBlock(query="SELECT * FROM t ORDER BY id", param_keys=("customer_id",),
+                             limit=5)
+        block.render(_rec(customer_id=7), {"sql_store": _Recording([])})
+        assert seen["sql"] == "SELECT * FROM (SELECT * FROM t ORDER BY id) LIMIT ?"
+        assert seen["params"] == [7, 5]  # the caller's params first, then the limit
+
+    def test_sql_rows_strips_a_trailing_semicolon_before_wrapping(self) -> None:
+        seen: dict = {}
+
+        class _Recording(_StubStore):
+            def query(self, sql: str, params: object = ()) -> list[dict]:
+                seen["sql"] = sql
+                return []
+
+        SqlRowsBlock(query="SELECT 1;  ").render(_rec(), {"sql_store": _Recording([])})
+        assert seen["sql"] == "SELECT * FROM (SELECT 1) LIMIT ?"
+
+    def test_sql_rows_limit_is_honoured_against_a_real_engine(self, tmp_path: Path) -> None:
+        # Not just the SQL string: the wrap must actually run on the shipped drivers.
+        from ragkit.store.sql.sqlite import SqliteStore
+
+        store = SqliteStore(str(tmp_path / "d.db"), schema_sql=(
+            "CREATE TABLE t(id INTEGER, name TEXT);"
+            + "".join(f"INSERT INTO t VALUES ({i}, 'n{i}');" for i in range(10))))
+        out = SqlRowsBlock(query="SELECT * FROM t ORDER BY id", limit=3).render(
+            _rec(), {"sql_store": store})
+        assert out is not None and out.count("id=") == 3
 
     def test_schema_renders_tables_and_columns(self) -> None:
         introspector = _StubIntrospector({"singer": [("id", "INTEGER"), ("name", "TEXT")]})

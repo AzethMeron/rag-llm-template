@@ -102,12 +102,24 @@ def embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
                      embedder: EmbeddingClient) -> None:
     """Embed each pairing's source text (de-duplicated) and upsert into ``vector`` under its
     ``chunk_id``. Shared by the importer's per-batch upsert and by :func:`reconcile_vector` (and
-    reused by :mod:`ragkit.ingest.writeback` for the same re-embed-what's-missing step)."""
+    reused by :mod:`ragkit.ingest.writeback` for the same re-embed-what's-missing step).
+
+    **No metadata is written to the vector index**, deliberately. This used to copy each
+    pairing's entire JSON record across, and nothing ever read it: a search returns
+    ``(chunk_id, score)``, and the retriever resolves display text and metadata through
+    ``pairing_store.document()`` — which is the point of the co-located store, and what keeps
+    one authoritative copy of a row rather than two that can drift. At corpus scale the copy was
+    pure disk and write bandwidth (7.1M full records duplicated into the ANN store).
+
+    The consequence to know about: a driver that *can* filter on metadata (Qdrant) has none to
+    filter on through this path. Nothing in the framework passes ``where`` to a vector search
+    today; a caller that wants payload filtering populates the index itself rather than paying
+    for a copy on every import that needs it.
+    """
     embedded = dedup_embed(embedder, [p.source for p in pairings])
     ids = [p.chunk_id for p in pairings]
     vecs = [embedded[p.source] for p in pairings]
-    metas = [dict(p.meta) for p in pairings]
-    vector.upsert(ids, vecs, metas)
+    vector.upsert(ids, vecs, [{} for _ in pairings])
 
 
 def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder: EmbeddingClient,

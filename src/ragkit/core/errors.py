@@ -40,3 +40,24 @@ class RagkitError(Exception):
             return self.reason
         detail = ", ".join(f"{key}={value!r}" for key, value in self.context.items())
         return f"{self.reason} ({detail})"
+
+
+class LocatedError(RagkitError):
+    """An error attributable to a place in a file: the path, and the line within it when known.
+
+    One home for that shape, because the subsystems that have it were not agreeing on it.
+    ``ConfigError`` put ``path`` in ``context`` as its own key, while ``CatalogError`` and
+    ``LexiconError`` folded path and line into a single pre-formatted ``context["location"]``
+    string — so a handler reading ``exc.context["path"]``, exactly as this module's own docstring
+    advertises, worked for one and raised ``KeyError`` for the others. They are separate,
+    structured keys everywhere now; a caller that wants them rendered together can format them.
+
+    ``**extra`` lets a subclass add its own context keys (``ConfigError``'s ``label``) without
+    re-implementing the location half.
+    """
+
+    def __init__(self, reason: str, *, path: Any = None, line_no: int | None = None,
+                 **extra: Any) -> None:
+        super().__init__(reason, path=path, line_no=line_no, **extra)
+        self.path = path
+        self.line_no = line_no

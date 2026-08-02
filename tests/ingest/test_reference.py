@@ -407,6 +407,38 @@ class TestImportReference:
         assert len(vector._ids) == 4
 
 
+class TestVectorMetadata:
+    """Regression: `embed_and_upsert` copied each pairing's entire JSON record into the vector
+    index, and nothing ever read it -- a search returns (chunk_id, score) and the retriever
+    resolves display text and metadata through `pairing_store.document()`. At corpus scale that
+    was 7.1M full records duplicated into the ANN store for nothing, and it also meant two copies
+    of a row that could drift."""
+
+    def _upsert(self, tmp_path: Path) -> list[dict]:
+        from ragkit.ingest.reference import embed_and_upsert
+        seen: list[dict] = []
+
+        class _RecordingIndex:
+            def upsert(self, ids: list, vectors: list, metas: list) -> None:
+                seen.extend(metas)
+
+        embed_and_upsert(
+            [Pairing(chunk_id="c1", source="alpha", target="A",
+                     meta={"document_id": "d1", "big": "x" * 500})],
+            _RecordingIndex(), _embedder(lambda _t: [1.0, 0.0]))
+        return seen
+
+    def test_no_pairing_metadata_reaches_the_vector_index(self, tmp_path: Path) -> None:
+        assert self._upsert(tmp_path) == [{}]
+
+    def test_the_pairing_store_still_holds_the_metadata(self, tmp_path: Path) -> None:
+        # The point of the co-located store: one authoritative copy, and it is this one.
+        store = SqlitePairings()
+        store.add([Pairing(chunk_id="c1", source="alpha", target="A", meta={"document_id": "d1"})])
+        display, meta = store.document("c1")
+        assert display == "alpha -> A" and meta == {"document_id": "d1"}
+
+
 class TestPairingRetrievers:
     def test_lexical_retriever(self) -> None:
         store = SqlitePairings()

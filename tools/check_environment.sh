@@ -27,7 +27,16 @@ report() {
     esac
 }
 
-python="$(project_python)"
+# project_python() `die`s when no python3 is on PATH. This script's whole job is to *report* on
+# the environment, so it must not abort before printing a single row -- the one case where the
+# report is most needed is the one where the interpreter is missing. Caught here and reported as
+# a failed row instead.
+if ! python="$(project_python 2>/dev/null)"; then
+    report FAIL "no python3 on PATH and no .venv/ -- install Python 3.${MIN_PYTHON_MINOR}+ first"
+    echo ""
+    echo ">> environment check FAILED (see the rows above)"
+    exit 1
+fi
 
 if assert_python_new_enough "$python" 2>/dev/null; then
     report ok "python interpreter is 3.${MIN_PYTHON_MINOR}+ ($("$python" -V 2>&1))"
