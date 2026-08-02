@@ -39,6 +39,16 @@ class SqlStoreError(RagkitError):
         return cls("a read_only store cannot run schema_sql")
 
 
+def _connect_read_only(path: str) -> sqlite3.Connection:
+    """A read-only connection, which is also the only way a missing file raises rather than being
+    silently created. ``:memory:`` cannot be opened read-only and has nothing to protect, so it is
+    passed through — one home for the URI form, used by the read-only store and the introspector."""
+    if path == ":memory:":
+        return sqlite3.connect(path, check_same_thread=False)
+    return sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True,
+                           check_same_thread=False)
+
+
 class SqliteStore:
     """A :class:`~ragkit.core.ports.SqlStore` over a SQLite database (a file, or ``:memory:``)."""
 
@@ -51,11 +61,8 @@ class SqliteStore:
         # A read-only binding opens the file in read-only mode via URI, so even a bug that slips a
         # write past the port cannot mutate the database. :memory: cannot be opened read-only, and
         # a read-only store over an ephemeral in-memory database is meaningless anyway.
-        if read_only and path != ":memory:":
-            uri = f"file:{Path(path).resolve()}?mode=ro"
-            self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
-        else:
-            self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn = (_connect_read_only(path) if read_only
+                      else sqlite3.connect(path, check_same_thread=False))
         self._conn.row_factory = sqlite3.Row
         if schema_sql:
             if read_only:
@@ -113,7 +120,15 @@ class SqliteIntrospector:
         return cls(path=str(options.get("path", ":memory:")))
 
     def schema(self) -> Mapping[str, Sequence[tuple[str, str]]]:
-        conn = sqlite3.connect(self._path)
+        """The database's tables and their columns.
+
+        Opened **read-only**, which is also what makes a missing file an error. A plain
+        ``sqlite3.connect`` creates the database it cannot find, so a typo'd ``[introspector].path``
+        used to produce an empty file and return ``{}`` — no error anywhere, and NL->SQL then
+        generated against an empty schema. The DuckDB introspector already failed loudly on the
+        same misconfiguration; the two now agree.
+        """
+        conn = _connect_read_only(self._path)
         conn.row_factory = sqlite3.Row
         try:
             tables = [row["name"] for row in conn.execute(

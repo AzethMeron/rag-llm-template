@@ -1,6 +1,7 @@
 """The SQLite store, its read-only guard, and the schema introspector."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -78,3 +79,20 @@ class TestIntrospector:
 
     def test_from_config(self) -> None:
         assert SqliteIntrospector.from_config({"path": ":memory:"}).schema() == {}
+
+    def test_a_missing_database_raises_instead_of_being_created(self, tmp_path: Path) -> None:
+        """Regression: `sqlite3.connect` creates the database it cannot find, so a typo'd
+        [introspector].path produced an empty file and returned {} with no error -- and NL->SQL
+        then generated SQL against an empty schema. The DuckDB introspector already failed loudly
+        on the same misconfiguration; the two now agree."""
+        missing = tmp_path / "typo.db"
+        with pytest.raises(sqlite3.OperationalError):
+            SqliteIntrospector(str(missing)).schema()
+        assert not missing.exists(), "the introspector must not create the database it reads"
+
+    def test_it_does_not_write_to_the_database_it_reads(self, tmp_path: Path) -> None:
+        db = tmp_path / "d.db"
+        SqliteStore(str(db), schema_sql=SCHEMA).close()
+        before = db.stat().st_mtime_ns
+        SqliteIntrospector(str(db)).schema()
+        assert db.stat().st_mtime_ns == before
