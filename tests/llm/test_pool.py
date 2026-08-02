@@ -2,6 +2,10 @@
 and RAII."""
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -197,6 +201,60 @@ class TestClientRouting:
         with ModelPool(endpoints, models) as pool:
             client, model_id = pool.client_for("p")
             assert model_id == "qwen3" and client is not None
+
+
+class TestConcurrentColdStart:
+    """Regression: `client_for`/`_http_for` did an unguarded check-then-set, and `run_batch`
+    starts every worker against a cold pool at once (--concurrency defaults to 2). Several
+    threads each built an LlmClient + httpx.Client for the same key; the losers were overwritten
+    in the dict, so `close()` never saw them (a leaked connection pool) and their usage stats
+    were lost."""
+
+    def _slow_factory(self, calls: list[str]) -> Callable[[str, float], httpx.Client]:
+        def factory(base_url: str, _timeout: float) -> httpx.Client:
+            # Wide enough that an unguarded check-then-set is near-certain to interleave.
+            time.sleep(0.05)
+            calls.append(base_url)
+            return httpx.Client(transport=httpx.MockTransport(always(chat_reply('{"a": "b"}'))))
+        return factory
+
+    def test_one_client_per_model_under_a_concurrent_cold_start(self, tmp_path: Path) -> None:
+        built: list[str] = []
+        pool = load_models(_write(tmp_path / "m.toml", GOOD),
+                           client_factory=self._slow_factory(built))
+        workers = 8
+        start = threading.Barrier(workers)
+
+        def race() -> object:
+            start.wait()  # every thread hits the cold cache in the same instant
+            return pool.client_for("producer")[0]
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            clients = [future.result() for future in
+                       [executor.submit(race) for _ in range(workers)]]
+
+        assert len(set(map(id, clients))) == 1, "each racing thread built its own LlmClient"
+        assert built == ["http://127.0.0.1:8080/v1"], f"the endpoint was opened {len(built)} times"
+        pool.close()
+
+    def test_one_http_client_per_endpoint_across_distinct_models(self, tmp_path: Path) -> None:
+        # producer and reviewer are distinct logical models on ONE endpoint: two LlmClients, but
+        # they must still share a single httpx.Client.
+        built: list[str] = []
+        pool = load_models(_write(tmp_path / "m.toml", GOOD),
+                           client_factory=self._slow_factory(built))
+        start = threading.Barrier(2)
+
+        def race(name: str) -> None:
+            start.wait()
+            pool.client_for(name)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            for future in [executor.submit(race, "producer"), executor.submit(race, "reviewer")]:
+                future.result()
+
+        assert len(built) == 1, f"the shared endpoint was opened {len(built)} times"
+        pool.close()
 
 
 class TestSpecInvariants:

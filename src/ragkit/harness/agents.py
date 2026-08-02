@@ -153,8 +153,9 @@ class Harness:
 
     Thread-safe for :func:`ragkit.harness.runner.run_batch`'s concurrent workers: :meth:`process`
     is free of shared mutable state except the per-reviewer leniency window (guarded here), the
-    model pool's usage stats (guarded there), and the injected memory (guarded there). The context
-    retriever and sql store are read-only and need no lock.
+    model pool's usage stats and its lazily-built per-model clients (both guarded there), and the
+    injected memory (guarded there). The context retriever and sql store are read-only and need no
+    lock.
     """
 
     def __init__(self, pool: ModelPool, panel: Panel, ruleset: RuleSet,
