@@ -33,6 +33,43 @@ class TestBasics:
         index.upsert(["a"], [[0, 0, 1]], [{}])  # replace, not duplicate
         assert index.count() == 1
 
+
+class TestUpsertIsOneTransaction:
+    """Regression: upsert was `delete(ids)` then `add(rows)` -- two transactions, so a crash
+    between them removed the old vectors without adding the new, and each call wrote two
+    fragments instead of one. It is now a single native merge_insert."""
+
+    def test_upsert_does_not_delete_first(self, tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{}])
+
+        def _boom(_ids: object) -> None:
+            raise AssertionError("upsert must not delete-then-add; that is the torn-write window")
+
+        monkeypatch.setattr(index, "delete", _boom)
+        index.upsert(["a", "b"], [[0, 0, 1], [0, 1, 0]], [{}, {}])
+        assert index.count() == 2
+        assert index.search([0, 0, 1], k=1)[0][0] == "a"  # the replacement, not the old vector
+
+    def test_matched_and_unmatched_rows_in_one_call(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{"v": 1}, {"v": 1}])
+        index.upsert(["a", "c"], [[0, 0, 1], [1, 1, 0]], [{"v": 2}, {"v": 2}])
+        assert index.count() == 3
+        assert index.indexed_ids() == {"a", "b", "c"}
+
+    def test_a_backend_failure_is_a_structured_error(self, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+
+        def flaky(_on: object) -> None:
+            raise RuntimeError("merge boom")
+
+        monkeypatch.setattr(index._table, "merge_insert", flaky)
+        with pytest.raises(VectorIndexError, match="could not upsert 1 row"):
+            index.upsert(["a"], [[1, 0, 0]], [{}])
+
     def test_delete(self, tmp_path: Path) -> None:
         index = _index(tmp_path)
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])

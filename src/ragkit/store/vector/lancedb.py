@@ -19,10 +19,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
-from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Filter
 
 from ..filters import to_sql
+from .common import VectorIndexError, validate_upsert
 
 _NPROBE_FRACTION = 0.05
 """Share of the IVF partitions a query probes by default. 5% is the usual operating point where
@@ -34,8 +34,7 @@ _MIN_NPROBES = 20
 small table *less* than not having it would have."""
 
 
-class VectorIndexError(RagkitError):
-    """A vector-index operation failed, or LanceDB/pyarrow is unavailable."""
+__all__ = ["LanceVectorIndex", "VectorIndexError"]  # VectorIndexError re-exported from .common
 
 
 def _ivf_partitions(row_count: int) -> int:
@@ -85,20 +84,28 @@ class LanceVectorIndex:
 
     def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
                metas: Sequence[Mapping[str, Any]]) -> None:
-        if not (len(ids) == len(vectors) == len(metas)):
-            raise VectorIndexError(
-                f"upsert got mismatched lengths: {len(ids)} ids, {len(vectors)} vectors, "
-                f"{len(metas)} metas")
+        """Replace the rows for ``ids`` and insert the rest, as **one** transaction.
+
+        Via LanceDB's native ``merge_insert``, not delete-then-add. The old two-statement form
+        left a window in which a crash had removed the old vectors without adding the new, and
+        wrote two fragments per call instead of one -- the fragment growth ``compact()`` exists to
+        clean up. It also had no structural defence against writing the same id twice; that is
+        exactly the shape of this table's real 5,000-duplicate-row corruption incident (see
+        ``compact``). ``merge_insert`` joins on ``id``, so a matched row is *updated in place*
+        rather than deleted and re-added, and a duplicate cannot be created by this path.
+        """
+        validate_upsert(ids, vectors, metas, dim=self._dim)
         if not ids:
             return
-        for vector in vectors:
-            if len(vector) != self._dim:
-                raise VectorIndexError(
-                    f"a vector has dimension {len(vector)}, but the index is {self._dim}-d")
-        self.delete(ids)  # upsert = replace any existing rows for these ids
         rows = [{"id": i, "vector": list(v), "meta": json.dumps(dict(m))}
                 for i, v, m in zip(ids, vectors, metas, strict=True)]
-        self._table.add(rows)
+        try:
+            (self._table.merge_insert("id")
+             .when_matched_update_all()
+             .when_not_matched_insert_all()
+             .execute(rows))
+        except Exception as exc:
+            raise VectorIndexError(f"could not upsert {len(rows)} row(s): {exc}") from exc
 
     def search(self, vector: Sequence[float], *, k: int,
                where: Filter = ()) -> list[tuple[str, float]]:

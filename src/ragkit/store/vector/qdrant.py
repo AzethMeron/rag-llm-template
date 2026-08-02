@@ -20,14 +20,13 @@ import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Filter, FilterOp, Predicate
+
+from .common import VectorIndexError, validate_upsert
 
 _ID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")  # fixed: deterministic point ids
 
-
-class VectorIndexError(RagkitError):
-    """A vector-index operation failed, or qdrant-client is unavailable."""
+__all__ = ["QdrantVectorIndex", "VectorIndexError"]  # VectorIndexError re-exported from .common
 
 
 def _point_id(chunk_id: str) -> str:
@@ -71,16 +70,9 @@ class QdrantVectorIndex:
 
     def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
                metas: Sequence[Mapping[str, Any]]) -> None:
-        if not (len(ids) == len(vectors) == len(metas)):
-            raise VectorIndexError(
-                f"upsert got mismatched lengths: {len(ids)} ids, {len(vectors)} vectors, "
-                f"{len(metas)} metas")
+        validate_upsert(ids, vectors, metas, dim=self._dim)
         if not ids:
             return
-        for vector in vectors:
-            if len(vector) != self._dim:
-                raise VectorIndexError(
-                    f"a vector has dimension {len(vector)}, but the index is {self._dim}-d")
         points = [self._m.PointStruct(id=_point_id(cid), vector=list(vector),
                                       payload={**dict(meta), "_cid": cid})
                   for cid, vector, meta in zip(ids, vectors, metas, strict=True)]

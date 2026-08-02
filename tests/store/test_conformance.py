@@ -35,6 +35,7 @@ from ragkit.store.pairings.sqlite import SqlitePairings
 from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.store.sql.duckdb import DuckDBStore
 from ragkit.store.sql.sqlite import SqliteStore, SqlStoreError
+from ragkit.store.vector.common import VectorIndexError, validate_upsert
 from ragkit.store.vector.lancedb import LanceVectorIndex
 from ragkit.store.vector.qdrant import QdrantVectorIndex
 
@@ -49,6 +50,9 @@ class InMemoryVectorIndex:
 
     def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
                metas: Sequence[Mapping[str, Any]]) -> None:
+        # Through the shared boundary check, exactly as a third party's own driver would: the
+        # argument contract is part of the port, not each driver's private business.
+        validate_upsert(ids, vectors, metas, dim=3)
         for id_, vector, meta in zip(ids, vectors, metas, strict=True):
             self._vectors[id_] = list(vector)
             self._meta[id_] = meta
@@ -242,6 +246,25 @@ class TestVectorIndexConformance:
         index = factory(tmp_path)
         index.upsert(["a", "b"], [[1, 0, 0], [0, 1, 0]], [{}, {}])
         assert index.reconcile(["a", "new"]) == {"new"}  # b dropped, new reported missing
+
+    def test_upsert_refuses_a_duplicate_id_within_one_batch(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        """The drivers used to disagree here, which is the kind of divergence a happy-path-only
+        conformance suite cannot see: Qdrant's deterministic point id let the last occurrence
+        silently win, while LanceDB's merge_insert refuses outright. An id whose vector depends on
+        its position in the batch is not reproducible, so every driver refuses."""
+        index = factory(tmp_path)
+        with pytest.raises(VectorIndexError, match="more than once"):
+            index.upsert(["a", "b", "a"], [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [{}, {}, {}])
+        assert index.count() == 0  # refused at the boundary: nothing was written
+
+    def test_upsert_rejections_are_identical_across_drivers(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        index = factory(tmp_path)
+        with pytest.raises(VectorIndexError, match="mismatched lengths"):
+            index.upsert(["a"], [[1, 0, 0], [0, 1, 0]], [{}])
+        with pytest.raises(VectorIndexError, match="dimension"):
+            index.upsert(["a"], [[1, 0]], [{}])
 
 
 @pytest.mark.parametrize("factory", PAIRING_FACTORIES)
