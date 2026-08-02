@@ -378,8 +378,8 @@ def _vector_factory(decision: Mapping[str, object]) -> Callable[[str, float], ht
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):
-            return httpx.Response(200, json={"data": [{"embedding": _embed(t)}
-                                                      for t in body["input"]]})
+            return httpx.Response(200, json={"data": [{"index": i, "embedding": _embed(t)}
+                                              for i, t in enumerate(body["input"])]})
         props = body.get("response_format", {}).get("json_schema", {}).get(
             "schema", {}).get("properties", {})
         content = (json.dumps({"acceptable": True, "issues": []}) if "acceptable" in props

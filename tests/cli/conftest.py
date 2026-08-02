@@ -92,7 +92,7 @@ def retrieval_factory() -> Callable[[str, float], httpx.Client]:
         path = request.url.path
         body = json.loads(request.content)
         if path.endswith("/embeddings"):
-            data = [{"embedding": _embedding(t)} for t in body["input"]]
+            data = [{"index": i, "embedding": _embedding(t)} for i, t in enumerate(body["input"])]
             return httpx.Response(200, json={"data": data})
         if path.endswith("/rerank"):
             results = [{"index": i, "relevance_score": 1.0 / (i + 1)}

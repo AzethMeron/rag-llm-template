@@ -17,8 +17,9 @@ def embedding_client(handler: Callable[[httpx.Request], httpx.Response], *,
                            client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
-def rerank_client(handler: Callable[[httpx.Request], httpx.Response]) -> RerankClient:
-    return RerankClient(base_url="http://x/v1",
+def rerank_client(handler: Callable[[httpx.Request], httpx.Response],
+                  *, score_scale: str = "logit") -> RerankClient:
+    return RerankClient(base_url="http://x/v1", score_scale=score_scale,
                         client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
@@ -27,5 +28,6 @@ def fake_embedder(vector_of: Callable[[str], list[float]]) -> EmbeddingClient:
     def handler(request: httpx.Request) -> httpx.Response:
         import json
         inputs = json.loads(request.content)["input"]
-        return httpx.Response(200, json={"data": [{"embedding": vector_of(t)} for t in inputs]})
+        return httpx.Response(200, json={
+            "data": [{"index": i, "embedding": vector_of(t)} for i, t in enumerate(inputs)]})
     return embedding_client(handler)

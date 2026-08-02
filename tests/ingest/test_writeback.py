@@ -22,7 +22,8 @@ from ragkit.store.vector.lancedb import LanceVectorIndex
 def _embedder(vector_of: Callable[[str], list[float]]) -> EmbeddingClient:
     def handler(request: httpx.Request) -> httpx.Response:
         inputs = json.loads(request.content)["input"]
-        return httpx.Response(200, json={"data": [{"embedding": vector_of(t)} for t in inputs]})
+        return httpx.Response(200, json={
+            "data": [{"index": i, "embedding": vector_of(t)} for i, t in enumerate(inputs)]})
     return EmbeddingClient(base_url="http://x/v1",
                            client=httpx.Client(transport=httpx.MockTransport(handler)))
 

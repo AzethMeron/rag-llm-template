@@ -190,7 +190,8 @@ class TestWriteback:
 
         def handler(request: httpx.Request) -> httpx.Response:
             inputs = json.loads(request.content)["input"]
-            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0, 0.0]} for i, _ in enumerate(inputs)]})
 
         def fake_embedding_client(*, base_url: str, model: str) -> EmbeddingClient:
             return EmbeddingClient(base_url=base_url, model=model,
