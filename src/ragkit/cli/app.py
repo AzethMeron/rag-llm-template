@@ -7,17 +7,28 @@ retrieve from. Every component is resolved through its registry, so a user's own
 block, or schema is selected the same way a built-in is — no framework change.
 
 The assembly does all of its config reading and consistency checks (including the model-pool
-capacity/thrash guard) *before* the server is contacted, so a misconfiguration is reported for what
-it is rather than masked by a "no server" error. ``client_factory`` is injectable so a test drives
-the whole run against an in-memory transport with no server.
+capacity/thrash guard) *before* any server is contacted, so a misconfiguration is reported for what
+it is rather than masked by a "no server" error. That ordering is what matters, not that
+``assemble`` never touches a server at all: with ``retrieval.kind`` of ``dense`` or ``hybrid``,
+building the retriever embeds the reference corpus, which does call the embedding endpoint — after
+every config check has already passed. ``client_factory`` is injectable so a test drives the whole
+run against an in-memory transport with no server.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ragkit.core.config import ConfigError, load_toml, reject_unknown, tables
+from ragkit.core.config import (
+    ConfigError,
+    as_table,
+    load_toml,
+    read_bool,
+    read_string,
+    reject_unknown,
+    tables,
+)
 from ragkit.core.lexicon import read_lexicon
 from ragkit.core.ports import Retriever, SqlStore, VectorIndex
 from ragkit.harness import (
@@ -126,20 +137,35 @@ def _external_sql(storage: Storage) -> SqlStore | None:
 
 @dataclass(frozen=True, slots=True)
 class _Recipe:
-    output_schema: str
-    output_schema_options: dict[str, Any]
-    validators: tuple[tuple[str, dict[str, Any]], ...]
-    input_label: str
-    stand_in: str
-    use_memory: bool
-    reference_file: str
-    reference_retriever: str
-    reference_index_field: str
-    reference_target_field: str
-    reference_options: dict[str, Any]
+    """A parsed ``recipe.toml``. The field defaults *are* the loader's defaults — read from
+    ``_RECIPE_DEFAULTS`` below rather than retyped in :func:`_load_recipe`, so a default and its
+    loader cannot drift (the same pattern as ``retrieve.tuning``)."""
+
+    output_schema: str = "json_field"
+    output_schema_options: dict[str, Any] = field(default_factory=dict)
+    validators: tuple[tuple[str, dict[str, Any]], ...] = ()
+    input_label: str = "Input to act on:"
+    stand_in: str = "they"
+    use_memory: bool = False
+    reference_file: str = ""
+    reference_retriever: str = "lexical"
+    reference_index_field: str = "source"
+    reference_target_field: str = "target"
+    reference_options: dict[str, Any] = field(default_factory=dict)
+
+
+_RECIPE_DEFAULTS = _Recipe()
 
 
 def _load_recipe(path: Path) -> _Recipe:
+    """Parse ``recipe.toml`` through the strict ``core.config`` readers.
+
+    Every field goes through ``read_string``/``read_bool``/``as_table``, not ``str()``/``bool()``/
+    ``dict()``. Raw coercion made two silent failures reachable here that the readers exist
+    specifically to refuse: ``use_memory = "false"`` became ``bool("false")`` -> **True**, quietly
+    inverting the gate, and ``output_schema_options = 5`` raised a bare ``TypeError`` from inside
+    ``dict()`` that escaped ``main()``'s ``except RagkitError`` as an unstructured traceback.
+    """
     data = load_toml(path, what="recipe file")
     reject_unknown(data, {"task", "validator", "reference"}, label="the recipe file", path=path)
     task = reject_unknown(data.get("task", {}),
@@ -153,18 +179,26 @@ def _load_recipe(path: Path) -> _Recipe:
         data.get("reference", {}),
         {"file", "retriever", "index_field", "target_field", "options"},
         label="[reference]", path=path)
+    d = _RECIPE_DEFAULTS
     return _Recipe(
-        output_schema=str(task.get("output_schema", "json_field")),
-        output_schema_options=dict(task.get("output_schema_options", {})),
+        output_schema=read_string(task, "output_schema", d.output_schema, label="[task]",
+                                  path=path),
+        output_schema_options=as_table(task.get("output_schema_options", {}),
+                                       label="[task].output_schema_options", path=path),
         validators=validators,
-        input_label=str(task.get("input_label", "Input to act on:")),
-        stand_in=str(task.get("stand_in", "they")),
-        use_memory=bool(task.get("use_memory", False)),
-        reference_file=str(reference.get("file", "")),
-        reference_retriever=str(reference.get("retriever", "lexical")),
-        reference_index_field=str(reference.get("index_field", "source")),
-        reference_target_field=str(reference.get("target_field", "target")),
-        reference_options=dict(reference.get("options", {})))
+        input_label=read_string(task, "input_label", d.input_label, label="[task]", path=path),
+        stand_in=read_string(task, "stand_in", d.stand_in, label="[task]", path=path),
+        use_memory=read_bool(task, "use_memory", d.use_memory, label="[task]", path=path),
+        reference_file=read_string(reference, "file", d.reference_file, label="[reference]",
+                                   path=path),
+        reference_retriever=read_string(reference, "retriever", d.reference_retriever,
+                                        label="[reference]", path=path),
+        reference_index_field=read_string(reference, "index_field", d.reference_index_field,
+                                          label="[reference]", path=path),
+        reference_target_field=read_string(reference, "target_field", d.reference_target_field,
+                                           label="[reference]", path=path),
+        reference_options=as_table(reference.get("options", {}), label="[reference].options",
+                                   path=path))
 
 
 def _missing_kind(path: Path) -> bool:
@@ -271,4 +305,5 @@ def _rerank_client(settings: RetrievalSettings, pool: ModelPool,
                        f"model, not a rerank model")
     endpoint = pool.endpoint(spec.endpoint)
     client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
-    return RerankClient(base_url=endpoint.base_url, model=spec.model_id, client=client)
+    return RerankClient(base_url=endpoint.base_url, model=spec.model_id,
+                        score_scale=settings.rerank_score_scale, client=client)

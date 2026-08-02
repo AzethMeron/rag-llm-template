@@ -214,6 +214,55 @@ class TestConfigErrors:
             assemble(config, client_factory=scripted_factory())
 
 
+class TestRecipeIsReadThroughTheTypeCheckers:
+    """recipe.toml used to be read with bare str()/bool()/dict(), the exact coercions the
+    core.config readers exist to refuse. Every other loader already used them."""
+
+    def test_a_quoted_boolean_is_refused_not_inverted(self, tmp_path: Path) -> None:
+        # bool("false") is True: raw coercion silently *enabled* memory for a config that said
+        # it should be off. This is the reason read_bool exists.
+        config = write_config(tmp_path / "cfg",
+                              recipe='[task]\noutput_schema = "json_field"\n'
+                                     'use_memory = "false"\n')
+        with pytest.raises(ConfigError, match=r"\[task\].use_memory must be a boolean"):
+            assemble(config, client_factory=scripted_factory())
+
+    def test_a_non_table_options_block_is_a_structured_error(self, tmp_path: Path) -> None:
+        # dict(5) raised a bare TypeError that escaped main()'s `except RagkitError` as a
+        # traceback rather than a config error naming the file and key.
+        config = write_config(tmp_path / "cfg",
+                              recipe='[task]\noutput_schema = "json_field"\n'
+                                     'output_schema_options = 5\n')
+        with pytest.raises(ConfigError, match="output_schema_options must be a table"):
+            assemble(config, client_factory=scripted_factory())
+
+    @pytest.mark.parametrize(("line", "wanted"), [
+        ('output_schema = 7\n', r"\[task\].output_schema must be a string"),
+        ('input_label = true\n', r"\[task\].input_label must be a string"),
+        ('stand_in = 3\n', r"\[task\].stand_in must be a string"),
+    ])
+    def test_mistyped_task_fields_are_refused(self, tmp_path: Path, line: str,
+                                              wanted: str) -> None:
+        config = write_config(tmp_path / "cfg", recipe=f"[task]\n{line}")
+        with pytest.raises(ConfigError, match=wanted):
+            assemble(config, client_factory=scripted_factory())
+
+    @pytest.mark.parametrize(("line", "wanted"), [
+        ('file = 1\n', r"\[reference\].file must be a string"),
+        ('retriever = 1\n', r"\[reference\].retriever must be a string"),
+        ('index_field = 1\n', r"\[reference\].index_field must be a string"),
+        ('target_field = 1\n', r"\[reference\].target_field must be a string"),
+        ('options = "x"\n', r"\[reference\].options must be a table"),
+    ])
+    def test_mistyped_reference_fields_are_refused(self, tmp_path: Path, line: str,
+                                                   wanted: str) -> None:
+        config = write_config(tmp_path / "cfg",
+                              recipe=f'[task]\noutput_schema = "json_field"\n'
+                                     f'[reference]\n{line}')
+        with pytest.raises(ConfigError, match=wanted):
+            assemble(config, client_factory=scripted_factory())
+
+
 class TestReferenceCorpus:
     def _recipe(self, **extra: str) -> str:
         opts = "".join(f'{k} = "{v}"\n' for k, v in extra.items())
