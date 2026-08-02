@@ -59,6 +59,22 @@ verdict predicted, and all found by the widened conformance suite:
 - Every embedding fake in the test suite omitted the `index` field, which is why a suite that
   covers `embedding.py` thoroughly still could not have caught M8.
 
+**Found by the full-scale validation runs, not by reading — recorded, not fixed:**
+
+- **`SqlitePairings` serialises reads, so a retrieval-bound run ignores `--concurrency`.** One
+  connection shared by every thread under one lock. WAL means a reader is never blocked by a
+  *writer*, but readers block each other, so the concurrency WAL would allow never reaches the
+  caller. Measured on `legal_procurement` (7.1M rows): one BM25 query ~4.6 s, throughput pinned at
+  ~2.3 records/min with `--concurrency 4` on a 24-core machine, GPU at 0% — every worker queued
+  behind the lock, not the model. Scale-dependent: `med_evidence` (597k rows) was model-bound in
+  the same run shape and scaled with concurrency (2 → 5.7 records/min going from 2 to 4 workers).
+  Written up in the driver's own docstring with the fix sketched (thread-local *read* connections,
+  lock retained for writes, `:memory:` excluded since each connection would get its own empty
+  database). **Deliberately not attempted here**: it is a performance limitation rather than a
+  correctness defect, and rewriting connection management in the most load-bearing store at the
+  end of a long session — without room to test it to the standard everything else here was held
+  to — is the wrong trade. It wants its own change with its own concurrency tests.
+
 **Left undone, deliberately:** `license/THIRD-PARTY.md` still lists the two retired Qwen3.5
 models. `CLAUDE.md` forbids adding, removing, or modifying anything under `license/` without
 explicit permission, so this is flagged for the owner rather than edited.

@@ -145,6 +145,12 @@ above was a smaller controlled sample), same Qwen3-14B author:
 | `eval.py` (RAG: retrieve, then decide) | 0.528 | 0.645 | 897/1000 |
 | `reader_eval.py` (gold abstract given — directly comparable to PubMedQA) | 0.680 | 0.716 | 954/1000 |
 
+**Reproduced 2026-08-02**, after the deep-audit fixes (`.audit/2026-08-02-deep-audit.md`) touched
+the harness, the retrieval layer and the eval scaffolding: the same full 1000-question `eval.py`
+run scored **accuracy 0.530, answered_accuracy 0.645, decided 898/1000** — within one record of
+the line above. Recorded because that is the point of the number: the fixes changed no behaviour
+this measures.
+
 **Against the PubMedQA paper (Jin et al., 2019, EMNLP)** — `reader_eval.py`'s setup matches the
 paper's task exactly, so this comparison is apples-to-apples:
 

@@ -54,7 +54,25 @@ END;
 class SqlitePairings:
     """A :class:`~ragkit.core.ports.PairingStore` over one co-located SQLite database (WAL). Also
     satisfies :class:`~ragkit.core.ports.SearchIndex` (``search``), by design (see the port
-    docstring)."""
+    docstring).
+
+    **Known limitation: reads are serialised, so a retrieval-bound run does not scale with
+    ``--concurrency``.** One ``sqlite3`` connection is shared by every thread and guarded by
+    ``self._lock``, because a connection is not safe for concurrent use. WAL means a reader is
+    never blocked by a *writer*, but this lock does block readers against each other, so the
+    concurrency WAL would allow is not delivered to callers.
+
+    Measured on ``legal_procurement`` (7,097,288 rows) 2026-08-02, running the full held-out set:
+    one BM25 query costs ~4.6 s, throughput held at ~2.3 records/min with ``--concurrency 4`` on a
+    24-core machine, and the GPU sat at 0% — every worker was queued behind this lock rather than
+    behind the model. It bites only where a single query is expensive, which means a very large
+    FTS5 index; at the hundreds-of-thousands scale (``med_evidence``, 597k rows) the same run was
+    model-bound and scaled with concurrency as expected.
+
+    The fix, if this matters for your corpus, is thread-local *read* connections (WAL supports
+    many concurrent readers) with the lock kept for writes — noting that a ``:memory:`` store
+    cannot do that, since each connection would get its own empty database.
+    """
 
     CONFIG_KEYS = frozenset({"path", "tokenizer"})
 

@@ -151,6 +151,24 @@ the distractor pool grows 280× versus the 25k-passage subset), but ranking qual
 still improves meaningfully; hybrid+reranker is the real lever at full scale, roughly doubling
 MRR and NDCG over the lexical floor — a different picture than the small-scale table suggests.
 
+> **The dense and hybrid rows above understate the retriever: they were measured before the
+> `nprobes` fix.** When the ANN index was added, `search()` never set `nprobes`, so every query
+> probed LanceDB's small fixed default — about 20 of this table's ~2,664 IVF partitions, well
+> under 1% of it. Measured 2026-08-02 over 100 of these same held-out questions, against this
+> same index, varying *only* `nprobes`:
+>
+> | `[vector].nprobes` | Recall@20 | MRR@10 | NDCG@10 | Acc@10 |
+> |---|---:|---:|---:|---:|
+> | `1` (starved, to show the dial is connected) | 0.110 | 0.200 | 0.105 | 0.260 |
+> | `20` — LanceDB's default, i.e. what produced the table above | 0.343 | 0.437 | 0.274 | 0.600 |
+> | *unset* → `134`, what the driver now computes (5% of the partitions) | **0.411** | **0.488** | **0.320** | **0.700** |
+>
+> The `nprobes = 20` column reproduces the full-scale dense row almost exactly (0.343 vs 0.342),
+> which is what makes the comparison trustworthy: the subset behaves like the whole set. So dense
+> retrieval here is worth roughly **+0.07 Recall@20 and +0.10 Acc@10** more than the table above
+> credits it with. Those rows are left as measured rather than quietly restated — re-run
+> `eval.py` at full scale to replace them.
+
 **Against the PolQA paper (Rybak et al., 2022/2024, LREC-COLING).** The paper reports "top-10
 accuracy" — a binary per-query hit/miss (did *any* gold passage land in the top 10) — which is a
 different statistic and depth than this recipe's own Recall@20/MRR@10/NDCG@10. For a literature-
