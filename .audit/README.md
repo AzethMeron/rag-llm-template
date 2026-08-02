@@ -12,3 +12,7 @@ than a deleted one.
 ## Entries
 
 - `2026-07-28-cross-cutting-sweep.md` — a cross-cutting sweep of the codebase.
+- `2026-08-02-deep-audit.md` — whole-codebase deep audit (7 subsystems): bugs, OOM/perf,
+  concurrency/durability, contract violations, docs/staleness, SSOT, and interface swappability.
+  1 critical (broken `fetch_models.sh` repos), 2 high (silent rerank drop; batch poison pill),
+  16 medium, 20 low; with a per-port swappability verdict.
