@@ -20,16 +20,21 @@ import pytest
 
 from ragkit.core.lexicon import Entry
 from ragkit.core.ports import (
+    Filter,
+    FilterOp,
     LexiconStore,
     Pairing,
     PairingStore,
+    Predicate,
     RunResult,
     RunStore,
     SqlStore,
     VectorIndex,
 )
 from ragkit.core.records import Record, Status
+from ragkit.store.lexical.bm25 import bm25_to_relevance
 from ragkit.store.lexicon.sqlite import SqliteLexicon
+from ragkit.store.pairings.common import PairingStoreError
 from ragkit.store.pairings.duckdb import DuckDBPairings
 from ragkit.store.pairings.sqlite import SqlitePairings
 from ragkit.store.run.sqlite import SqliteRunStore
@@ -58,10 +63,19 @@ class InMemoryVectorIndex:
             self._meta[id_] = meta
 
     def search(self, vector: Sequence[float], *, k: int,
-               where: object = ()) -> list[tuple[str, float]]:
-        scored = [(id_, _cosine(vector, vec)) for id_, vec in self._vectors.items()]
+               where: Filter = ()) -> list[tuple[str, float]]:
+        # Honours `where` rather than ignoring it. Silently dropping a filter is the one thing the
+        # port forbids outright (honour it, or refuse at the boundary) -- and conformance caught
+        # this double doing exactly that, returning every row for a filtered query.
+        scored = [(id_, _cosine(vector, vec)) for id_, vec in self._vectors.items()
+                  if self._matches(id_, where)]
         scored.sort(key=lambda pair: pair[1], reverse=True)  # best-first, higher-is-better
         return scored[:k]
+
+    def _matches(self, chunk_id: str, where: Filter) -> bool:
+        # "id" is the port's canonical name for the chunk id; every other field is metadata.
+        fields: dict[str, Any] = {**self._meta.get(chunk_id, {}), "id": chunk_id}
+        return all(_holds(predicate, fields.get(predicate.field)) for predicate in where)
 
     def delete(self, ids: Sequence[str]) -> None:
         for id_ in ids:
@@ -81,7 +95,10 @@ class InMemoryVectorIndex:
 class InMemoryPairings:
     """A minimal, dependency-free PairingStore — the second implementation of that port, combining
     a simple word-overlap search with a dict-backed row store. ``add`` mirrors the shipped drivers'
-    idempotent-on-duplicate contract."""
+    idempotent-on-duplicate contract, and ``search`` maps its raw overlap count through the same
+    shared transform the shipped drivers use, so its scores land in the port's ``[0, 1)`` range
+    rather than being raw counts (which is exactly what a third party's driver must also do —
+    conformance caught this one returning ``2.0``)."""
 
     def __init__(self) -> None:
         self._rows: dict[str, Pairing] = {}
@@ -103,7 +120,7 @@ class InMemoryPairings:
             words = set(f"{pairing.source} {pairing.context} {pairing.target}".lower().split())
             overlap = len(terms & words)
             if overlap:
-                scored.append((chunk_id, float(overlap)))
+                scored.append((chunk_id, bm25_to_relevance(float(overlap))))
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:k]
 
@@ -191,6 +208,20 @@ class InMemoryLexicon:
         return added
 
 
+def _holds(predicate: Predicate, value: Any) -> bool:
+    """Evaluate one predicate against a field's value — the whole ``FilterOp`` set, so the
+    in-memory index supports filtering as completely as a real driver would."""
+    if predicate.op is FilterOp.IN:
+        return value in predicate.value
+    compare = {FilterOp.EQ: lambda: value == predicate.value,
+               FilterOp.NE: lambda: value != predicate.value,
+               FilterOp.LT: lambda: value < predicate.value,
+               FilterOp.LE: lambda: value <= predicate.value,
+               FilterOp.GT: lambda: value > predicate.value,
+               FilterOp.GE: lambda: value >= predicate.value}
+    return compare[predicate.op]()
+
+
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
@@ -258,6 +289,35 @@ class TestVectorIndexConformance:
             index.upsert(["a", "b", "a"], [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [{}, {}, {}])
         assert index.count() == 0  # refused at the boundary: nothing was written
 
+    def test_filtering_on_a_metadata_key_either_works_or_is_refused_at_the_boundary(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        """Metadata filtering is where the vector drivers genuinely differ: Qdrant stores each key
+        as a filterable payload field, while LanceDB keeps metadata in one opaque JSON column and
+        has nothing for the predicate to resolve against.
+
+        What every driver must do is one of two things -- honour the predicate, or refuse it *at
+        the boundary*. What none may do is what LanceDB used to: compile it to a nonexistent
+        column and fail later with a raw engine error, or (worse) silently ignore it. The suite's
+        only filter test used to filter on the real `id` column, so it passed while this was
+        broken."""
+        index = factory(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [1, 0, 0]],
+                     [{"document_id": "d1"}, {"document_id": "d2"}])
+        predicate = (Predicate("document_id", FilterOp.EQ, "d1"),)
+        try:
+            results = index.search([1, 0, 0], k=5, where=predicate)
+        except VectorIndexError as exc:
+            assert "filter" in str(exc).lower()  # refused, and says so in our own error type
+            return
+        assert [chunk_id for chunk_id, _ in results] == ["a"]  # or honoured, exactly
+
+    def test_filtering_on_id_works_everywhere(
+            self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
+        index = factory(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [1, 0, 0]], [{}, {}])
+        results = index.search([1, 0, 0], k=5, where=(Predicate("id", FilterOp.EQ, "b"),))
+        assert [chunk_id for chunk_id, _ in results] == ["b"]
+
     def test_upsert_rejections_are_identical_across_drivers(
             self, factory: Callable[[Path], VectorIndex], tmp_path: Path) -> None:
         index = factory(tmp_path)
@@ -306,6 +366,73 @@ class TestPairingStoreConformance:
         assert store.count() == 1
         pairing = store.get("p1")
         assert pairing is not None and pairing.source == "first"
+
+    def test_scores_are_bounded_in_the_unit_interval(
+            self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
+        store = factory(tmp_path)
+        store.add([Pairing(chunk_id="p1", source="the quick brown fox"),
+                   Pairing(chunk_id="p2", source="a quick fox in the garden")])
+        assert all(0.0 <= score < 1.0 for _id, score in store.search("quick fox", k=5))
+
+    def test_search_reflects_every_write_including_the_most_recent(
+            self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
+        """DuckDB defers its FTS rebuild to the next search (rebuilding per add made a batched
+        load quadratic). That must stay invisible: no driver may return a stale index."""
+        store = factory(tmp_path)
+        for i in range(5):
+            store.add([Pairing(chunk_id=f"p{i}", source=f"alpha beta gamma {i}")])
+            found = {chunk_id for chunk_id, _ in store.search("alpha", k=10)}
+            assert found == {f"p{j}" for j in range(i + 1)}
+
+
+# The two *shipped* pairing drivers. Some guarantees are properties of a real BM25-indexed,
+# transactional store rather than of the port itself, so they are asserted here rather than in
+# TestPairingStoreConformance above: the in-memory reference implementation exists to show the
+# port is independently implementable, not to be a search engine, and holding it to BM25 ranking
+# quality or to mid-batch rollback would test the double instead of the contract.
+SHIPPED_PAIRING_DRIVERS: list[Callable[[Path], PairingStore]] = [
+    lambda tmp: SqlitePairings(str(tmp / "p.sqlite")),
+    lambda tmp: DuckDBPairings(str(tmp / "p.duckdb")),
+]
+
+
+@pytest.mark.parametrize("factory", SHIPPED_PAIRING_DRIVERS)
+class TestShippedPairingDriverParity:
+    def test_scores_share_one_scale_and_one_ranking(
+            self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
+        """The drivers used to apply *different* BM25 transforms (SQLite ``1 - 2**bm25``, DuckDB
+        ``s/(1+s)``), so the same ``min_score`` admitted different hits after a driver swap, and
+        the suite -- asserting only ``score >= 0`` -- could not see it. Both now share one
+        transform, so a floor keeps the same shape of meaning and the ranking is identical.
+
+        Deliberately not asserting equal *numbers*: the engines compute different raw BM25 (FTS5
+        and DuckDB's fts differ in IDF handling -- a term in every document scores 0.0 on one and
+        ~0.19 on the other), so a floor transfers approximately, and pinning equality here would
+        pin a fiction. See ``store.lexical.bm25``."""
+        store = factory(tmp_path)
+        store.add([
+            Pairing(chunk_id="p1", source="the quick brown fox jumps over the lazy dog"),
+            Pairing(chunk_id="p2", source="a quick fox in the garden"),
+            Pairing(chunk_id="p3", source="completely unrelated text about mountains"),
+        ])
+        results = store.search("quick fox", k=5)
+        assert [chunk_id for chunk_id, _ in results] == ["p2", "p1"]  # shorter doc wins: BM25
+        assert all(0.0 <= score < 1.0 for _id, score in results)
+        assert results[0][1] > results[1][1]
+
+    def test_a_failed_batch_leaves_the_store_unchanged(
+            self, factory: Callable[[Path], PairingStore], tmp_path: Path) -> None:
+        """``PairingStore.add`` promises one transaction. DuckDB does not roll back a failed
+        ``executemany`` by itself, so it used to leave a partial write here while SQLite did not --
+        an atomicity divergence the happy-path suite never exercised."""
+        store = factory(tmp_path)
+        store.add([Pairing(chunk_id="kept", source="written before the failure")])
+        good = Pairing(chunk_id="ok", source="alpha beta")
+        bad = Pairing(chunk_id="bad", source=object())  # type: ignore[arg-type]  # unbindable
+        with pytest.raises(PairingStoreError, match="could not add pairings"):
+            store.add([good, bad])
+        assert store.count() == 1 and store.get("ok") is None
+        assert store.get("kept") is not None  # the earlier committed batch is untouched
 
 
 # Two real SqlStore engines behind one port: swapping SQLite -> DuckDB is a config edit only.

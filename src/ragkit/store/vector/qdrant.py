@@ -25,6 +25,7 @@ from ragkit.core.ports import Filter, FilterOp, Predicate
 from .common import VectorIndexError, validate_upsert
 
 _ID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")  # fixed: deterministic point ids
+_CHUNK_ID_FIELD = "_cid"  # payload key holding the chunk id; the port names it "id"
 
 __all__ = ["QdrantVectorIndex", "VectorIndexError"]  # VectorIndexError re-exported from .common
 
@@ -74,7 +75,7 @@ class QdrantVectorIndex:
         if not ids:
             return
         points = [self._m.PointStruct(id=_point_id(cid), vector=list(vector),
-                                      payload={**dict(meta), "_cid": cid})
+                                      payload={**dict(meta), _CHUNK_ID_FIELD: cid})
                   for cid, vector, meta in zip(ids, vectors, metas, strict=True)]
         self._client.upsert(self._collection, points=points)
 
@@ -88,14 +89,14 @@ class QdrantVectorIndex:
         hits = self._client.query_points(
             self._collection, query=list(vector), limit=k,
             query_filter=self._to_filter(where), with_payload=True).points
-        return [(hit.payload["_cid"], max(0.0, min(1.0, hit.score))) for hit in hits]
+        return [(hit.payload[_CHUNK_ID_FIELD], max(0.0, min(1.0, hit.score))) for hit in hits]
 
     def delete(self, ids: Sequence[str]) -> None:
         if not ids:
             return
         self._client.delete(self._collection, points_selector=self._m.FilterSelector(
             filter=self._m.Filter(must=[self._m.FieldCondition(
-                key="_cid", match=self._m.MatchAny(any=list(ids)))])))
+                key=_CHUNK_ID_FIELD, match=self._m.MatchAny(any=list(ids)))])))
 
     def count(self) -> int:
         return int(self._client.count(self._collection).count)
@@ -106,7 +107,7 @@ class QdrantVectorIndex:
         while True:
             points, offset = self._client.scroll(
                 self._collection, limit=256, offset=offset, with_payload=True, with_vectors=False)
-            found.update(point.payload["_cid"] for point in points)
+            found.update(point.payload[_CHUNK_ID_FIELD] for point in points)
             if offset is None:
                 return found
 
@@ -134,7 +135,13 @@ class QdrantVectorIndex:
         return self._m.Filter(must=must or None, must_not=must_not or None)
 
     def _condition(self, predicate: Predicate) -> Any:
-        models, field = self._m, predicate.field
+        # "id" is the port's canonical name for the chunk id -- it is the real column the LanceDB
+        # driver filters on, so a caller writing a portable filter uses it. Here the chunk id lives
+        # in the payload under the reserved `_cid` key (a Qdrant point id must be an int or UUID),
+        # so the name is translated. Without this, `Predicate("id", EQ, ...)` matched nothing on
+        # Qdrant and everything it should have excluded came back.
+        models = self._m
+        field = _CHUNK_ID_FIELD if predicate.field == "id" else predicate.field
         if predicate.op in (FilterOp.EQ, FilterOp.NE):
             return models.FieldCondition(key=field, match=models.MatchValue(value=predicate.value))
         if predicate.op is FilterOp.IN:

@@ -76,11 +76,38 @@ class TestUpsertIsOneTransaction:
         index.delete(["a"])
         assert index.count() == 1
 
-    def test_metadata_filter(self, tmp_path: Path) -> None:
+    def test_id_filter(self, tmp_path: Path) -> None:
+        # Named for what it actually does. It was called test_metadata_filter while only ever
+        # filtering on the real `id` column, so it passed while metadata filtering was broken.
         index = _index(tmp_path)
         index.upsert(["a", "b"], [[1, 0, 0], [1, 0, 0]], [{}, {}])
         results = index.search([1, 0, 0], k=5, where=(Predicate("id", FilterOp.EQ, "b"),))
         assert [chunk_id for chunk_id, _ in results] == ["b"]
+
+    def test_a_metadata_filter_is_refused_at_the_boundary(self, tmp_path: Path) -> None:
+        """Regression: a predicate on a metadata key compiled to a nonexistent column, and LanceDB
+        failed at *query* time with a raw engine error. The port requires a driver that cannot
+        honour a predicate to refuse it at the boundary."""
+        index = _index(tmp_path)
+        index.upsert(["a", "b"], [[1, 0, 0], [1, 0, 0]],
+                     [{"document_id": "d1"}, {"document_id": "d2"}])
+        with pytest.raises(VectorIndexError, match="cannot filter on"):
+            index.search([1, 0, 0], k=5, where=(Predicate("document_id", FilterOp.EQ, "d1"),))
+
+    def test_the_refusal_names_the_driver_that_can(self, tmp_path: Path) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{"lang": "en"}])
+        with pytest.raises(VectorIndexError, match="qdrant"):
+            index.search([1, 0, 0], k=5, where=(Predicate("lang", FilterOp.EQ, "en"),))
+
+    def test_a_mixed_filter_is_refused_whole(self, tmp_path: Path) -> None:
+        # An `id` predicate alongside a metadata one must not quietly apply only the half that
+        # compiles -- that would silently widen the result set.
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{"lang": "en"}])
+        with pytest.raises(VectorIndexError, match=r"cannot filter on \['lang'\]"):
+            index.search([1, 0, 0], k=5, where=(Predicate("id", FilterOp.EQ, "a"),
+                                                Predicate("lang", FilterOp.EQ, "en")))
 
     def test_search_empty_index(self, tmp_path: Path) -> None:
         assert _index(tmp_path).search([1, 0, 0], k=5) == []

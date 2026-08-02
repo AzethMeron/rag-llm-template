@@ -37,6 +37,33 @@ small table *less* than not having it would have."""
 __all__ = ["LanceVectorIndex", "VectorIndexError"]  # VectorIndexError re-exported from .common
 
 
+_FILTERABLE_FIELDS = frozenset({"id"})
+"""The only real columns this table has, besides the vector itself. Metadata lives in one opaque
+JSON string (``meta``), so there is nothing for a predicate on a metadata key to resolve against."""
+
+
+def _supported(where: Filter) -> Filter:
+    """``where``, or a structured refusal — at the boundary, as :class:`VectorIndex` requires.
+
+    A predicate on a metadata key used to compile to a column this table does not have, and
+    LanceDB then failed at query time with a raw engine error about an unknown field. Refusing
+    here says what is actually wrong and what to do about it. Qdrant *can* filter on metadata (it
+    stores each key as a payload field), so this is a genuine capability difference between the
+    drivers — made explicit rather than discovered mid-query.
+
+    Not fixable by storing metadata as columns: which keys exist varies per record, and LanceDB
+    needs a fixed schema at table creation. LanceDB also offers no JSON-path filter to reach into
+    the ``meta`` string (checked directly: ``json_extract``/``get_json_object`` are unavailable).
+    """
+    unsupported = sorted({p.field for p in where if p.field not in _FILTERABLE_FIELDS})
+    if unsupported:
+        raise VectorIndexError(
+            f"the LanceDB vector index cannot filter on {unsupported}: metadata is stored as one "
+            f"opaque JSON column, so only {sorted(_FILTERABLE_FIELDS)} can be filtered. Use the "
+            f"'qdrant' driver, which stores each metadata key as a filterable payload field.")
+    return where
+
+
 def _ivf_partitions(row_count: int) -> int:
     """The standard IVF heuristic: ``~sqrt(n)`` partitions, so each holds ``~sqrt(n)`` vectors.
     One home for it, because the default ``nprobes`` is a fraction of what ``create_index``
@@ -119,7 +146,7 @@ class LanceVectorIndex:
                 f"the query vector has dimension {len(vector)}, but the index is {self._dim}-d")
         builder = (self._table.search(list(vector)).metric(self._metric).limit(k)
                    .nprobes(self.search_nprobes(row_count)))
-        predicate = to_sql(where)
+        predicate = to_sql(_supported(where))
         if predicate:
             builder = builder.where(predicate)
         return [(row["id"], _distance_to_score(row["_distance"], self._metric))
