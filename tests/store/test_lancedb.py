@@ -197,6 +197,76 @@ class TestCreateIndex:
             index.create_index()
 
 
+class TestSearchNprobes:
+    """Regression for the silent recall drop the ANN index introduced: search() built its query
+    without ever setting nprobes, so every query used LanceDB's small fixed default -- under 1% of
+    the ~2,650 partitions a 7.1M-row table gets."""
+
+    def test_search_sets_nprobes_on_the_query(self, tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index(tmp_path)
+        index.upsert(["a"], [[1, 0, 0]], [{}])
+        seen: list[int] = []
+        build = index._table.search
+
+        def spy(*args: object, **kwargs: object) -> object:
+            builder = build(*args, **kwargs)
+            set_nprobes = builder.nprobes
+            monkeypatch.setattr(builder, "nprobes",
+                                lambda value: (seen.append(value), set_nprobes(value))[1])
+            return builder
+
+        monkeypatch.setattr(index._table, "search", spy)
+        index.search([1, 0, 0], k=1)
+        assert seen == [index.search_nprobes(1)]  # 1 row -> 1 partition -> the floor
+
+    @pytest.mark.parametrize(("rows", "expected"), [
+        (1, 20),            # 1 partition; the floor keeps it at LanceDB's own default
+        (10_000, 20),       # 100 partitions -> 5% = 5, still floored
+        (1_000_000, 50),    # 1,000 partitions -> 5%
+        (7_100_000, 134),   # legal_procurement's real scale: ~2,664 partitions -> 5%
+    ])
+    def test_default_scales_with_the_partition_count(self, tmp_path: Path, rows: int,
+                                                     expected: int) -> None:
+        assert _index(tmp_path).search_nprobes(rows) == expected
+
+    def test_configured_nprobes_wins(self, tmp_path: Path) -> None:
+        index = LanceVectorIndex(str(tmp_path / "v"), dim=3, nprobes=7)
+        assert index.search_nprobes(7_100_000) == 7
+
+    def test_nprobes_must_be_positive(self, tmp_path: Path) -> None:
+        with pytest.raises(VectorIndexError, match="nprobes must be >= 1"):
+            LanceVectorIndex(str(tmp_path / "v"), dim=3, nprobes=0)
+
+    def test_probing_more_partitions_recovers_recall(self, tmp_path: Path) -> None:
+        """The behavioural half: over one real IVF index, the default nprobes finds neighbours a
+        single-partition probe misses. Both readers open the *same* on-disk table, so the k-means
+        training is shared and the only variable is how many partitions each query probes."""
+        import numpy as np
+
+        rng = np.random.default_rng(20260802)
+        dim, rows = 16, 600
+        vectors = rng.random((rows, dim), dtype=np.float32)
+        path = str(tmp_path / "recall.lance")
+        writer = LanceVectorIndex(path, dim=dim)
+        writer.upsert([f"c{i}" for i in range(rows)], vectors.tolist(), [{} for _ in range(rows)])
+        writer.create_index()  # sqrt(600) -> 24 partitions
+
+        queries = rng.random((40, dim), dtype=np.float32)
+        unit = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+        exact = [f"c{i}" for i in
+                 (unit @ (queries / np.linalg.norm(queries, axis=1, keepdims=True)).T).argmax(0)]
+
+        def recall(index: LanceVectorIndex) -> float:
+            hits = sum(index.search(q.tolist(), k=1)[0][0] == want
+                       for q, want in zip(queries, exact, strict=True))
+            return hits / len(queries)
+
+        stingy = recall(LanceVectorIndex(path, dim=dim, nprobes=1))
+        default = recall(LanceVectorIndex(path, dim=dim))
+        assert default > stingy and default >= 0.9
+
+
 class TestConfig:
     def test_from_config(self, tmp_path: Path) -> None:
         index = LanceVectorIndex.from_config({"path": str(tmp_path / "v"), "dim": 4})
@@ -205,6 +275,12 @@ class TestConfig:
     def test_from_config_needs_path(self) -> None:
         with pytest.raises(VectorIndexError, match="needs a 'path'"):
             LanceVectorIndex.from_config({"dim": 4})
+
+    def test_from_config_reads_nprobes(self, tmp_path: Path) -> None:
+        index = LanceVectorIndex.from_config({"path": str(tmp_path / "v"), "dim": 4,
+                                              "nprobes": 64})
+        assert index.search_nprobes(7_100_000) == 64
+        assert "nprobes" in LanceVectorIndex.CONFIG_KEYS  # else load_storage would refuse the key
 
     def test_close_is_a_noop(self, tmp_path: Path) -> None:
         _index(tmp_path).close()

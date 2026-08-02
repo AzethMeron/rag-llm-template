@@ -239,7 +239,7 @@ directory, so a config is portable.
 | Table | Driver (built-in) | Key options |
 |---|---|---|
 | `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only`, `schema_sql` (the external data source is `read_only = true`; `schema_sql` initialises the framework's own writable store and is refused on a read-only binding). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
-| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
+| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric`, `nprobes` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
 | `[pairings]` | `sqlite` \| `duckdb` | `path`, `tokenizer` (sqlite only; defaults to `unicode61`). The reference memory: one row per `(source, target, context)` pairing, plus its FTS5 BM25 search index, **co-located in one database** — a hit's id, display text, and metadata all resolve through this one store. Give it a `path` to keep the corpus on disk (required for a large corpus and for build-once reuse); with no `path` it is in-memory, the default for small corpora and tests. Swapping `sqlite`↔`duckdb` is a one-line edit; both pass the same conformance suite. The sqlite driver is WAL (a concurrent reader is never blocked by a writer's in-flight transaction) with a 5s busy-timeout for the rest. |
 | `[run]` | `sqlite` | `path` (default `:memory:`), `synchronous` (`FULL` \| `NORMAL`; default `FULL` = fsync every commit). The record catalogue + append-only result history a run reads/writes while it executes (WAL, busy-timeout, foreign-key-enforced). |
 | `[lexicon]` | `sqlite` | `path` (default `:memory:`). Established terminology (term → rendering); usually co-located in the same file as `[pairings]` as its own table. WAL + busy-timeout, same as `[pairings]`. |
@@ -247,6 +247,13 @@ directory, so a config is portable.
 
 Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a
 third-party driver — resolved through the registry, no framework change.
+
+**`nprobes` (lancedb).** How many IVF partitions a query probes once `tools/build_vector_index.sh`
+has built an ANN index. Leave it unset and it scales with the table (5% of the `~sqrt(rows)`
+partitions the index build creates, never below 20), trading query latency for recall the same way
+at every size. Set it explicitly to move along that trade — and you **must** set it if you built
+the index with an explicit `--num-partitions`, since the default assumes the `sqrt` heuristic both
+sides share. Without an index the setting is inert: search is exact.
 
 Three database roles are kept apart: the framework's own reference memory (`[pairings]`/
 `[lexicon]`) and run state (`[run]`), and the external, read-only task data source (`[sql]` with
