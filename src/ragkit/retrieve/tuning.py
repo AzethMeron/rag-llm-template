@@ -28,6 +28,8 @@ from ragkit.core.config import (
     reject_unknown,
 )
 
+from .rerank import SCORE_SCALES
+
 _KINDS = frozenset({"lexical", "dense", "hybrid"})
 
 _HYBRID_ONLY = frozenset({"hybrid"})
@@ -45,6 +47,7 @@ _APPLICABILITY: tuple[tuple[str, str, frozenset[str], str], ...] = (
     ("[retrieval.dense]", "model", _EMBEDDING_KINDS, "only the dense and hybrid stacks embed"),
     ("[retrieval.rerank]", "enabled", _HYBRID_ONLY, _RERANK_NOTE),
     ("[retrieval.rerank]", "model", _HYBRID_ONLY, _RERANK_NOTE),
+    ("[retrieval.rerank]", "score_scale", _HYBRID_ONLY, _RERANK_NOTE),
 )
 """Which ``kind``s each tunable actually reaches. Only the hybrid stack fuses, so only it has a
 candidate pool, per-arm floors, MMR, and a rerank stage; a key outside its kind's column would be
@@ -65,6 +68,7 @@ class RetrievalSettings:
     embedding_model: str = ""
     rerank_enabled: bool = False
     rerank_model: str = ""
+    rerank_score_scale: str = "logit"
 
     def __post_init__(self) -> None:
         if self.kind not in _KINDS:
@@ -85,6 +89,9 @@ class RetrievalSettings:
                              f"never embeds; use kind='dense' or 'hybrid'")
         if self.rerank_enabled and not self.rerank_model:
             raise ValueError("[retrieval.rerank].enabled is true but no model is set")
+        if self.rerank_score_scale not in SCORE_SCALES:
+            raise ValueError(f"[retrieval.rerank].score_scale must be one of "
+                             f"{sorted(SCORE_SCALES)}, got {self.rerank_score_scale!r}")
         # Only the hybrid stack builds the fused pool a reranker re-scores, so an enabled reranker
         # under any other kind would be assembled, never called, and never missed -- exactly the
         # silent degradation this project forbids. Refuse it here rather than at query time.
@@ -130,7 +137,7 @@ def load_retrieval(path: Path) -> RetrievalSettings:
                              label="[retrieval.lexical]", path=path)
     dense = reject_unknown(section.get("dense", {}), {"model", "min_score"},
                            label="[retrieval.dense]", path=path)
-    rerank = reject_unknown(section.get("rerank", {}), {"enabled", "model"},
+    rerank = reject_unknown(section.get("rerank", {}), {"enabled", "model", "score_scale"},
                             label="[retrieval.rerank]", path=path)
     try:
         settings = RetrievalSettings(
@@ -148,7 +155,9 @@ def load_retrieval(path: Path) -> RetrievalSettings:
             rerank_enabled=read_bool(rerank, "enabled", _DEFAULTS.rerank_enabled,
                                      label="[retrieval.rerank]", path=path),
             rerank_model=read_string(rerank, "model", _DEFAULTS.rerank_model,
-                                     label="[retrieval.rerank]", path=path))
+                                     label="[retrieval.rerank]", path=path),
+            rerank_score_scale=read_string(rerank, "score_scale", _DEFAULTS.rerank_score_scale,
+                                           label="[retrieval.rerank]", path=path))
     except ValueError as exc:
         raise ConfigError(f"[retrieval]: {exc}", path=path) from exc
     # After construction, so `kind` is already known to be one of the three -- an applicability

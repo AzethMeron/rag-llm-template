@@ -340,6 +340,14 @@ floors.
 | `[retrieval.dense]` | `min_score` | float in `[0,1]` | `0.55` | `hybrid` | Dense-arm fusion floor. |
 | `[retrieval.rerank]` | `enabled` | bool | `false` | `hybrid` | Add a cross-encoder rerank stage. |
 | `[retrieval.rerank]` | `model` | string | required if enabled | `hybrid` | Rerank model (`models.toml`, `kind="rerank"`). |
+| `[retrieval.rerank]` | `score_scale` | `"logit" \| "unit"` | `"logit"` | `hybrid` | What the endpoint's `relevance_score` means (see below). |
+
+**`score_scale`.** Rerank endpoints do not agree on a scale and nothing in the response says which
+one you got. llama.cpp `--reranking` returns an unbounded cross-encoder **logit** (the default,
+squashed with a sigmoid); Jina, Cohere and most TEI deployments return a score already in `[0, 1]`
+(`"unit"`, passed through). Getting this wrong is silent rather than loud — squashing an
+already-`[0, 1]` score maps it into `[0.5, 0.731]`, so the ranking still looks right while every
+floor below `0.5` stops meaning anything.
 
 **A key outside its kind's "Applies to" column is refused, not ignored.** Only the hybrid stack
 fuses two arms, so only it has a candidate pool, per-arm floors, MMR, and a rerank stage. Setting

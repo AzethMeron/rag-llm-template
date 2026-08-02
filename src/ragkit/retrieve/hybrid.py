@@ -7,8 +7,9 @@ dense (semantic) — behind one Retriever, rather than forking either. Per query
    scores are on different scales, so each keeps its own floor).
 2. The two rankings are fused with Reciprocal Rank Fusion — a candidate both arms agree on outranks
    one only one arm found, with no need to calibrate incomparable scores.
-3. If a reranker is configured, the fused pool is re-scored by the cross-encoder (its logit
-   squashed to ``[0, 1]``). Without one, the fused score is divided by ``best_possible_rrf`` to a
+3. If a reranker is configured, the fused pool is re-scored by the cross-encoder (which returns
+   ``[0, 1]`` already — see :mod:`.rerank`). Without one, the fused score is divided by
+   ``best_possible_rrf`` to a
    fixed, query-independent ``[0, 1]`` scale — so a floor keeps a stable meaning rather than
    becoming a per-query relative rank.
 4. Candidates below the caller's ``min_score`` (on that final relevance) are dropped.
@@ -31,7 +32,7 @@ from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Retrieved, Retriever
 
 from .fusion import best_possible_rrf, mmr_order, rrf
-from .rerank import RerankClient, sigmoid
+from .rerank import RerankClient
 from .retrievers import trigram_similarity
 
 _ARM_COUNT = 2
@@ -105,13 +106,16 @@ class HybridRetriever:
     def _relevance(self, query: str, candidates: list[str], fused: dict[str, float],
                    by_id: dict[str, Retrieved]) -> dict[str, float]:
         """Final ``[0, 1]`` relevance per candidate, on a scale that does not shift per query. With
-        a reranker: the sigmoid of the cross-encoder's raw score. Without one: the fused score over
-        ``best_possible_rrf`` — a fixed denominator, so a floor means the same thing for every
-        query, and deliberately not min-max over the query's own pool (which would score the best of
-        three terrible candidates 1.0 and the worst of three excellent ones 0.0)."""
+        a reranker: its relevance verbatim — the ``RerankClient`` normalises to ``[0, 1]`` itself,
+        knowing whether its endpoint speaks logits or unit scores (squashing here as well mapped an
+        already-``[0, 1]`` Jina/Cohere score into ``[0.5, 0.731]``, leaving ranking intact but every
+        floor meaningless). Without one: the fused score over ``best_possible_rrf`` — a fixed
+        denominator, so a floor means the same thing for every query, and deliberately not min-max
+        over the query's own pool (which would score the best of three terrible candidates 1.0 and
+        the worst of three excellent ones 0.0)."""
         if self._reranker is not None:
             scored = self._reranker.rerank(query, [by_id[cid].text for cid in candidates])
-            return {candidates[index]: sigmoid(score) for index, score in scored}
+            return {candidates[index]: score for index, score in scored}
         ceiling = best_possible_rrf(_ARM_COUNT)
         return {cid: min(1.0, fused[cid] / ceiling) for cid in candidates}
 

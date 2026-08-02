@@ -78,6 +78,17 @@ class TestLoad:
         with pytest.raises(ConfigError, match=wanted):
             load_retrieval(_write(tmp_path, text))
 
+    def test_an_unknown_rerank_score_scale_is_refused(self, tmp_path: Path) -> None:
+        text = ("[retrieval]\nkind = \"hybrid\"\n[retrieval.dense]\nmodel = \"e\"\n"
+                "[retrieval.rerank]\nenabled = true\nmodel = \"r\"\nscore_scale = \"percent\"\n")
+        with pytest.raises(ConfigError, match="score_scale must be one of"):
+            load_retrieval(_write(tmp_path, text))
+
+    def test_rerank_score_scale_round_trips(self, tmp_path: Path) -> None:
+        text = ("[retrieval]\nkind = \"hybrid\"\n[retrieval.dense]\nmodel = \"e\"\n"
+                "[retrieval.rerank]\nenabled = true\nmodel = \"r\"\nscore_scale = \"unit\"\n")
+        assert load_retrieval(_write(tmp_path, text)).rerank_score_scale == "unit"
+
     def test_dense_min_score_refused_for_the_dense_kind(self, tmp_path: Path) -> None:
         # A fusion-input floor, not a stack floor: even the arm's *own* kind cannot use it.
         text = "[retrieval]\nkind = \"dense\"\n[retrieval.dense]\nmodel = \"e\"\nmin_score = 0.6\n"
