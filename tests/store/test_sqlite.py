@@ -77,8 +77,20 @@ class TestIntrospector:
         # AUTOINCREMENT creates sqlite_sequence; it must not appear in the schema.
         assert "sqlite_sequence" not in SqliteIntrospector(str(db)).schema()
 
-    def test_from_config(self) -> None:
-        assert SqliteIntrospector.from_config({"path": ":memory:"}).schema() == {}
+    def test_from_config(self, tmp_path: Path) -> None:
+        db = tmp_path / "d.db"
+        SqliteStore(str(db), schema_sql=SCHEMA).close()
+        assert "customers" in SqliteIntrospector.from_config({"path": str(db)}).schema()
+
+    def test_memory_path_is_refused(self) -> None:
+        """A :memory: introspector opens its own empty per-connection database, so it would
+        silently return {} -- the same silent-empty-schema failure the missing-file guard refuses.
+        It is refused loudly for the same reason (this is also the from_config default, so an
+        [introspector] section with no path is refused rather than silently empty)."""
+        with pytest.raises(SqlStoreError, match="per-connection"):
+            SqliteIntrospector(":memory:").schema()
+        with pytest.raises(SqlStoreError, match="per-connection"):
+            SqliteIntrospector.from_config({}).schema()
 
     def test_a_missing_database_raises_instead_of_being_created(self, tmp_path: Path) -> None:
         """Regression: `sqlite3.connect` creates the database it cannot find, so a typo'd

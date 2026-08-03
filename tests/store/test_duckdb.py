@@ -66,6 +66,10 @@ class TestIntrospector:
         introspector = DuckDBIntrospector.from_config({"path": path})
         assert "singer" in introspector.schema()
 
-    def test_in_memory_schema_is_empty(self) -> None:
-        # A fresh :memory: connection has no tables -- exercises the :memory: path.
-        assert DuckDBIntrospector(":memory:").schema() == {}
+    def test_memory_path_is_refused(self) -> None:
+        # A :memory: introspector opens its own empty per-connection database, so it would silently
+        # return {}; refused loudly, matching the SQLite introspector and the missing-file guard.
+        with pytest.raises(SqlStoreError, match="per-connection"):
+            DuckDBIntrospector(":memory:").schema()
+        with pytest.raises(SqlStoreError, match="per-connection"):
+            DuckDBIntrospector.from_config({}).schema()

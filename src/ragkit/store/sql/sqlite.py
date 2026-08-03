@@ -38,6 +38,16 @@ class SqlStoreError(RagkitError):
     def schema_on_read_only(cls) -> SqlStoreError:
         return cls("a read_only store cannot run schema_sql")
 
+    @classmethod
+    def memory_introspection(cls) -> SqlStoreError:
+        # A ``:memory:`` database is per-connection and ephemeral, so an introspector -- which opens
+        # its own connection to read the schema -- sees a *different*, empty in-memory database, not
+        # whatever a store elsewhere in the process wrote. It would silently return ``{}`` (the same
+        # silent-empty-schema failure the missing-file guard already refuses), so it is refused too.
+        return cls("a schema introspector cannot read a ':memory:' database: it is per-connection "
+                   "and ephemeral, so the introspector's own connection sees an empty database. "
+                   "Point [introspector].path at the real database file to introspect.")
+
 
 def _connect_read_only(path: str) -> sqlite3.Connection:
     """A read-only connection, which is also the only way a missing file raises rather than being
@@ -126,8 +136,11 @@ class SqliteIntrospector:
         ``sqlite3.connect`` creates the database it cannot find, so a typo'd ``[introspector].path``
         used to produce an empty file and return ``{}`` — no error anywhere, and NL->SQL then
         generated against an empty schema. The DuckDB introspector already failed loudly on the
-        same misconfiguration; the two now agree.
+        same misconfiguration; the two now agree. A ``:memory:`` path is refused for the same
+        silent-empty reason (see :meth:`SqlStoreError.memory_introspection`).
         """
+        if self._path == ":memory:":
+            raise SqlStoreError.memory_introspection()
         conn = _connect_read_only(self._path)
         conn.row_factory = sqlite3.Row
         try:

@@ -110,12 +110,15 @@ class DuckDBIntrospector:
 
     def schema(self) -> Mapping[str, Sequence[tuple[str, str]]]:
         duckdb = _require_duckdb()
+        # A :memory: database is per-connection, so this introspector's own connection would see an
+        # empty database, not the store's -- refused for that silent-empty reason, matching the
+        # SQLite introspector (SqlStoreError.memory_introspection).
+        if self._path == ":memory:":
+            raise SqlStoreError.memory_introspection()
         # Introspection only reads. Open the file read-only so it is compatible with a read-only
         # store already holding the same database: DuckDB refuses two connections to one file with
-        # different read_only settings. (:memory: cannot open read-only; it is per-connection.)
-        in_memory = self._path == ":memory:"
-        conn = duckdb.connect(":memory:" if in_memory else str(Path(self._path).resolve()),
-                              read_only=not in_memory)
+        # different read_only settings.
+        conn = duckdb.connect(str(Path(self._path).resolve()), read_only=True)
         try:
             tables = [row[0] for row in conn.execute(
                 "SELECT table_name FROM information_schema.tables "
