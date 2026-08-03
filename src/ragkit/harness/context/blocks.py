@@ -161,6 +161,10 @@ class EstablishedBlock:
     CONFIG_KEYS = frozenset({"before", "after", "heading"})
 
     def __init__(self, before: int = 3, after: int = 2, heading: str = _DEFAULT_HEADING) -> None:
+        # Same guard as NeighboursBlock: a negative window would otherwise fall through the
+        # `limit <= 0` path in _meta_strings and silently drop the established context.
+        if before < 0 or after < 0:
+            raise ContextBlockError("established block: before/after must be >= 0")
         self._before = before
         self._after = after
         self._heading = heading
@@ -298,7 +302,15 @@ class SqlRowsBlock:
                 "a 'sql_rows' context block is configured but no sql_store was wired into the run")
         if not isinstance(store, SqlStore):
             raise ContextBlockError("the wired 'sql_store' does not satisfy the SqlStore port")
-        params = [record.meta.get(key) for key in self._param_keys]
+        missing = [key for key in self._param_keys if key not in record.meta]
+        if missing:
+            # A declared param bound to SQL NULL changes the query's meaning (``= NULL`` matches
+            # nothing), so the block would silently render no rows -- indistinguishable from a
+            # genuine no-match. A missing bind is a configuration/data error, not an empty section.
+            raise ContextBlockError(
+                f"sql_rows block: record {record.record_id!r} is missing param_key(s) {missing} "
+                f"needed by the query; a missing bind would silently match nothing")
+        params = [record.meta[key] for key in self._param_keys]
         # The limit is applied by the database, not by slicing the result in Python: the old form
         # fetched every matching row across the port and then discarded all but `limit`, so a
         # broad query materialised its whole result set to show twenty lines. Wrapping in a

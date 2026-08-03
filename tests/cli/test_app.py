@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ragkit.core.config import ConfigError
+from ragkit.core.errors import RagkitError
 from ragkit.core.records import Record, Status
 from ragkit.harness import run_batch
 from ragkit.llm.pool import ModelPoolError
@@ -91,6 +92,17 @@ class TestAssembleAndRun:
         assembled = assemble(config, client_factory=scripted_factory())
         assert isinstance(assembled.retriever, StandaloneRetriever)
         assert assembled.retriever.retrieve("q", k=1)[0].text == "hi:q"
+
+    def test_unresolvable_retriever_name_is_refused_not_silently_dropped(
+            self, tmp_path: Path) -> None:
+        # A retriever name that is neither 'lexical' nor a resolvable dotted-path/entry-point, with
+        # no [reference].file, used to silently return None (harness wired with no retriever). It is
+        # now resolved through the registry, which raises a clear error naming the unknown name.
+        recipe = ('[task]\noutput_schema = "json_field"\n'
+                  '[reference]\nretriever = "no_such_retriever"\n')
+        config = write_config(tmp_path / "cfg", recipe=recipe)
+        with pytest.raises(RagkitError, match="no_such_retriever"):
+            assemble(config, client_factory=scripted_factory())
 
     def test_substitutions_fill_persona_instructions(self, tmp_path: Path) -> None:
         personas = ('[[persona]]\nid="p"\nkind="producer"\nmodel="prod"\n'

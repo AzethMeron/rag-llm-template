@@ -22,6 +22,7 @@ from ragkit.harness.context import ContextAssembler, ContextBlockError, LiteralB
 from ragkit.harness.context.assembler import _PlacedBlock
 from ragkit.harness.context.blocks import (
     CONTEXT_BLOCKS,
+    EstablishedBlock,
     NeighboursBlock,
     RetrievedBlock,
     SqlRowsBlock,
@@ -200,6 +201,27 @@ class TestBlockConfig:
     def test_sql_rows_wired_wrong_type(self) -> None:
         with pytest.raises(ContextBlockError, match="does not satisfy the SqlStore"):
             SqlRowsBlock(query="x").render(_rec(), {"sql_store": object()})
+
+    def test_sql_rows_missing_param_key_is_refused_not_bound_null(self) -> None:
+        # A declared param_key absent from record.meta would bind SQL NULL (`= NULL` matches
+        # nothing), silently rendering no rows -- indistinguishable from a genuine no-match. Refuse.
+        class Store:
+            read_only = True
+
+            def query(self, sql: str, params: object = ()) -> list[dict]:  # pragma: no cover
+                raise AssertionError("must not query with a missing bind")
+
+            def execute(self, sql: str, params: object = ()) -> None:  # pragma: no cover
+                raise AssertionError
+        block = SqlRowsBlock(query="select * from t where id = ?", param_keys=("id",))
+        with pytest.raises(ContextBlockError, match="missing param_key"):
+            block.render(_rec(), {"sql_store": Store()})  # _rec() has no 'id' in meta
+
+    def test_established_negative_window_is_refused(self) -> None:
+        # Same guard its sibling NeighboursBlock has; a negative window would otherwise silently
+        # drop the established context via the `limit <= 0` path.
+        with pytest.raises(ContextBlockError, match="before/after must be >= 0"):
+            EstablishedBlock(before=-1)
 
 
 class TestAssemblerTrimBranches:

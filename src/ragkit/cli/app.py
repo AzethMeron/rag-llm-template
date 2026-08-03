@@ -213,7 +213,13 @@ def _build_reference(recipe: _Recipe, config_dir: Path, storage: Storage) -> Ret
     a pairing's ``source``/``target`` are read from). A custom retriever that must read *our* corpus
     is corpus-stateful — inject it via ``assemble(retriever=...)`` instead."""
     spec = recipe.reference_retriever
-    if ":" in spec or spec in RETRIEVERS.available():
+    # A custom retriever -- named by dotted path, by a registered name, or (with no corpus file to
+    # import) by an entry-point name -- is resolved through the registry, which raises a clear
+    # RegistryError on a genuinely unknown name. The old `spec in available()` gate missed
+    # entry-point names (they resolve lazily in create(), not in available()), so an unresolvable
+    # name with no [reference].file silently returned None and left the harness with no retriever.
+    if spec != "lexical" and (":" in spec or spec in RETRIEVERS.available()
+                              or not recipe.reference_file):
         return RETRIEVERS.create(spec, recipe.reference_options)
     if not recipe.reference_file:
         return None
