@@ -16,11 +16,9 @@ from typing import Any
 import httpx
 
 from ragkit.core.errors import RagkitError
+from ragkit.llm.http import is_transient_http_error
 
 _PLACEHOLDER = re.compile(r"\[\[\d+\]\]")
-# Transient failures worth retrying: a timed-out or dropped connection, or a server-side/rate-limit
-# status. A 4xx (bad request) or a malformed reply is deterministic and is raised at once.
-_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 
 DEFAULT_EMBEDDING_MIN_SCORE = 0.55
 """A sensible starting cosine floor. On a different scale from the lexical floor: embedding
@@ -120,7 +118,7 @@ class EmbeddingClient:
             except (KeyError, ValueError) as exc:
                 raise EmbeddingError(f"malformed embedding response: {exc}", url=self._url) from exc
             except httpx.HTTPError as exc:
-                if attempt >= self._max_retries or not _is_transient(exc):
+                if attempt >= self._max_retries or not is_transient_http_error(exc):
                     raise EmbeddingError(
                         f"embedding request failed after {attempt + 1} attempt(s): {exc}",
                         url=self._url) from exc
@@ -128,16 +126,32 @@ class EmbeddingClient:
         raise EmbeddingError("embedding retries exhausted", url=self._url)  # pragma: no cover
 
     def _request(self, chunk: list[str]) -> list[list[float]]:
+        """One batch's vectors, **in input order**, as the port promises.
+
+        Ordered by each item's ``index``, not by its position in the ``data`` array. The OpenAI
+        embeddings schema carries ``index`` precisely because array order is not guaranteed, and
+        llama.cpp, vLLM and TEI all emit it; taking array order on faith meant a reordering server
+        or proxy would pair every vector with the wrong text — search silently, subtly wrong, with
+        no error anywhere. The indices must be exactly ``range(len(chunk))``: a missing, repeated,
+        or out-of-range one is refused rather than papered over, because there is then no honest
+        way to say which text a vector belongs to.
+        """
         data = self._post_with_retry(chunk)
         if len(data) != len(chunk):
             raise EmbeddingError(
                 f"endpoint returned {len(data)} embeddings for {len(chunk)} inputs", url=self._url)
         try:
-            return [item["embedding"] for item in data]
-        except (KeyError, TypeError) as exc:
+            by_index = {int(item["index"]): item["embedding"] for item in data}
+        except (KeyError, TypeError, ValueError) as exc:
             raise EmbeddingError(
-                f"malformed embedding response, an item has no 'embedding': {exc}",
+                f"malformed embedding response, an item has no usable 'index'/'embedding': {exc}",
                 url=self._url) from exc
+        if by_index.keys() != set(range(len(chunk))):
+            raise EmbeddingError(
+                f"embedding response indices are not a permutation of 0..{len(chunk) - 1} "
+                f"(got {sorted(by_index)[:10]}); the vectors cannot be matched to their inputs",
+                url=self._url)
+        return [by_index[position] for position in range(len(chunk))]
 
     def close(self) -> None:
         if self._owns_client:
@@ -151,12 +165,6 @@ def dedup_embed(embedder: EmbeddingClient, texts: Sequence[str]) -> dict[str, Se
     persisted across batches — a rare cross-batch duplicate is simply re-embedded."""
     unique = list(dict.fromkeys(texts))
     return dict(zip(unique, embedder.embed(unique), strict=True))
-
-
-def _is_transient(exc: httpx.HTTPError) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in _TRANSIENT_STATUS
-    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
 
 
 def _require_numpy() -> Any:

@@ -145,6 +145,12 @@ above was a smaller controlled sample), same Qwen3-14B author:
 | `eval.py` (RAG: retrieve, then decide) | 0.528 | 0.645 | 897/1000 |
 | `reader_eval.py` (gold abstract given — directly comparable to PubMedQA) | 0.680 | 0.716 | 954/1000 |
 
+**Reproduced 2026-08-02**, after the deep-audit fixes (`.audit/2026-08-02-deep-audit.md`) touched
+the harness, the retrieval layer and the eval scaffolding: the same full 1000-question `eval.py`
+run scored **accuracy 0.530, answered_accuracy 0.645, decided 898/1000** — within one record of
+the line above. Recorded because that is the point of the number: the fixes changed no behaviour
+this measures.
+
 **Against the PubMedQA paper (Jin et al., 2019, EMNLP)** — `reader_eval.py`'s setup matches the
 paper's task exactly, so this comparison is apples-to-apples:
 
@@ -161,11 +167,12 @@ general-purpose model with no task-specific training.
 
 `eval.py`'s number is **not** comparable to the PubMedQA leaderboard for the same reason as the
 60-question table above: it makes the model retrieve the answer-bearing abstract among ~600k
-distractors before deciding, strictly harder than the paper's task. Caveat on this run: the
-substitute reviewer model standing in for a still-broken default (see `tools/fetch_models.sh`'s
-known `producer`/`reviewer` issue) frequently produced degenerate output during the
-faithfulness-review step and had to abstain, so the review/grounding gate wasn't operating at full
-strength.
+distractors before deciding, strictly harder than the paper's task. Caveat on this run: the small
+Qwen3-0.6B reviewer (see `config/models.toml` for why this recipe pairs a 14B author with a
+0.6B reviewer) frequently produced degenerate output during the faithfulness-review step and had
+to abstain, so the review/grounding gate wasn't operating at full strength. The harness handles
+that correctly — an unusable reviewer reply degrades the record to `PRODUCED`, never to a false
+`VERIFIED` — but the decision numbers above are effectively author-only.
 
 ### Enabling dense retrieval
 

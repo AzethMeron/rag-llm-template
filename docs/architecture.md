@@ -126,8 +126,10 @@ A fourth, smaller DB-native store, `LexiconStore` (established terminology — a
 mapping, a different shape and key than a pairing), is usually co-located in the same physical
 database file as `PairingStore` as its own table, though nothing requires that. Every port is
 resolved through its own registry and bound by `storage.toml` (`[sql]`, `[pairings]`, `[vector]`,
-`[run]`, `[lexicon]`); a `path` puts a store on disk, no `path` gives an in-memory store for tests
-and small corpora. A conformance suite runs every driver of every port — including an in-memory
+`[run]`, `[lexicon]`); a `path` puts a store on disk, and the persistence-critical stores
+(`[pairings]`, `[run]`, `[lexicon]`) require one — an explicit `path = ":memory:"` is the in-memory
+store for tests and small corpora, while a forgotten path is refused rather than silently ephemeral.
+A conformance suite runs every driver of every port — including an in-memory
 reference implementation — through identical operations, so a config-only driver swap (`sqlite`
 ↔ `duckdb` for `[pairings]`, say) is behaviourally proven, not just type-checked. A third party's
 own driver is selected the same way, by dotted path.

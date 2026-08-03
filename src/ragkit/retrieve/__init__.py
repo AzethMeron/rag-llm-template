@@ -13,8 +13,8 @@ from ragkit.core.registry import Registry
 from .embedding import DEFAULT_EMBEDDING_MIN_SCORE, EmbeddingClient, EmbeddingError
 from .fusion import RRF_K, best_possible_rrf, mmr_order, rrf
 from .hybrid import HybridError, HybridRetriever
-from .rerank import DEFAULT_RERANK_MIN_SCORE, RerankClient, RerankError, sigmoid
-from .retrievers import DenseRetriever, LexicalRetriever, trigram_similarity
+from .rerank import SCORE_SCALES, RerankClient, RerankError, sigmoid
+from .retrievers import DenseRetriever, LexicalRetriever, RetrieverError, trigram_similarity
 from .tuning import RetrievalSettings, load_retrieval
 
 RETRIEVERS: Registry[Retriever] = Registry(
@@ -23,8 +23,8 @@ RETRIEVERS: Registry[Retriever] = Registry(
 
 __all__ = [
     "RETRIEVERS", "RetrievalSettings", "load_retrieval",
-    "LexicalRetriever", "DenseRetriever", "HybridRetriever", "HybridError",
+    "LexicalRetriever", "DenseRetriever", "RetrieverError", "HybridRetriever", "HybridError",
     "EmbeddingClient", "EmbeddingError", "DEFAULT_EMBEDDING_MIN_SCORE",
-    "RerankClient", "RerankError", "DEFAULT_RERANK_MIN_SCORE", "sigmoid",
+    "RerankClient", "RerankError", "SCORE_SCALES", "sigmoid",
     "rrf", "mmr_order", "best_possible_rrf", "RRF_K", "trigram_similarity",
 ]

@@ -8,6 +8,8 @@ configuration. Depends on the ``llm`` and ``core`` layers, never on a concrete s
 """
 from __future__ import annotations
 
+from ragkit.core.rules import blocking
+
 from .agents import Attempt, Harness, Outcome, Review, learn_memory
 from .context import ContextAssembler, load_context
 from .memory import OutputMemory
@@ -15,7 +17,7 @@ from .roles import Leniency, Limits, Panel, Persona, load_panel
 from .rules import RuleSet
 from .runner import Progress, RunnerError, group_duplicates, run_batch
 from .schemas import OUTPUT_SCHEMAS, FormField, FormSchema, JsonFieldSchema
-from .validators import VALIDATORS, ValidatorPipeline, blocking, check_mechanical
+from .validators import VALIDATORS, ValidatorPipeline, check_mechanical
 
 __all__ = [
     # harness loop

@@ -158,33 +158,6 @@ class TestSeverityEval:
         assert pdm_eval.Report(()).exact_accuracy == 0.0
 
 
-class TestLoadGold:
-    def _write(self, tmp_path: Path, text: str) -> Path:
-        path = tmp_path / "gold.jsonl"
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def test_reads_rows(self, tmp_path: Path) -> None:
-        path = self._write(tmp_path, '{"record_id":"u1","severity":"urgent","rul":5}\n\n')
-        assert pdm_eval.load_gold(path) == {"u1": "urgent"}
-
-    def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(pdm_eval.EvalError, match="not found"):
-            pdm_eval.load_gold(tmp_path / "no.jsonl")
-
-    def test_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(pdm_eval.EvalError, match="invalid JSON"):
-            pdm_eval.load_gold(self._write(tmp_path, "{bad\n"))
-
-    def test_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(pdm_eval.EvalError, match="needs 'record_id'"):
-            pdm_eval.load_gold(self._write(tmp_path, '{"record_id":"u1"}\n'))
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        with pytest.raises(pdm_eval.EvalError, match="empty"):
-            pdm_eval.load_gold(self._write(tmp_path, "\n"))
-
-
 def _factory(decision: Mapping[str, object]) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -321,8 +294,8 @@ def _vector_factory(decision: Mapping[str, object]) -> Callable[[str, float], ht
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):
-            return httpx.Response(200, json={"data": [{"embedding": _embed(t)}
-                                                      for t in body["input"]]})
+            return httpx.Response(200, json={"data": [{"index": i, "embedding": _embed(t)}
+                                              for i, t in enumerate(body["input"])]})
         props = body.get("response_format", {}).get("json_schema", {}).get(
             "schema", {}).get("properties", {})
         content = (json.dumps({"acceptable": True, "issues": []}) if "acceptable" in props

@@ -1,6 +1,9 @@
 """Remaining branch coverage for the ingest layer: from_config paths and empty/edge inputs."""
 from __future__ import annotations
 
+import pytest
+
+from ragkit.core.config import ConfigError
 from ragkit.core.ports import Document
 from ragkit.ingest.chunk import CHUNKERS, FixedChunker, SentenceChunker, StructureChunker
 from ragkit.ingest.extract import HtmlExtractor, JsonlExtractor, MarkdownExtractor, TextExtractor
@@ -17,6 +20,17 @@ class TestFromConfig:
         assert FixedChunker.from_config({"size": 500, "overlap": 50}) is not None
         assert SentenceChunker.from_config({"target": 400}) is not None
         assert StructureChunker.from_config({"target": 300, "maximum": 900}) is not None
+
+    def test_mistyped_option_is_refused_not_coerced(self) -> None:
+        # from_config reads through the strict core.config helpers: a bool/float mistype is refused
+        # rather than silently coerced (true->1 char-pack, 3.7->3), and a non-string doc_id/field
+        # is refused rather than str()-stringified.
+        with pytest.raises(ConfigError, match="target"):
+            StructureChunker.from_config({"target": True})
+        with pytest.raises(ConfigError, match="target"):
+            SentenceChunker.from_config({"target": 3.7})
+        with pytest.raises(ConfigError, match="doc_id"):
+            TextExtractor.from_config({"doc_id": 5})
 
 
 class TestExtractEdges:

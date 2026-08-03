@@ -27,7 +27,7 @@ from ragkit.store import PAIRING_STORES, VECTOR_INDEXES
 from ragkit.store.pairings.sink import PairingSink
 from ragkit.store.run.sqlite import SqliteRunStore
 
-from .app import assemble
+from .app import CliError, assemble
 
 logger = logging.getLogger("ragkit.cli")
 
@@ -64,9 +64,30 @@ def _substitutions(pairs: list[str] | None) -> dict[str, str]:
     for pair in pairs or []:
         key, sep, value = pair.partition("=")
         if not sep:
-            raise SystemExit(f"--set expects key=value, got {pair!r}")
+            raise CliError(f"--set expects key=value, got {pair!r}")
+        if not key.strip():
+            # `--set =x` used to produce a substitution under the empty key, which matches no
+            # {placeholder} and so silently did nothing.
+            raise CliError(f"--set needs a non-empty key before '=', got {pair!r}")
         result[key] = value
     return result
+
+
+def _positive(value: str) -> int:
+    """An ``argparse`` type for a count that must be at least 1.
+
+    ``--limit -1`` used to reach ``records[:-1]``, quietly dropping the *last* record and running
+    everything else -- a silent wrong answer rather than an error. ``--concurrency 0`` reached
+    ``run_batch``'s own check, but only after the config had been assembled and a server
+    contacted. Both are caught here, by argparse, before any work starts.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {number}")
+    return number
 
 
 def _seed_memory(harness: Harness, store: RunStore) -> None:
@@ -124,7 +145,7 @@ def _writeback_vector(
     if args.vector_path is None:
         return None, None
     if not args.embedding_url:
-        raise SystemExit("writeback: --vector-path needs --embedding-url too")
+        raise CliError("writeback: --vector-path needs --embedding-url too")
     options: dict[str, object] = {"path": str(args.vector_path)}
     if args.vector_dim is not None:
         options["dim"] = args.vector_dim
@@ -163,9 +184,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-C", "--config", type=Path, required=True,
         help="the config directory (models/personas/rules/context/recipe .toml)")
     run_parser.add_argument("--run-db", type=Path, default=Path("work/run.db"))
-    run_parser.add_argument("--concurrency", type=int, default=2,
+    run_parser.add_argument("--concurrency", type=_positive, default=2,
                             help="records produced at once against the same pool")
-    run_parser.add_argument("--limit", type=int, help="stop after N records (for trials)")
+    run_parser.add_argument("--limit", type=_positive,
+                        help="stop after N records (for trials)")
     run_parser.add_argument("--set", action="append",
                             help="a key=value substitution for persona instructions (repeatable), "
                                  "e.g. --set source_language=English")

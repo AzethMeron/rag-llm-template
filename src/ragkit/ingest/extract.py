@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from html.parser import HTMLParser
 from typing import Any
 
+from ragkit.core.config import read_string
 from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Document, Extractor
 from ragkit.core.registry import Registry
@@ -40,7 +41,7 @@ class TextExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> TextExtractor:
-        return cls(doc_id=str(options.get("doc_id", "text")))
+        return cls(doc_id=read_string(dict(options), "doc_id", "text", label="text extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:
@@ -59,8 +60,9 @@ class JsonlExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> JsonlExtractor:
-        return cls(field=str(options.get("field", "text")),
-                   id_field=str(options.get("id_field", "")))
+        opts = dict(options)
+        return cls(field=read_string(opts, "field", "text", label="jsonl extractor"),
+                   id_field=read_string(opts, "id_field", "", label="jsonl extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:  # noqa: ARG002
@@ -74,13 +76,47 @@ class JsonlExtractor:
                 raise ExtractError(f"line {line_no}: invalid JSON: {exc}") from exc
             if not isinstance(record, dict) or self._field not in record:
                 raise ExtractError(f"line {line_no}: record has no {self._field!r} field")
-            doc_id = str(record[self._id_field]) if self._id_field else f"line-{line_no}"
-            yield Document(doc_id=doc_id, text=str(record[self._field]),
+            text = record[self._field]
+            # A document needs real text: a null/non-string field used to be str()'d into "None"
+            # (or "42", "['a']") and indexed as content. Refuse it, naming the line.
+            if not isinstance(text, str):
+                raise ExtractError(f"line {line_no}: {self._field!r} must be a string, "
+                                   f"got {type(text).__name__}")
+            if self._id_field:
+                if self._id_field not in record:
+                    # A structured error like every other failure in this module -- this used to
+                    # escape as a bare KeyError naming only the missing key.
+                    raise ExtractError(f"line {line_no}: record has no id field "
+                                       f"{self._id_field!r}")
+                if record[self._id_field] is None:
+                    raise ExtractError(f"line {line_no}: id field {self._id_field!r} is null")
+                doc_id = str(record[self._id_field])
+            else:
+                doc_id = f"line-{line_no}"
+            yield Document(doc_id=doc_id, text=text,
                            meta={k: v for k, v in record.items() if k != self._field})
 
 
+_HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+_BLOCK_TAGS = frozenset({
+    *_HEADINGS, "address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt",
+    "fieldset", "figcaption", "figure", "footer", "form", "header", "hr", "li", "main", "nav",
+    "ol", "p", "pre", "section", "table", "td", "th", "tr", "ul",
+})
+"""Tags that end a paragraph. Everything else (``b``, ``em``, ``a``, ``span``, ``code``, ...) is
+inline and must *not*, or ``<p>The <b>quick</b> brown fox</p>`` becomes three paragraphs."""
+
+
 class _HtmlText(HTMLParser):
-    """Collect visible text and the heading trail, dropping script/style content."""
+    """Collect visible text and the heading trail, dropping script/style content.
+
+    Text is accumulated into the current paragraph and flushed only at a block-level boundary.
+    Every text node used to be stripped and emitted separately, then joined with ``\\n\\n``, so
+    inline markup shredded a sentence into one "paragraph" per fragment *and* lost the spaces
+    between them (``The``, ``quick``, ``brown fox``) — which then defeated the structure chunker
+    downstream, since it splits on exactly those blank lines.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -88,28 +124,43 @@ class _HtmlText(HTMLParser):
         self.headings: list[str] = []
         self._skip = 0
         self._in_heading = False
+        self._current: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: object) -> None:  # noqa: ARG002
         if tag in ("script", "style"):
             self._skip += 1
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        if tag in _BLOCK_TAGS:
+            self._flush()
+        if tag in _HEADINGS:
             self._in_heading = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("script", "style") and self._skip:
             self._skip -= 1
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        if tag in _HEADINGS and self._in_heading:
+            self.headings.append(" ".join(self._current).strip())
             self._in_heading = False
+        if tag in _BLOCK_TAGS:
+            self._flush()
 
     def handle_data(self, data: str) -> None:
         if self._skip:
             return
         text = data.strip()
-        if not text:
-            return
-        self.parts.append(text)
-        if self._in_heading:
-            self.headings.append(text)
+        if text:
+            self._current.append(text)
+
+    def _flush(self) -> None:
+        """End the current paragraph. Inline runs are joined with a single space, so the word
+        boundary HTML expressed with markup survives into the text."""
+        joined = " ".join(self._current).strip()
+        self._current = []
+        if joined:
+            self.parts.append(joined)
+
+    def close(self) -> None:
+        super().close()
+        self._flush()  # trailing text with no closing block tag
 
 
 class HtmlExtractor:
@@ -122,12 +173,13 @@ class HtmlExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> HtmlExtractor:
-        return cls(doc_id=str(options.get("doc_id", "html")))
+        return cls(doc_id=read_string(dict(options), "doc_id", "html", label="html extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:
         parser = _HtmlText()
         parser.feed(_as_text(source))
+        parser.close()  # flushes any trailing paragraph that no closing tag ended
         combined = dict(meta)
         if parser.headings:
             combined["headings"] = parser.headings
@@ -136,8 +188,15 @@ class HtmlExtractor:
 
 
 class MarkdownExtractor:
-    """Split Markdown into a document per top-level ATX (``#``/``##``) section, carrying the
-    heading in ``section_path`` — so a structure-aware chunker keeps sections intact."""
+    """Split Markdown into a document per ATX (``#``-prefixed) section, carrying the heading in
+    ``section_path`` — so a structure-aware chunker keeps sections intact.
+
+    **Any** ``#``-leading line starts a new section, at any depth, including one inside a fenced
+    code block. The docstring used to say "top-level (``#``/``##``)", which described neither.
+    Splitting at every depth is the useful behaviour for retrieval — a deep subsection is still a
+    self-contained passage — so the behaviour stands and the description is corrected; a corpus
+    with ``#`` comments in fenced code needs a different extractor.
+    """
 
     CONFIG_KEYS = frozenset({"doc_id"})
 
@@ -146,7 +205,7 @@ class MarkdownExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> MarkdownExtractor:
-        return cls(doc_id=str(options.get("doc_id", "md")))
+        return cls(doc_id=read_string(dict(options), "doc_id", "md", label="markdown extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:

@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any
 
+from ragkit.core.config import read_required_path
 from ragkit.core.errors import RagkitError
 from ragkit.core.ports import RetrievedRef, RunResult
 from ragkit.core.records import Record, Status
@@ -149,7 +150,8 @@ class SqliteRunStore:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SqliteRunStore:
-        return cls(path=str(options.get("path", ":memory:")),
+        opts = dict(options)
+        return cls(path=read_required_path(opts, "path", label="[run] store"),
                    synchronous=str(options.get("synchronous", "FULL")))
 
     def add_records(self, records: Iterable[Record]) -> int:

@@ -34,7 +34,9 @@ from ragkit.harness import run_batch
 from ragkit.llm.pool import ClientFactory
 from ragkit.store.run.sqlite import SqliteRunStore
 
-from .eval import EvalError, evaluate, load_gold
+from ragkit.eval.gold import EvalError, load_label_gold
+
+from .eval import evaluate
 
 
 class SelfAbstractRetriever:
@@ -92,7 +94,7 @@ def main(argv: Sequence[str] | None = None, *, client_factory: ClientFactory | N
     args = parser.parse_args(argv)
     try:
         records, by_question = load_reader_set(args.abstracts, args.heldout)
-        gold = load_gold(args.gold)
+        gold = load_label_gold(args.gold, field="decision")
     except EvalError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

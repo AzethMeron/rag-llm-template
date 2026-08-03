@@ -7,7 +7,8 @@
 # --url with the spider.zip location you have access to (the default points at the HF mirror).
 #
 # Usage: recipes/nl_to_sql/fetch.sh --url URL [--db NAME]
-#   --url URL   location of spider.zip (or a directory already containing the extracted dataset)
+#   --url URL   spider.zip: a URL, a local .zip path, or a directory already holding the
+#               extracted dataset
 #   --db NAME   which Spider database to use (default: concert_singer, a small clean one)
 
 source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/common.sh"
@@ -31,11 +32,19 @@ assert_python_new_enough "$python"
 extracted="${data_dir}/spider"
 if [[ ! -d "$extracted" ]]; then
     [[ -n "$url" ]] || die "Spider is not present. Pass --url with a spider.zip location (Yale/HuggingFace), or extract the dataset into ${extracted} yourself. See https://yale-lily.github.io/spider"
-    require_command curl "Install curl to download the dataset."
     if [[ -d "$url" ]]; then
         note "using extracted dataset at ${url}"; extracted="$url"
+    elif [[ -f "$url" ]]; then
+        # A local archive. Spider is distributed via Google Drive, whose download needs a
+        # confirm token and often a browser, so fetching it separately and pointing --url at the
+        # file is the normal path -- not an edge case. Without this branch a local path was
+        # handed to curl, which rejected it with "no host part in the URL".
+        note "extracting local archive ${url}"
+        require_command unzip "Install unzip to extract the archive."
+        unzip -q -o "$url" -d "$data_dir" || die "could not unzip ${url}"
     else
         note "downloading ${url}"
+        require_command curl "Install curl to download the dataset."
         curl -fL --output "${data_dir}/spider.zip" "$url" || die "download failed; check --url."
         require_command unzip "Install unzip to extract the archive."
         unzip -q -o "${data_dir}/spider.zip" -d "$data_dir" || die "could not unzip spider.zip"

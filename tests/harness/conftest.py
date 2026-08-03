@@ -77,9 +77,11 @@ def build_harness(produce: Sequence[Reply], review: Sequence[Reply], *,
                   ruleset: RuleSet | None = None, reviewers: int = 1,
                   max_revisions: int = 2, max_repairs: int = 2,
                   repair_truncated_json: bool = True, field: str = "output",
+                  extra_validators: Sequence[object] = (),
                   **harness_kwargs: object) -> Harness:
     """A ready harness with one producer and ``reviewers`` reviewers, all over the scripted pool.
-    ``produce``/``review`` are the reply queues consumed in call order."""
+    ``produce``/``review`` are the reply queues consumed in call order. ``extra_validators`` are
+    pluggable validators, the seam a test uses to make plugin code misbehave."""
     pool = build_pool(produce, review)
     ruleset = ruleset or RuleSet()
     panel = Panel(
@@ -90,4 +92,5 @@ def build_harness(produce: Sequence[Reply], review: Sequence[Reply], *,
         repair_truncated_json=repair_truncated_json)
     context = ContextAssembler([_PlacedBlock("literal", LiteralBlock("Do the task."))])
     return Harness(pool, panel, ruleset, JsonFieldSchema(field),
-                   ValidatorPipeline(ruleset), context, **harness_kwargs)  # type: ignore[arg-type]
+                   ValidatorPipeline(ruleset, extra=extra_validators),  # type: ignore[arg-type]
+                   context, **harness_kwargs)  # type: ignore[arg-type]

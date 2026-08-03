@@ -19,7 +19,10 @@ def normalise(text: str, *, form: str = "NFC", collapse_whitespace: bool = True,
               dehyphenate: bool = False) -> str:
     """Normalise ``text``. ``form`` is a Unicode normalisation form (NFC/NFKC/NFD/NFKD);
     ``collapse_whitespace`` folds every run of whitespace to one space and strips the ends;
-    ``dehyphenate`` rejoins a word split ``foo-\\nbar`` -> ``foobar`` (a line-break artefact)."""
+    ``dehyphenate`` rejoins a word split ``foo-\\nbar`` -> ``foobar`` (a line-break artefact).
+
+    ``collapse_whitespace`` destroys paragraph structure, so run this **after** chunking if the
+    chunker is structure-aware — see the ordering note in :mod:`ragkit.ingest`."""
     if form not in ("NFC", "NFKC", "NFD", "NFKD"):
         raise ValueError(f"unknown Unicode normalisation form {form!r}")
     if dehyphenate:

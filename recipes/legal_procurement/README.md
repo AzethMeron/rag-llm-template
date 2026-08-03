@@ -133,6 +133,30 @@ retrieval is the real lever.** On an identical controlled 25k-passage set (100 q
 
 Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best.
 
+### The answer pipeline at full scale (2026-08-03) — first real measurement
+
+The numbers above score **retrieval**, which is this recipe's headline. The answer side had never
+actually been run: `config/models.toml` pointed `[model.author]` at a GGUF repo that does not
+exist, so the chat pipeline could not start at all until that was corrected
+(`.audit/2026-08-02-deep-audit.md`, C1). Run now over all 956 held-out questions with the
+corrected default author (`Qwen3-4B-Q4_K_M`) and reviewer (`Qwen3-1.7B-Q8_0`):
+
+| | count |
+|---|---:|
+| `VERIFIED` | 19 |
+| `PRODUCED` (kept, flagged for review) | 112 |
+| `REJECTED` | 825 |
+| **citation-grounding over what it did produce** | **131/131 = 1.000** |
+
+**Read that as the guardrail working, not the recipe failing.** 819 of the rejections are
+`ungrounded_citation`: a 4B model asked to answer Polish public-procurement law cites *topic
+names* it invented ("Stopień", "Ocenianie kształtujące") instead of the ids of the passages it was
+shown, and the validator refuses them rather than shipping an ungrounded legal answer. Every
+answer that did survive was perfectly grounded. A 4B author is simply too weak for this task's
+citation discipline — as `med_evidence` does for its own domain, point `[model.author]` at
+something larger (`tools/fetch_models.sh --only med_author` fetches a 14B) before expecting usable
+answers here.
+
 ### Full-scale results (2026-08-01) — dense and hybrid at 7.1M passages / 956 questions
 
 The 25k/100-question table above was a controlled subset; here dense and hybrid+reranker
@@ -150,6 +174,24 @@ At this scale dense's Recall gain over lexical shrinks to +3% relative (retrieva
 the distractor pool grows 280× versus the 25k-passage subset), but ranking quality (MRR/NDCG)
 still improves meaningfully; hybrid+reranker is the real lever at full scale, roughly doubling
 MRR and NDCG over the lexical floor — a different picture than the small-scale table suggests.
+
+> **The dense and hybrid rows above understate the retriever: they were measured before the
+> `nprobes` fix.** When the ANN index was added, `search()` never set `nprobes`, so every query
+> probed LanceDB's small fixed default — about 20 of this table's ~2,664 IVF partitions, well
+> under 1% of it. Measured 2026-08-02 over 100 of these same held-out questions, against this
+> same index, varying *only* `nprobes`:
+>
+> | `[vector].nprobes` | Recall@20 | MRR@10 | NDCG@10 | Acc@10 |
+> |---|---:|---:|---:|---:|
+> | `1` (starved, to show the dial is connected) | 0.110 | 0.200 | 0.105 | 0.260 |
+> | `20` — LanceDB's default, i.e. what produced the table above | 0.343 | 0.437 | 0.274 | 0.600 |
+> | *unset* → `134`, what the driver now computes (5% of the partitions) | **0.411** | **0.488** | **0.320** | **0.700** |
+>
+> The `nprobes = 20` column reproduces the full-scale dense row almost exactly (0.343 vs 0.342),
+> which is what makes the comparison trustworthy: the subset behaves like the whole set. So dense
+> retrieval here is worth roughly **+0.07 Recall@20 and +0.10 Acc@10** more than the table above
+> credits it with. Those rows are left as measured rather than quietly restated — re-run
+> `eval.py` at full scale to replace them.
 
 **Against the PolQA paper (Rybak et al., 2022/2024, LREC-COLING).** The paper reports "top-10
 accuracy" — a binary per-query hit/miss (did *any* gold passage land in the top 10) — which is a

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import traceback
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -34,9 +35,10 @@ from ragkit.core.ports import (
     SqlStore,
 )
 from ragkit.core.records import Record, Status
-from ragkit.core.rules import Violation
+from ragkit.core.rules import Violation, blocking
 from ragkit.llm.errors import (
     LlmContentError,
+    LlmError,
     LlmIncompleteJsonError,
     LlmRefusalError,
     LlmTruncationError,
@@ -48,7 +50,7 @@ from .context import ContextAssembler
 from .memory import OutputMemory
 from .roles import Panel, Persona
 from .rules import RuleSet
-from .validators import ValidatorPipeline, blocking, partition_on_exhaustion
+from .validators import ValidatorPipeline, partition_on_exhaustion
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,16 @@ REVIEW_SCHEMA: dict[str, Any] = {
 def _clip(text: str, limit: int = 200) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[:limit] + "…"
+
+
+def _unexpected(exc: Exception) -> str:
+    """A one-line diagnostic for an exception the harness did not expect: its type, its message,
+    and the innermost frame that raised it — enough to name the offending plugin from the journal
+    alone, without reproducing the run. Called only from an ``except`` handler, where the exception
+    always carries at least the raising frame."""
+    frame = traceback.extract_tb(exc.__traceback__)[-1]
+    return (f"unexpected {type(exc).__name__} in {frame.name}() "
+            f"at {frame.filename}:{frame.lineno}: {exc}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,8 +153,9 @@ class Harness:
 
     Thread-safe for :func:`ragkit.harness.runner.run_batch`'s concurrent workers: :meth:`process`
     is free of shared mutable state except the per-reviewer leniency window (guarded here), the
-    model pool's usage stats (guarded there), and the injected memory (guarded there). The context
-    retriever and sql store are read-only and need no lock.
+    model pool's usage stats and its lazily-built per-model clients (both guarded there), and the
+    injected memory (guarded there). The context retriever and sql store are read-only and need no
+    lock.
     """
 
     def __init__(self, pool: ModelPool, panel: Panel, ruleset: RuleSet,
@@ -337,6 +350,16 @@ class Harness:
         propagate as ``LlmError`` instead, because the caller journals every returned Outcome as a
         completed result: turning "the server was down" into a terminal REJECTED would burn the
         record on a run that still exits 0.
+
+        Anything *else* that escapes — a ``re.error`` from a pluggable ``Validator``, a ``KeyError``
+        in a custom ``OutputSchema.extract``, a bug in an injected ``sanitize`` — is a defect in
+        code this layer called, not a statement about the server, and is caught and returned as a
+        REJECTED Outcome carrying the diagnostic. Letting it propagate instead made one bad record
+        permanently poison a batch: ``run_batch`` skips ``append_result`` for a worker that raised,
+        so the record stayed PENDING, the run aborted, and every resume hit the same deterministic
+        exception and aborted again. The trade is deliberate — a plugin bug that hits *every*
+        record now journals every record REJECTED rather than stopping at the first — but it is the
+        loud kind: each one carries the failing frame, and each is logged with a full traceback.
         """
         if record.status is Status.SKIPPED or not record.source.strip():
             return Outcome(record=record, status=Status.SKIPPED, output=None)
@@ -388,6 +411,13 @@ class Harness:
         except LlmContentError as exc:
             return captured(Outcome(record=record, status=Status.REJECTED, output=None,
                            reviews=tuple(all_reviews), error=str(exc)))
+        except LlmError:
+            raise  # infrastructure: every remaining record would fail alike -- stop the run.
+        except Exception as exc:  # a plugin defect, not infrastructure -- see the docstring.
+            logger.exception("record %r failed with an unexpected %s",
+                             record.record_id, type(exc).__name__)
+            return captured(Outcome(record=record, status=Status.REJECTED, output=None,
+                           reviews=tuple(all_reviews), error=_unexpected(exc)))
         raise AssertionError("unreachable: revision loop always returns")
 
     def _settle(self, record: Record, target: str, violations: list[Violation],

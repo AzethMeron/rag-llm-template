@@ -8,6 +8,7 @@ import pytest
 from ragkit.core.ports import Retrieved
 from ragkit.eval import (
     CircularEvaluationError,
+    IncompleteGroundTruthError,
     Qrels,
     average_precision,
     evaluate_retrieval,
@@ -56,6 +57,19 @@ class TestMetrics:
         assert ndcg_at_k(["a", "b"], frozenset({"b"}), 2) == pytest.approx(1 / math.log2(3))
         assert ndcg_at_k(["b", "a"], frozenset({"b"}), 2) == 1.0  # relevant first = perfect
         assert ndcg_at_k(["x"], frozenset({"b"}), 2) == 0.0
+        assert ndcg_at_k(["a"], frozenset({"a"}), 0) == 0.0  # k=0 -> empty ideal ranking
+
+    def test_every_metric_rejects_empty_relevant(self) -> None:
+        # All five reject an empty gold set the same way (a ValueError), rather than two crashing
+        # with ZeroDivisionError while three silently return a made-up 0.0.
+        empty: frozenset[str] = frozenset()
+        for call in (lambda: recall_at_k(["a"], empty, 1),
+                     lambda: hit_rate_at_k(["a"], empty, 1),
+                     lambda: reciprocal_rank(["a"], empty),
+                     lambda: average_precision(["a"], empty),
+                     lambda: ndcg_at_k(["a"], empty, 1)):
+            with pytest.raises(ValueError, match="at least one relevant id"):
+                call()
 
 
 class TestQrels:
@@ -92,8 +106,40 @@ class TestEvaluateRetrieval:
     def test_refuses_a_query_with_no_ground_truth(self) -> None:
         systems, queries, _ = self._setup()
         holes = Qrels(relevant={"q1": frozenset({"a"})}, source="gold")  # q2 missing
-        with pytest.raises(CircularEvaluationError, match="no ground-truth"):
+        with pytest.raises(IncompleteGroundTruthError, match="no ground-truth"):
             evaluate_retrieval(systems, queries, holes, k=2)
+
+    def test_incomplete_gold_is_not_reported_as_circularity(self) -> None:
+        # Distinct types, on purpose: "the gold set is incomplete" is a data problem with a
+        # different fix from "the gold set is not independent", and a caller handling one must
+        # not silently absorb the other.
+        systems, queries, _ = self._setup()
+        holes = Qrels(relevant={"q1": frozenset({"a"})}, source="gold")
+        assert not issubclass(IncompleteGroundTruthError, CircularEvaluationError)
+        with pytest.raises(IncompleteGroundTruthError):
+            evaluate_retrieval(systems, queries, holes, k=2)
+
+    def test_each_metric_can_have_its_own_depth(self) -> None:
+        # The reason legal_procurement used to fork the metric loop (and so bypass the guards):
+        # Recall@20 alongside a literature-comparable Acc@10 and MRR@10.
+        systems = {"s": _StubRetriever({"first": ["x", "y", "a"]})}
+        queries, qrels = {"q1": "first"}, Qrels({"q1": frozenset({"a"})}, source="gold")
+        scores = evaluate_retrieval(systems, queries, qrels, k=3, hit_rate_k=2, rank_k=2)["s"]
+        assert scores.recall_at_k == 1.0    # "a" is within the top 3
+        assert scores.hit_rate_at_k == 0.0  # ...but not within the top 2
+        assert scores.mrr == 0.0            # nor within the rank window
+        assert (scores.k, scores.hit_rate_k, scores.rank_k) == (3, 2, 2)
+
+    def test_the_per_metric_depths_default_to_k(self) -> None:
+        systems, queries, qrels = self._setup()
+        scores = evaluate_retrieval(systems, queries, qrels, k=2)["good"]
+        assert (scores.k, scores.hit_rate_k, scores.rank_k) == (2, 2, 2)
+
+    @pytest.mark.parametrize("depths", [{"hit_rate_k": 0}, {"rank_k": -1}])
+    def test_a_non_positive_per_metric_depth_is_refused(self, depths: dict) -> None:
+        systems, queries, qrels = self._setup()
+        with pytest.raises(ValueError, match="must be >= 1"):
+            evaluate_retrieval(systems, queries, qrels, k=2, **depths)
 
     def test_rejects_bad_k_and_empty_systems(self) -> None:
         _, queries, qrels = self._setup()

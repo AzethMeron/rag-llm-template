@@ -1,6 +1,9 @@
 """The harness loop: every terminal outcome and the paths that reach it."""
 from __future__ import annotations
 
+import logging
+import re
+
 import pytest
 
 from ragkit.core.ports import Retrieved
@@ -18,6 +21,7 @@ from ragkit.harness import (
 from ragkit.harness.agents import Attempt, Outcome
 from ragkit.harness.context import ContextAssembler, LiteralBlock, RetrievedBlock
 from ragkit.harness.context.assembler import _PlacedBlock
+from ragkit.llm.errors import LlmError
 
 from .conftest import ACCEPT, build_harness, build_pool, ok, raw, refuse, truncated
 
@@ -138,6 +142,73 @@ class TestInfrastructureVsContent:
     def test_unparseable_output_is_rejected_after_repairs(self) -> None:
         harness = build_harness(produce=[raw("not json at all")] * 3, review=[], max_repairs=2)
         assert harness.process(_record()).status is Status.REJECTED
+
+
+class _BoomValidator:
+    """A pluggable validator with a bug in it — the poison-pill shape."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def validate(self, _record: Record, _output: str, _context: dict) -> list:
+        raise self._exc
+
+
+class TestPluginDefects:
+    """A defect in pluggable code must burn one record, never the whole batch. Regression for the
+    poison pill: an exception escaping ``process`` left the record PENDING and aborted the run, so
+    every resume hit the same deterministic exception and aborted again."""
+
+    def test_validator_exception_rejects_only_this_record(self) -> None:
+        harness = build_harness(produce=[ok({"output": "R"})], review=[],
+                                extra_validators=[_BoomValidator(re.error("bad pattern"))])
+        outcome = harness.process(_record())
+        assert outcome.status is Status.REJECTED and outcome.output is None
+
+    def test_the_diagnostic_names_the_type_and_the_failing_frame(self) -> None:
+        harness = build_harness(produce=[ok({"output": "R"})], review=[],
+                                extra_validators=[_BoomValidator(KeyError("speaker"))])
+        error = harness.process(_record()).error or ""
+        assert "unexpected KeyError" in error and "in validate()" in error
+        assert "test_agents.py:" in error and "speaker" in error
+
+    def test_the_defect_is_logged_with_a_traceback(
+            self, caplog: pytest.LogCaptureFixture) -> None:
+        harness = build_harness(produce=[ok({"output": "R"})], review=[],
+                                extra_validators=[_BoomValidator(ValueError("nope"))])
+        with caplog.at_level(logging.ERROR, logger="ragkit.harness.agents"):
+            harness.process(_record())
+        assert "ValueError" in caplog.text and "Traceback" in caplog.text
+
+    def test_output_schema_exception_is_also_contained(self) -> None:
+        class _BoomSchema:
+            name = "boom"
+
+            def json_schema(self) -> dict:
+                return {"type": "object", "properties": {"output": {"type": "string"}}}
+
+            def extract(self, _reply: dict) -> str:
+                raise TypeError("schema plugin bug")
+
+        harness = build_harness(produce=[ok({"output": "R"})], review=[])
+        harness.output_schema = _BoomSchema()  # type: ignore[assignment]
+        outcome = harness.process(_record())
+        assert outcome.status is Status.REJECTED
+        assert "unexpected TypeError" in (outcome.error or "")
+
+    def test_a_bare_llm_error_still_propagates(self) -> None:
+        # The broad handler must not swallow infrastructure failure: "the server is down" has to
+        # stop the run, leaving the record PENDING for a resume, not burn it as REJECTED.
+        harness = build_harness(produce=[ok({"output": "R"})], review=[],
+                                extra_validators=[_BoomValidator(LlmError("server is down"))])
+        with pytest.raises(LlmError, match="server is down"):
+            harness.process(_record())
+
+    def test_keyboard_interrupt_still_propagates(self) -> None:
+        harness = build_harness(produce=[ok({"output": "R"})], review=[],
+                                extra_validators=[_BoomValidator(KeyboardInterrupt())])
+        with pytest.raises(KeyboardInterrupt):
+            harness.process(_record())
 
 
 class TestConstruction:

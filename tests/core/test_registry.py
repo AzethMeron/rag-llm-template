@@ -3,6 +3,7 @@ the three discovery paths, unknown-key rejection on a component's own options, p
 conformance refused at registration, collision refused, and resolution staying pure."""
 from __future__ import annotations
 
+import math
 from typing import Any, Protocol, runtime_checkable
 
 import pytest
@@ -215,6 +216,14 @@ class TestEntryPointResolution:
         with pytest.raises(RegistryError, match=r"unknown greeter 'absent'.*available: hello"):
             reg.create("absent")
 
+    def test_a_bare_dotted_entry_point_value_splits_at_the_last_dot_only(self) -> None:
+        # setuptools object references usually carry a colon, but a bare `pkg.mod.Attr` is legal.
+        # Replacing *every* dot (what this used to do) produced `pkg:mod:Attr`, which names no
+        # module at all.
+        reg = _registry(entry_point_group="ragkit.greeters",
+                        entry_point_loader=lambda g: [("plug", f"{__name__}.Hello")])
+        assert reg.create("plug", {"name": "ep"}).greet() == "hello ep"
+
     def test_a_non_matching_entry_point_is_passed_over(self) -> None:
         reg = _registry(entry_point_group="ragkit.greeters",
                         entry_point_loader=lambda g: [("other", f"{__name__}:Hello")])
@@ -227,6 +236,103 @@ class TestEntryPointResolution:
         reg = _registry(entry_point_group="ragkit.nonexistent.group")
         with pytest.raises(RegistryError, match="unknown greeter 'absent'"):
             reg.create("absent")
+
+
+@runtime_checkable
+class Searcher(Protocol):
+    """A port shaped like the storage ports: the load-bearing options are keyword-only."""
+
+    def search(self, query: str, *, k: int, where: tuple = ()) -> list[str]: ...
+
+
+class TestSignatureConformance:
+    """Regression: ``runtime_checkable`` ``isinstance`` is signature-blind -- it checks only that
+    the named members *exist*. A driver whose ``search`` omitted ``where=`` passed both that check
+    and the ``create`` gate, then failed with a ``TypeError`` deep inside ``search``, far from
+    where the driver was named. ``create`` now checks the port's keyword-only parameters."""
+
+    def _registry(self) -> Registry[Searcher]:
+        return Registry("searcher", Searcher)
+
+    def test_a_member_missing_a_keyword_only_parameter_is_refused(self) -> None:
+        class Partial:
+            def search(self, query: str, *, k: int) -> list[str]:  # no `where`
+                return []
+
+        reg = self._registry()
+        reg.register("partial", Partial)  # isinstance alone is happy: `search` exists
+        with pytest.raises(RegistryError, match=r"search\(\) is missing \['where'\]"):
+            reg.create("partial")
+
+    def test_the_error_names_the_component_and_the_port(self) -> None:
+        class Partial:
+            def search(self, query: str, *, k: int) -> list[str]:
+                return []
+
+        reg = self._registry()
+        reg.register("partial", Partial)
+        with pytest.raises(RegistryError, match=r"'Partial'.*'Searcher'.*cannot be called"):
+            reg.create("partial")
+
+    def test_a_conforming_component_is_accepted(self) -> None:
+        class Full:
+            def search(self, query: str, *, k: int, where: tuple = ()) -> list[str]:
+                return [query]
+
+        reg = self._registry()
+        reg.register("full", Full)
+        assert reg.create("full").search("q", k=1) == ["q"]
+
+    def test_kwargs_absorbs_the_ports_keywords(self) -> None:
+        class Flexible:
+            def search(self, query: str, **kwargs: Any) -> list[str]:
+                return [query]
+
+        reg = self._registry()
+        reg.register("flexible", Flexible)
+        assert reg.create("flexible").search("q", k=1, where=()) == ["q"]
+
+    def test_a_callable_with_no_introspectable_signature_is_passed_over(self) -> None:
+        # Some C-implemented callables expose no signature at all. The check must skip those
+        # rather than refuse a component it simply cannot inspect.
+        @runtime_checkable
+        class HasLen(Protocol):
+            def search(self, query: str, *, k: int) -> list[str]: ...
+
+        class UsesABuiltin:
+            search = math.hypot  # a C function: inspect.signature raises ValueError for it
+
+        reg: Registry[HasLen] = Registry("odd", HasLen)
+        reg.register("odd", UsesABuiltin)
+        assert reg.create("odd") is not None
+
+    def test_a_data_member_is_not_compared(self) -> None:
+        @runtime_checkable
+        class WithLabel(Protocol):
+            label: str  # not callable: there is no signature to compare
+
+            def search(self, query: str, *, k: int) -> list[str]: ...
+
+        class Impl:
+            label = "x"
+
+            def search(self, query: str, *, k: int) -> list[str]:
+                return []
+
+        reg: Registry[WithLabel] = Registry("labelled", WithLabel)
+        reg.register("labelled", Impl)
+        assert reg.create("labelled").label == "x"
+
+    def test_a_renamed_positional_parameter_is_not_flagged(self) -> None:
+        # Deliberately lenient: callers pass positionals positionally, so renaming `query` to `q`
+        # breaks nothing, and flagging it would be a false positive.
+        class Renamed:
+            def search(self, q: str, *, k: int, where: tuple = ()) -> list[str]:
+                return [q]
+
+        reg = self._registry()
+        reg.register("renamed", Renamed)
+        assert reg.create("renamed").search("x", k=1) == ["x"]
 
 
 @runtime_checkable

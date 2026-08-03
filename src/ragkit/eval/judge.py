@@ -125,7 +125,12 @@ def _deblind(item_id: str, choice: str, reason: str, *, a_first: bool) -> AbVerd
     elif choice in ("1", "2"):
         first_wins = choice == "1"
         winner = "a" if first_wins == a_first else "b"
-    else:  # pragma: no cover - the schema's enum makes this unreachable; kept as a fail-loud guard
+    else:
+        # Reachable, despite the schema declaring an enum: the client's shape check verifies
+        # `required` and `type`, never `enum`, so a backend running in json_object mode (shape
+        # described in the prompt rather than grammar-constrained) can return any string here.
+        # This used to be marked `pragma: no cover` as unreachable, which both hid a real path
+        # from the suite and would have made the guard look redundant to a later reader.
         raise JudgeError(f"judge returned an out-of-range choice {choice!r} for item {item_id!r}")
     return AbVerdict(item_id=item_id, winner=winner, reason=reason, a_shown_first=a_first)
 

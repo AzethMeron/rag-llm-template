@@ -31,7 +31,8 @@ class TestEmbed:
         def handler(request: httpx.Request) -> httpx.Response:
             inputs = json.loads(request.content)["input"]
             seen.append(len(inputs))
-            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0]} for i, _ in enumerate(inputs)]})
 
         client = EmbeddingClient(base_url="http://x/v1", batch_size=2,
                                  client=httpx.Client(transport=httpx.MockTransport(handler)))
@@ -44,7 +45,8 @@ class TestEmbed:
         def handler(request: httpx.Request) -> httpx.Response:
             inputs = json.loads(request.content)["input"]
             seen.extend(inputs)
-            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0]} for i, _ in enumerate(inputs)]})
 
         embedding_client(handler).embed(["[[0]] hello [[1]]"])
         assert "[[0]]" not in seen[0]
@@ -57,7 +59,8 @@ class TestDedupEmbed:
         def handler(request: httpx.Request) -> httpx.Response:
             inputs = json.loads(request.content)["input"]
             calls.extend(inputs)
-            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0]} for i, _ in enumerate(inputs)]})
 
         client = embedding_client(handler)
         result = dedup_embed(client, ["same", "same", "different"])
@@ -80,7 +83,8 @@ class TestDedupEmbed:
         def handler(request: httpx.Request) -> httpx.Response:
             inputs = json.loads(request.content)["input"]
             calls.extend(inputs)
-            return httpx.Response(200, json={"data": [{"embedding": [1.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0]} for i, _ in enumerate(inputs)]})
 
         client = embedding_client(handler)
         dedup_embed(client, ["same"])
@@ -99,6 +103,35 @@ class TestErrors:
         with pytest.raises(EmbeddingError, match="embedding request failed"):
             embedding_client(handler).embed(["x"])
 
+    def test_a_reordered_response_is_realigned_by_index(self) -> None:
+        """Regression: the client took the ``data`` array's order on faith and ignored ``index``,
+        which the OpenAI schema carries precisely because that order is not guaranteed. A
+        reordering server or proxy therefore paired every vector with the wrong text -- all
+        downstream search subtly wrong, with no error anywhere."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            # Same vectors, reversed array order; `index` still says which input each belongs to.
+            items = [{"index": i, "embedding": [float(i), 0.0]} for i, _ in enumerate(inputs)]
+            return httpx.Response(200, json={"data": list(reversed(items))})
+
+        vectors = embedding_client(handler).embed(["a", "b", "c"])
+        # Normalised, so the non-zero row is a unit vector on the first axis; row 0 is all-zero.
+        assert [round(row[0], 6) for row in vectors] == [0.0, 1.0, 1.0]
+
+    @pytest.mark.parametrize("indices", [[0, 0], [0, 5], [1, 2]])
+    def test_indices_that_are_not_a_permutation_are_refused(self, indices: list[int]) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0]} for i in indices]})
+        with pytest.raises(EmbeddingError, match="not a permutation"):
+            embedding_client(handler).embed(["a", "b"])
+
+    def test_a_non_numeric_index_is_refused(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": [{"index": "first", "embedding": [1.0]}]})
+        with pytest.raises(EmbeddingError, match="no usable"):
+            embedding_client(handler).embed(["a"])
+
     def test_wrong_count(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"data": [{"embedding": [1.0]}]})  # 1 for 2
@@ -108,7 +141,7 @@ class TestErrors:
     def test_missing_embedding_field(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"data": [{"nope": 1}]})
-        with pytest.raises(EmbeddingError, match="no 'embedding'"):
+        with pytest.raises(EmbeddingError, match="no usable"):
             embedding_client(handler).embed(["x"])
 
     def test_data_is_not_a_list(self) -> None:
@@ -128,8 +161,8 @@ class TestErrors:
     def test_ragged_matrix(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             inputs = json.loads(_request.content)["input"]
-            return httpx.Response(200, json={"data": [{"embedding": [1.0, 2.0]},
-                                                      {"embedding": [1.0]}][:len(inputs)]})
+            return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 2.0]},
+                                              {"index": 1, "embedding": [1.0]}][:len(inputs)]})
         with pytest.raises(EmbeddingError, match="uniform numeric matrix"):
             embedding_client(handler).embed(["a", "b"])
 
@@ -142,22 +175,23 @@ class TestErrors:
         # `content=`, not the `json=` kwarg, is used here since httpx's own encoder for `json=`
         # refuses to produce them.
         def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, content=b'{"data": [{"embedding": [1.0, NaN]}]}')
+            return httpx.Response(200, content=b'{"data": [{"index": 0, "embedding": [1.0, NaN]}]}')
         with pytest.raises(EmbeddingError, match="non-finite values"):
             embedding_client(handler).embed(["x"])
 
     def test_infinity_in_response_is_rejected_not_silently_normalised(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, content=b'{"data": [{"embedding": [1.0, Infinity]}]}')
+            return httpx.Response(
+                200, content=b'{"data": [{"index": 0, "embedding": [1.0, Infinity]}]}')
         with pytest.raises(EmbeddingError, match="non-finite values"):
             embedding_client(handler).embed(["x"])
 
     def test_one_poisoned_row_among_several_is_still_caught(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=b'{"data": ['
-                                                b'{"embedding": [1.0, 0.0]}, '
-                                                b'{"embedding": [NaN, 0.0]}, '
-                                                b'{"embedding": [0.0, 1.0]}]}')
+                                                b'{"index": 0, "embedding": [1.0, 0.0]}, '
+                                                b'{"index": 1, "embedding": [NaN, 0.0]}, '
+                                                b'{"index": 2, "embedding": [0.0, 1.0]}]}')
         with pytest.raises(EmbeddingError, match=r"1 of 3 row\(s\)"):
             embedding_client(handler).embed(["a", "b", "c"])
 
@@ -186,7 +220,8 @@ class TestRetries:
                     return httpx.Response(exc, text="transient")
                 raise exc("transient", request=request)
             inputs = json.loads(request.content)["input"]
-            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0, 0.0]} for i, _ in enumerate(inputs)]})
         return handler, calls
 
     def test_retries_a_timeout_then_succeeds(self) -> None:

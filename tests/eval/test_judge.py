@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from ragkit.eval import AbItem, CircularEvaluationError, evaluate_ab
+from ragkit.eval import AbItem, CircularEvaluationError, JudgeError, evaluate_ab
 from ragkit.eval.judge import AbSummary, AbVerdict, _deblind
 from ragkit.llm import LlmClient, ServerConfig
 from ragkit.llm.backends import resolve_backend
@@ -36,6 +36,20 @@ class TestDeblind:
         assert _deblind("i", "2", "", a_first=True).winner == "b"
         assert _deblind("i", "2", "", a_first=False).winner == "a"
         assert _deblind("i", "tie", "", a_first=True).winner == "tie"
+
+    def test_an_out_of_enum_choice_fails_loud(self) -> None:
+        """This branch carried `pragma: no cover` claiming the schema's enum made it unreachable.
+        It does not: the client's shape check verifies `required` and `type`, never `enum`, so a
+        backend in json_object mode (shape described in the prompt, not grammar-constrained) can
+        return any string here."""
+        with pytest.raises(JudgeError, match="out-of-range choice 'maybe'"):
+            _deblind("i7", "maybe", "", a_first=True)
+
+    def test_an_out_of_enum_choice_reaches_deblind_through_a_real_reply(self) -> None:
+        # End to end, through the client: nothing between the model and _deblind rejects it.
+        with pytest.raises(JudgeError, match="out-of-range choice"):
+            evaluate_ab(_client("both"), _items(1), system_a="x", system_b="y",
+                        criterion="better")
 
 
 class TestEvaluateAb:

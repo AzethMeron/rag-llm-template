@@ -48,9 +48,10 @@ non-commercial model. Each is a separate work under its own license.
 
 | Model | Role | License |
 |---|---|---|
-| `Qwen3.5-2B-Instruct` | default producer persona | Apache-2.0 |
-| `Qwen3.5-0.8B-Instruct` | default reviewer personas | Apache-2.0 |
-| `Qwen3-0.6B` | CI / smoke (CPU-runnable) | Apache-2.0 |
+| `Qwen3-4B` | default producer persona | Apache-2.0 |
+| `Qwen3-1.7B` | default reviewer personas | Apache-2.0 |
+| `Qwen3-0.6B` | CI / smoke (CPU-runnable); also med_evidence's reviewer | Apache-2.0 |
+| `Qwen3-14B` | med_evidence's author persona (large, opt-in via `--only med_author`) | Apache-2.0 |
 | `Qwen3-Embedding-0.6B` | default embeddings | Apache-2.0 |
 | `bge-m3` | alternative multilingual embeddings | MIT |
 | `bge-reranker-v2-m3` | default reranker | Apache-2.0 |

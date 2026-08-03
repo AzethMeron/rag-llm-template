@@ -16,7 +16,8 @@ def test_non_2d_embeddings_are_refused() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         import json
         inputs = json.loads(request.content)["input"]
-        return httpx.Response(200, json={"data": [{"embedding": 5} for _ in inputs]})  # scalar
+        return httpx.Response(200, json={  # scalar, not a vector
+            "data": [{"index": i, "embedding": 5} for i, _ in enumerate(inputs)]})
     with pytest.raises(EmbeddingError, match="2-D"):
         embedding_client(handler).embed(["x"])
 

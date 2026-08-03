@@ -15,6 +15,7 @@ import threading
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from ragkit.core.config import read_required_path
 from ragkit.core.errors import RagkitError
 from ragkit.core.lexicon import Entry
 
@@ -51,7 +52,7 @@ class SqliteLexicon:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SqliteLexicon:
-        return cls(path=str(options.get("path", ":memory:")))
+        return cls(path=read_required_path(dict(options), "path", label="[lexicon] store"))
 
     def entries(self) -> list[Entry]:
         with self._lock:

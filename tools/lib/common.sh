@@ -29,6 +29,12 @@ note() {
     echo ">> $*" >&2
 }
 
+# A problem the script survives and will report on again at the end. Distinct from `die` (fatal,
+# exits) and `note` (progress): a step that failed but must not stop the ones after it.
+warn() {
+    echo "warning: $*" >&2
+}
+
 require_command() {
     # require_command <name> <install hint>
     command -v "$1" >/dev/null 2>&1 || die "required command '$1' not found. $2"

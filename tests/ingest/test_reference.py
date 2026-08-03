@@ -23,7 +23,8 @@ from ragkit.store.vector.lancedb import LanceVectorIndex
 def _embedder(vector_of: Callable[[str], list[float]]) -> EmbeddingClient:
     def handler(request: httpx.Request) -> httpx.Response:
         inputs = json.loads(request.content)["input"]
-        return httpx.Response(200, json={"data": [{"embedding": vector_of(t)} for t in inputs]})
+        return httpx.Response(200, json={
+            "data": [{"index": i, "embedding": vector_of(t)} for i, t in enumerate(inputs)]})
     return EmbeddingClient(base_url="http://x/v1",
                            client=httpx.Client(transport=httpx.MockTransport(handler)))
 
@@ -64,6 +65,35 @@ class TestReferencePairings:
         path = tmp_path / "ref.jsonl"
         path.write_text('{"source": "ok"}\n{not json', encoding="utf-8")
         with pytest.raises(ReferenceImportError, match="invalid JSON"):
+            list(reference_pairings(path))
+
+    def test_null_source_is_skipped_not_stored_as_the_string_none(self, tmp_path: Path) -> None:
+        # A JSON null source is a blank source -> skipped, never yielded as the 4-char string "None"
+        # (str(None) used to slip past the empty-source guard).
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": None, "target": "t"}, {"source": "real"}])
+        [pairing] = list(reference_pairings(path))
+        assert pairing.source == "real"
+
+    def test_empty_string_source_is_skipped(self, tmp_path: Path) -> None:
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": ""}, {"source": "real"}])
+        [pairing] = list(reference_pairings(path))
+        assert pairing.source == "real"
+
+    def test_null_target_is_empty_not_the_string_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": "s", "target": None}])
+        [pairing] = list(reference_pairings(path))
+        assert pairing.target == ""  # a lexical-only entry, not "None"
+
+    def test_non_string_field_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": 42}])
+        with pytest.raises(ReferenceImportError, match="'source' must be a string"):
+            list(reference_pairings(path))
+        _write_jsonl(path, [{"source": "s", "target": ["a", "b"]}])
+        with pytest.raises(ReferenceImportError, match="'target' must be a string"):
             list(reference_pairings(path))
 
     def test_skip_fast_forwards_without_parsing(self, tmp_path: Path) -> None:
@@ -150,7 +180,8 @@ class TestImportReference:
             if call_count == 2:
                 raise httpx.ConnectError("simulated embedding-server crash")
             inputs = json.loads(request.content)["input"]
-            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]} for _ in inputs]})
+            return httpx.Response(200, json={
+                "data": [{"index": i, "embedding": [1.0, 0.0]} for i, _ in enumerate(inputs)]})
 
         flaky_embedder = EmbeddingClient(
             base_url="http://x/v1", max_retries=0,
@@ -403,6 +434,38 @@ class TestImportReference:
         reconcile_vector(store, vector, embedder, batch_size=2,  # type: ignore[arg-type]
                          compact_every=1)
         assert len(vector._ids) == 4
+
+
+class TestVectorMetadata:
+    """Regression: `embed_and_upsert` copied each pairing's entire JSON record into the vector
+    index, and nothing ever read it -- a search returns (chunk_id, score) and the retriever
+    resolves display text and metadata through `pairing_store.document()`. At corpus scale that
+    was 7.1M full records duplicated into the ANN store for nothing, and it also meant two copies
+    of a row that could drift."""
+
+    def _upsert(self, tmp_path: Path) -> list[dict]:
+        from ragkit.ingest.reference import embed_and_upsert
+        seen: list[dict] = []
+
+        class _RecordingIndex:
+            def upsert(self, ids: list, vectors: list, metas: list) -> None:
+                seen.extend(metas)
+
+        embed_and_upsert(
+            [Pairing(chunk_id="c1", source="alpha", target="A",
+                     meta={"document_id": "d1", "big": "x" * 500})],
+            _RecordingIndex(), _embedder(lambda _t: [1.0, 0.0]))
+        return seen
+
+    def test_no_pairing_metadata_reaches_the_vector_index(self, tmp_path: Path) -> None:
+        assert self._upsert(tmp_path) == [{}]
+
+    def test_the_pairing_store_still_holds_the_metadata(self, tmp_path: Path) -> None:
+        # The point of the co-located store: one authoritative copy, and it is this one.
+        store = SqlitePairings()
+        store.add([Pairing(chunk_id="c1", source="alpha", target="A", meta={"document_id": "d1"})])
+        display, meta = store.document("c1")
+        assert display == "alpha -> A" and meta == {"document_id": "d1"}
 
 
 class TestPairingRetrievers:

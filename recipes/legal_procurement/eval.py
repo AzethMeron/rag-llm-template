@@ -30,129 +30,51 @@ Run: ``PYTHONPATH=src:. python -m recipes.legal_procurement.eval \\
 """
 from __future__ import annotations
 
-import argparse
 import json
-import sys
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ragkit.cli.app import assemble
 from ragkit.core.ports import Retriever
 from ragkit.core.records import read_journal
-from ragkit.eval.retrieval import hit_rate_at_k, ndcg_at_k, recall_at_k, reciprocal_rank
+from ragkit.eval.gold import EvalError, gold_rows, load_relevance_gold, run_report
+from ragkit.eval.retrieval import Qrels, RetrievalScores, evaluate_retrieval
 
 _NDCG_K = 10
 _MRR_K = 10
 _HIT_RATE_K = 10  # matches PolQA's (Rybak et al., 2022) "top-10 accuracy" retriever metric
-
-
-class EvalError(Exception):
-    """The evaluation cannot run as configured (missing/malformed gold, heldout, or retriever)."""
-
-
-@dataclass(frozen=True, slots=True)
-class QueryScore:
-    record_id: str
-    recall: float
-    hit: float
-    reciprocal_rank: float
-    ndcg: float
-
-
-@dataclass(frozen=True, slots=True)
-class Report:
-    scores: tuple[QueryScore, ...]
-    k: int
-
-    @property
-    def queries(self) -> int:
-        return len(self.scores)
-
-    @property
-    def recall_at_k(self) -> float:
-        return self._mean(lambda s: s.recall)
-
-    @property
-    def hit_rate_at_10(self) -> float:
-        # Binary per-query hit/miss at top-10, NOT recall_at_k's fraction-of-all-relevant --
-        # matches the literature's "top-10 accuracy" (e.g. PolQA, Rybak et al., 2022) so this
-        # number is directly comparable to a paper's reported retriever accuracy, unlike
-        # recall_at_k which uses this framework's own multi-relevant convention and depth.
-        return self._mean(lambda s: s.hit)
-
-    @property
-    def mrr(self) -> float:
-        return self._mean(lambda s: s.reciprocal_rank)
-
-    @property
-    def ndcg(self) -> float:
-        return self._mean(lambda s: s.ndcg)
-
-    def _mean(self, pick: Callable[[QueryScore], float]) -> float:
-        return sum(pick(s) for s in self.scores) / self.queries if self.scores else 0.0
+_SYSTEM = "recipe-retriever"
+_GOLD_SOURCE = "polqa"
+"""Where the judgments come from -- an independent dataset, not any system evaluated here. The
+guard in ``evaluate_retrieval`` refuses a run whose gold names a system under evaluation."""
 
 
 def evaluate(retriever: Retriever, queries: Sequence[tuple[str, str]],
-             gold: Mapping[str, frozenset[str]], *, k: int = 20) -> Report:
-    """Score each ``(record_id, question)`` whose id has gold judgments, retrieving at a depth that
-    covers every reported metric (``max(k, 10)``). Recall is at ``k``; hit rate, MRR, and NDCG at
-    10."""
-    depth = max(k, _MRR_K, _NDCG_K, _HIT_RATE_K)
-    scores: list[QueryScore] = []
-    for record_id, question in queries:
-        relevant = gold.get(record_id)
-        if not relevant:
-            continue
-        ranked = [hit.chunk_id for hit in retriever.retrieve(question, k=depth)]
-        scores.append(QueryScore(
-            record_id=record_id,
-            recall=recall_at_k(ranked, relevant, k),
-            hit=hit_rate_at_k(ranked, relevant, _HIT_RATE_K),
-            reciprocal_rank=reciprocal_rank(ranked[:_MRR_K], relevant),
-            ndcg=ndcg_at_k(ranked, relevant, _NDCG_K)))
-    return Report(tuple(scores), k=k)
+             gold: Mapping[str, frozenset[str]], *, k: int = 20) -> RetrievalScores:
+    """Score the recipe's retriever, at each metric's conventional depth.
+
+    Routed through ``ragkit.eval.evaluate_retrieval`` rather than reimplementing the metric loop.
+    The fork existed only because the shared evaluator scored every metric at one depth; it also
+    meant this recipe -- the only one running retrieval eval -- bypassed the circularity and
+    missing-gold guards the shared evaluator applies before doing any work.
+    """
+    asked = {record_id: question for record_id, question in queries if gold.get(record_id)}
+    qrels = Qrels(relevant={rid: gold[rid] for rid in asked}, source=_GOLD_SOURCE)
+    scores = evaluate_retrieval({_SYSTEM: retriever}, asked, qrels,
+                                k=k, hit_rate_k=_HIT_RATE_K, rank_k=_MRR_K)
+    return scores[_SYSTEM]
 
 
 def load_gold(path: Path) -> dict[str, frozenset[str]]:
-    if not path.is_file():
-        raise EvalError(f"gold file not found: {path}")
-    gold: dict[str, frozenset[str]] = {}
-    for line_no, line in enumerate(path.read_text("utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise EvalError(f"{path}:{line_no}: invalid JSON in gold file: {exc}") from exc
-        if "record_id" not in row or "relevant" not in row:
-            raise EvalError(f"{path}:{line_no}: a gold row needs 'record_id' and 'relevant'")
-        relevant = row["relevant"]
-        if not isinstance(relevant, list) or not relevant:
-            raise EvalError(f"{path}:{line_no}: 'relevant' must be a non-empty list of passage ids")
-        gold[str(row["record_id"])] = frozenset(str(x) for x in relevant)
-    if not gold:
-        raise EvalError(f"gold file is empty: {path}")
-    return gold
+    return load_relevance_gold(path, field="relevant")
 
 
 def load_heldout(path: Path) -> list[tuple[str, str]]:
+    """The held-out questions, as ``(record_id, question)`` in file order."""
     if not path.is_file():
         raise EvalError(f"heldout file not found: {path}")
-    queries: list[tuple[str, str]] = []
-    for line_no, line in enumerate(path.read_text("utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise EvalError(f"{path}:{line_no}: invalid JSON in heldout file: {exc}") from exc
-        if "record_id" not in row or "source" not in row:
-            raise EvalError(f"{path}:{line_no}: a heldout row needs 'record_id' and 'source'")
-        queries.append((str(row["record_id"]), str(row["source"])))
-    if not queries:
-        raise EvalError(f"heldout file is empty: {path}")
-    return queries
+    return [(str(row["record_id"]), str(row["source"]))
+            for row in gold_rows(path, required=("record_id", "source"))]
 
 
 def grounding_rate(retriever: Retriever, journal: Path, gold: Mapping[str, frozenset[str]],
@@ -181,6 +103,8 @@ def grounding_rate(retriever: Retriever, journal: Path, gold: Mapping[str, froze
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    import argparse
+
     parser = argparse.ArgumentParser(description="Legal-procurement retrieval quality vs gold.")
     parser.add_argument("--config", type=Path, required=True, help="recipe config directory")
     parser.add_argument("--heldout", type=Path, required=True, help="held-out questions (JSONL)")
@@ -190,7 +114,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--journal", type=Path, default=None,
                         help="optional run journal, to also report citation-grounding rate")
     args = parser.parse_args(argv)
-    try:
+
+    def build() -> str:
         if args.k < 1:
             raise EvalError(f"--k must be >= 1, got {args.k}")
         gold = load_gold(args.gold)
@@ -200,19 +125,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise EvalError(f"the recipe at {args.config} wires no retriever to evaluate")
         report = evaluate(retriever, queries, gold, k=args.k)
         summary = (f"queries {report.queries} | Recall@{report.k} {report.recall_at_k:.3f} | "
-                   f"MRR@{_MRR_K} {report.mrr:.3f} | NDCG@{_NDCG_K} {report.ndcg:.3f} | "
-                   f"Acc@{_HIT_RATE_K} {report.hit_rate_at_10:.3f} (literature-comparable "
+                   f"MRR@{_MRR_K} {report.mrr:.3f} | NDCG@{_NDCG_K} {report.ndcg_at_k:.3f} | "
+                   f"Acc@{_HIT_RATE_K} {report.hit_rate_at_k:.3f} (literature-comparable "
                    f"top-{_HIT_RATE_K} hit rate, e.g. PolQA)")
         if args.journal is not None:
             grounded, produced = grounding_rate(
                 retriever, args.journal, gold, dict(queries), k=args.k)
             rate = grounded / produced if produced else 0.0
             summary += f" | citation-grounding {grounded}/{produced} ({rate:.3f})"
-    except EvalError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    print(summary)
-    return 0
+        return summary
+
+    return run_report(build)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via main() in tests

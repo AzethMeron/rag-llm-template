@@ -169,33 +169,6 @@ class TestFillAccuracy:
         assert fill_eval.Report(()).both_accuracy == 0.0
 
 
-class TestLoadGold:
-    def _write(self, tmp_path: Path, text: str) -> Path:
-        path = tmp_path / "gold.jsonl"
-        path.write_text(text, encoding="utf-8")
-        return path
-
-    def test_reads_rows(self, tmp_path: Path) -> None:
-        path = self._write(tmp_path, '{"record_id":"t1","genre":"Rock","unit_price":0.99}\n\n')
-        assert fill_eval.load_gold(path) == {"t1": {"genre": "Rock", "unit_price": 0.99}}
-
-    def test_missing_file(self, tmp_path: Path) -> None:
-        with pytest.raises(fill_eval.EvalError, match="not found"):
-            fill_eval.load_gold(tmp_path / "nope.jsonl")
-
-    def test_invalid_json(self, tmp_path: Path) -> None:
-        with pytest.raises(fill_eval.EvalError, match="invalid JSON"):
-            fill_eval.load_gold(self._write(tmp_path, "{bad\n"))
-
-    def test_missing_field(self, tmp_path: Path) -> None:
-        with pytest.raises(fill_eval.EvalError, match="needs 'record_id'"):
-            fill_eval.load_gold(self._write(tmp_path, '{"record_id":"t1","genre":"Rock"}\n'))
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        with pytest.raises(fill_eval.EvalError, match="empty"):
-            fill_eval.load_gold(self._write(tmp_path, "\n"))
-
-
 def _factory(genre: object, price: object) -> Callable[[str, float], httpx.Client]:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

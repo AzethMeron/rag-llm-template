@@ -9,6 +9,7 @@ same shape, and neither should own it.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -34,6 +35,10 @@ class Violation:
         return self.severity is Severity.ERROR
 
 
-def blocking(violations: list[Violation]) -> list[Violation]:
-    """Just the blocking (error-severity) violations, preserving order."""
+def blocking(violations: Sequence[Violation]) -> list[Violation]:
+    """Just the blocking (error-severity) violations, preserving order.
+
+    Lives here, beside :class:`Violation`, and is imported by
+    :mod:`ragkit.harness.validators` -- which carried a byte-identical second copy. Two
+    definitions of "which violations stop a run" is one more than the rule can survive."""
     return [violation for violation in violations if violation.blocking]

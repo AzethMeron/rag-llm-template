@@ -27,6 +27,7 @@ pattern). It is earned, not inherited, by two rules this class enforces:
 from __future__ import annotations
 
 import importlib
+import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +71,34 @@ class _Entry:
 # The signature importlib.metadata.entry_points(group=...) satisfies, injected so a test can
 # drive entry-point discovery without installing a package.
 EntryPointLoader = Callable[[str], Iterable[tuple[str, str]]]
+
+
+def _as_dotted_path(value: str) -> str:
+    """A setuptools entry-point value as this registry's ``module:attr`` form.
+
+    Object references normally already carry the colon; a bare ``pkg.mod.Attr`` splits at the
+    *last* dot only. Replacing every dot (what this used to do) turned ``pkg.mod.Attr`` into
+    ``pkg:mod:Attr``, which names no module at all. Latent, because the colon form is the norm.
+    """
+    if ":" in value:
+        return value
+    module, _, attr = value.rpartition(".")
+    return f"{module}:{attr}"
+
+
+def _missing_keywords(expected: object, actual: object) -> list[str]:
+    """The port's keyword-only parameter names that ``actual`` cannot accept — empty when there is
+    nothing to compare (a data attribute, or a callable with no introspectable signature)."""
+    if not callable(expected) or not callable(actual):
+        return []
+    try:
+        want, got = inspect.signature(expected), inspect.signature(actual)
+    except (TypeError, ValueError):  # a builtin/C callable exposes no signature
+        return []
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in got.parameters.values()):
+        return []  # **kwargs absorbs anything
+    return [name for name, parameter in want.parameters.items()
+            if parameter.kind is inspect.Parameter.KEYWORD_ONLY and name not in got.parameters]
 
 
 def _default_entry_point_loader(group: str) -> list[tuple[str, str]]:
@@ -152,6 +181,29 @@ class Registry(Generic[P]):
         members: set[str] = getattr(self._protocol, "__protocol_attrs__", set())
         return {member for member in members if not hasattr(component, member)}
 
+    def _signature_problems(self, component: type) -> list[str]:
+        """Port methods the component has, but cannot be *called* the way the port says.
+
+        ``runtime_checkable`` ``isinstance`` is signature-blind: it checks only that the named
+        members exist. A driver whose ``search(self, vector, k)`` omits ``where=`` passed both
+        that check and the ``create`` gate, then failed later with a ``TypeError`` deep inside
+        ``search``, far from where the driver was chosen.
+
+        Only **keyword-only** parameters are compared, which is where the risk actually is: the
+        ports put every load-bearing option there (``k``, ``where``, ``min_score``), callers pass
+        them by name, and so a missing or renamed one is a genuine break. Positional parameters
+        are deliberately not name-checked -- renaming ``query`` to ``q`` is harmless and flagging
+        it would be a false positive. A component taking ``**kwargs`` absorbs anything and is
+        exempt.
+        """
+        problems = []
+        for member in sorted(getattr(self._protocol, "__protocol_attrs__", set())):
+            missing = _missing_keywords(getattr(self._protocol, member, None),
+                                        getattr(component, member, None))
+            if missing:
+                problems.append(f"{member}() is missing {missing}")
+        return problems
+
     # -- resolution ----------------------------------------------------------
 
     def create(self, spec: str, options: Mapping[str, Any] | None = None, *,
@@ -162,9 +214,12 @@ class Registry(Generic[P]):
         recognised by the colon), then a registered built-in name, then — if this registry was
         given an entry-point group — a published entry point. The resolved component's own
         ``CONFIG_KEYS`` gate ``options`` (unknown keys refused), then ``from_config`` builds it,
-        then the result is checked against the port. Whatever is built is guaranteed to satisfy
-        the port or a :class:`RegistryError` is raised; a caller never receives a
-        non-conforming component silently.
+        then the result is checked against the port: it must have every one of the port's members,
+        and each of those must accept the port's keyword-only parameters. A component failing
+        either raises :class:`RegistryError` here, where the driver was named — not later, from
+        somewhere deep inside a call. That is a strong structural check, not a total one:
+        parameter types, return values, and behaviour are not verified, so "satisfies the port"
+        means it can be *called* as the port specifies, not that it does the right thing.
         """
         options = options or {}
         component, source = self._resolve(spec)
@@ -176,6 +231,12 @@ class Registry(Generic[P]):
             raise RegistryError(
                 f"{label} resolved to {type(instance).__name__!r} (via {source}), which does "
                 f"not satisfy the {self._protocol.__name__!r} port")
+        problems = self._signature_problems(type(instance))
+        if problems:
+            raise RegistryError(
+                f"{label} resolved to {type(instance).__name__!r} (via {source}), which has the "
+                f"{self._protocol.__name__!r} port's members but cannot be called as the port "
+                f"specifies: {'; '.join(problems)}")
         return instance
 
     def _resolve(self, spec: str) -> tuple[type, str]:
@@ -222,7 +283,7 @@ class Registry(Generic[P]):
             return None
         for ep_name, value in self._load_entry_points(self._entry_point_group):
             if ep_name.lower() == name.lower():
-                return self._import_dotted(value if ":" in value else value.replace(".", ":", -1))
+                return self._import_dotted(_as_dotted_path(value))
         return None
 
     def _config_keys(self, component: type, *, label: str) -> frozenset[str]:

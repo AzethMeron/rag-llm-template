@@ -24,7 +24,7 @@ from ragkit.core.placeholders import placeholder_indices
 from ragkit.core.ports import Validator
 from ragkit.core.records import Record
 from ragkit.core.registry import Registry
-from ragkit.core.rules import Severity, Violation
+from ragkit.core.rules import Severity, Violation, blocking
 from ragkit.core.width import display_columns
 
 from .capture import Capture
@@ -115,7 +115,11 @@ def _width_violations(output: str, ruleset: RuleSet, max_columns: int | None) ->
                           f"within tolerance")]
     # The project guideline measures each line the producer chose to break, and only warns.
     result: list[Violation] = []
-    for index, segment in enumerate(output.split("\\n")):
+    # "\n", not "\\n": the output has already been JSON-decoded, so its line breaks are real
+    # newline characters. Splitting on the two-character literal matched nothing, so a multi-line
+    # answer was measured as one concatenated line -- spuriously over the limit as a whole, while
+    # a genuinely over-long individual line was never flagged.
+    for index, segment in enumerate(output.split("\n")):
         width = display_columns(segment)
         if width > ruleset.max_line_columns:
             result.append(Violation(
@@ -161,10 +165,6 @@ class ValidatorPipeline:
         for validator in self.extra:
             violations.extend(validator.validate(record, output, context))
         return violations
-
-
-def blocking(violations: Sequence[Violation]) -> list[Violation]:
-    return [v for v in violations if v.blocking]
 
 
 def partition_on_exhaustion(violations: Sequence[Violation],

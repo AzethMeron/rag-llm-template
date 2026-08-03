@@ -114,6 +114,27 @@ class TestRecordJson:
         with pytest.raises(CatalogError, match="bad field value"):
             Record.from_json(json.dumps({"record_id": "x", "source": "s", "status": "nope"}))
 
+    def test_a_string_notes_field_is_refused_not_split_into_characters(self) -> None:
+        # Regression: `tuple(raw.get("notes", ()))` turned the string "oops" into
+        # ("o", "o", "p", "s") -- four notes, silently, from one malformed field.
+        with pytest.raises(CatalogError, match="notes must be a JSON array"):
+            Record.from_json(json.dumps({"record_id": "x", "source": "s", "notes": "oops"}))
+
+    @pytest.mark.parametrize("field", ["line_no", "span_start", "span_end"])
+    def test_a_non_integer_span_is_a_structured_error(self, field: str) -> None:
+        # Regression: these reached __post_init__ unchecked, which raises a bare TypeError --
+        # not caught by the `except ValueError` here, so `ragkit import` died with an
+        # unstructured traceback instead of naming the file, line, and field.
+        with pytest.raises(CatalogError, match=f"{field} must be an integer"):
+            Record.from_json(json.dumps({"record_id": "x", "source": "s", field: "7"}),
+                             path=Path("c.jsonl"), line_no=3)
+
+    @pytest.mark.parametrize("field", ["line_no", "span_start", "span_end"])
+    def test_a_boolean_span_is_refused_too(self, field: str) -> None:
+        # bool is an int subclass, so `true` would otherwise read as 1.
+        with pytest.raises(CatalogError, match=f"{field} must be an integer"):
+            Record.from_json(json.dumps({"record_id": "x", "source": "s", field: True}))
+
 
 class TestMakeRecordId:
     def test_is_deterministic(self) -> None:

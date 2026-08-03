@@ -46,11 +46,28 @@ def reference_pairings(path: Path, *, index_field: str = "source", target_field:
             except json.JSONDecodeError as exc:
                 raise ReferenceImportError(
                     f"line {line_no}: invalid JSON in reference corpus: {exc}", path=path) from exc
-            source = str(record.get(index_field, ""))
-            if not source:
+            raw_source = record.get(index_field)
+            # A JSON null (or absent) source is a blank source -- skipped, never yielded as "None".
+            # str(None) used to be "None" (truthy), so the guard below never fired and a null field
+            # was silently stored as the 4-char string "None".
+            if raw_source is None:
                 continue
-            target = str(record[target_field]) if target_field in record else ""
-            yield Pairing(chunk_id=f"ref-{line_no}", source=source, target=target, meta=record)
+            if not isinstance(raw_source, str):
+                raise ReferenceImportError(
+                    f"line {line_no}: {index_field!r} must be a string, "
+                    f"got {type(raw_source).__name__}", path=path)
+            if not raw_source:
+                continue
+            raw_target = record.get(target_field)
+            if raw_target is None:  # absent or null -> a lexical-only entry (empty target)
+                target = ""
+            elif isinstance(raw_target, str):
+                target = raw_target
+            else:
+                raise ReferenceImportError(
+                    f"line {line_no}: {target_field!r} must be a string, "
+                    f"got {type(raw_target).__name__}", path=path)
+            yield Pairing(chunk_id=f"ref-{line_no}", source=raw_source, target=target, meta=record)
 
 
 def import_reference(path: Path, pairing_store: PairingStore, *, index_field: str = "source",
@@ -102,12 +119,24 @@ def embed_and_upsert(pairings: Sequence[Pairing], vector: VectorIndex,
                      embedder: EmbeddingClient) -> None:
     """Embed each pairing's source text (de-duplicated) and upsert into ``vector`` under its
     ``chunk_id``. Shared by the importer's per-batch upsert and by :func:`reconcile_vector` (and
-    reused by :mod:`ragkit.ingest.writeback` for the same re-embed-what's-missing step)."""
+    reused by :mod:`ragkit.ingest.writeback` for the same re-embed-what's-missing step).
+
+    **No metadata is written to the vector index**, deliberately. This used to copy each
+    pairing's entire JSON record across, and nothing ever read it: a search returns
+    ``(chunk_id, score)``, and the retriever resolves display text and metadata through
+    ``pairing_store.document()`` — which is the point of the co-located store, and what keeps
+    one authoritative copy of a row rather than two that can drift. At corpus scale the copy was
+    pure disk and write bandwidth (7.1M full records duplicated into the ANN store).
+
+    The consequence to know about: a driver that *can* filter on metadata (Qdrant) has none to
+    filter on through this path. Nothing in the framework passes ``where`` to a vector search
+    today; a caller that wants payload filtering populates the index itself rather than paying
+    for a copy on every import that needs it.
+    """
     embedded = dedup_embed(embedder, [p.source for p in pairings])
     ids = [p.chunk_id for p in pairings]
     vecs = [embedded[p.source] for p in pairings]
-    metas = [dict(p.meta) for p in pairings]
-    vector.upsert(ids, vecs, metas)
+    vector.upsert(ids, vecs, [{} for _ in pairings])
 
 
 def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder: EmbeddingClient,
@@ -127,6 +156,14 @@ def reconcile_vector(pairing_store: PairingStore, vector: VectorIndex, embedder:
     *entire* corpus -- embedding and upserting millions of rows in one call would hold every one of
     their vectors in RAM at once, the same shape of bug as :meth:`LanceVectorIndex.indexed_ids`
     once did on the read side.
+
+    **Memory profile of the reconcile itself.** The one unavoidable non-streamed allocation is the
+    id set ``VectorIndex.reconcile`` returns, which at 7.1M short ids is a few hundred MB. Only
+    one such set is built: the drivers consume their indexed ids as a stream and strike them off
+    (see ``store.vector.common.reconcile_against``), where the obvious set-difference form used to
+    hold the authoritative *and* indexed sets at once, roughly doubling the peak. ``sorted()`` on
+    top adds a pointer array (~8 bytes per id, not another copy of the strings) and buys
+    deterministic, resumable batch order, which is worth it.
 
     ``on_batch``, if given, is called with ``(done, total)`` once up front (``done=0``, so a
     long-running caller can report the full scope before any work happens) and again after each

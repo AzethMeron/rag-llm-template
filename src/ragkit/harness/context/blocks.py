@@ -26,6 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ragkit.core.config import read_float, read_int, read_string, read_string_list
 from ragkit.core.errors import RagkitError
 from ragkit.core.lexicon import Entry, relevant_entries
 from ragkit.core.ports import ContextBlock, Retriever, SchemaIntrospector, SqlStore
@@ -80,7 +81,9 @@ class LiteralBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> LiteralBlock:
-        return cls(text=str(options.get("text", "")), heading=str(options.get("heading", "")))
+        opts = dict(options)
+        return cls(text=read_string(opts, "text", "", label="literal block"),
+                   heading=read_string(opts, "heading", "", label="literal block"))
 
     def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
                context: Mapping[str, Any]) -> str | None:  # noqa: ARG002
@@ -99,8 +102,10 @@ class LexiconBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> LexiconBlock:
-        return cls(heading=str(options.get("heading", cls._DEFAULT_HEADING)),
-                   limit=int(options.get("limit", 12)))
+        opts = dict(options)
+        return cls(heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="lexicon block"),
+                   limit=read_int(opts, "limit", 12, label="lexicon block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         lexicon: Sequence[Entry] = context.get("lexicon", ())
@@ -130,8 +135,11 @@ class NeighboursBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> NeighboursBlock:
-        return cls(before=int(options.get("before", 3)), after=int(options.get("after", 2)),
-                   heading=str(options.get("heading", cls._DEFAULT_HEADING)))
+        opts = dict(options)
+        return cls(before=read_int(opts, "before", 3, label="neighbours block"),
+                   after=read_int(opts, "after", 2, label="neighbours block"),
+                   heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="neighbours block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         stand_in = str(context.get("stand_in", "they"))
@@ -153,14 +161,21 @@ class EstablishedBlock:
     CONFIG_KEYS = frozenset({"before", "after", "heading"})
 
     def __init__(self, before: int = 3, after: int = 2, heading: str = _DEFAULT_HEADING) -> None:
+        # Same guard as NeighboursBlock: a negative window would otherwise fall through the
+        # `limit <= 0` path in _meta_strings and silently drop the established context.
+        if before < 0 or after < 0:
+            raise ContextBlockError("established block: before/after must be >= 0")
         self._before = before
         self._after = after
         self._heading = heading
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> EstablishedBlock:
-        return cls(before=int(options.get("before", 3)), after=int(options.get("after", 2)),
-                   heading=str(options.get("heading", cls._DEFAULT_HEADING)))
+        opts = dict(options)
+        return cls(before=read_int(opts, "before", 3, label="established block"),
+                   after=read_int(opts, "after", 2, label="established block"),
+                   heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="established block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         memory = context.get("memory")
@@ -169,8 +184,11 @@ class EstablishedBlock:
         stand_in = str(context.get("stand_in", "they"))
         neighbours = (_meta_strings(record, "context_before", self._before, from_end=True)
                       + _meta_strings(record, "context_after", self._after, from_end=False))
+        # Truthiness, not `is not None`: a recorded but *empty* output rendered as a dangling
+        # "line -> " with nothing after the arrow, which teaches the model that producing nothing
+        # is an acceptable answer.
         rendered = [f"  {_mask(line, stand_in)} -> {_mask(output, stand_in)}"
-                    for line in neighbours if (output := memory.get(line)) is not None]
+                    for line in neighbours if (output := memory.get(line))]
         if not rendered:
             return None
         return _section(self._heading, "\n".join(rendered))
@@ -195,8 +213,11 @@ class RetrievedBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> RetrievedBlock:
-        return cls(heading=str(options.get("heading", cls._DEFAULT_HEADING)),
-                   k=int(options.get("k", 3)), min_score=float(options.get("min_score", 0.3)))
+        opts = dict(options)
+        return cls(heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="retrieved block"),
+                   k=read_int(opts, "k", 3, label="retrieved block"),
+                   min_score=read_float(opts, "min_score", 0.3, label="retrieved block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         retriever = context.get("retriever")
@@ -224,7 +245,8 @@ class PreviousAttemptBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> PreviousAttemptBlock:
-        return cls(heading=str(options.get("heading", "Your previous attempt:")))
+        return cls(heading=read_string(dict(options), "heading", "Your previous attempt:",
+                                       label="previous-attempt block"))
 
     def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
                context: Mapping[str, Any]) -> str | None:
@@ -266,10 +288,12 @@ class SqlRowsBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SqlRowsBlock:
-        return cls(query=str(options.get("query", "")),
-                   heading=str(options.get("heading", "Relevant historical records:")),
-                   param_keys=tuple(options.get("param_keys", ())),
-                   limit=int(options.get("limit", 20)))
+        opts = dict(options)
+        return cls(query=read_string(opts, "query", "", label="sql_rows block"),
+                   heading=read_string(opts, "heading", "Relevant historical records:",
+                                       label="sql_rows block"),
+                   param_keys=read_string_list(opts, "param_keys", label="sql_rows block"),
+                   limit=read_int(opts, "limit", 20, label="sql_rows block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         store = context.get("sql_store")
@@ -278,8 +302,22 @@ class SqlRowsBlock:
                 "a 'sql_rows' context block is configured but no sql_store was wired into the run")
         if not isinstance(store, SqlStore):
             raise ContextBlockError("the wired 'sql_store' does not satisfy the SqlStore port")
-        params = [record.meta.get(key) for key in self._param_keys]
-        rows = store.query(self._query, params)[:self._limit]
+        missing = [key for key in self._param_keys if key not in record.meta]
+        if missing:
+            # A declared param bound to SQL NULL changes the query's meaning (``= NULL`` matches
+            # nothing), so the block would silently render no rows -- indistinguishable from a
+            # genuine no-match. A missing bind is a configuration/data error, not an empty section.
+            raise ContextBlockError(
+                f"sql_rows block: record {record.record_id!r} is missing param_key(s) {missing} "
+                f"needed by the query; a missing bind would silently match nothing")
+        params = [record.meta[key] for key in self._param_keys]
+        # The limit is applied by the database, not by slicing the result in Python: the old form
+        # fetched every matching row across the port and then discarded all but `limit`, so a
+        # broad query materialised its whole result set to show twenty lines. Wrapping in a
+        # subquery leaves the caller's own SQL untouched (verified against both shipped drivers,
+        # including a WITH clause and a query that already carries its own LIMIT).
+        rows = store.query(f"SELECT * FROM ({self._query.rstrip().rstrip(';')}) LIMIT ?",
+                           [*params, self._limit])
         if not rows:
             return None
         body = "\n".join("  " + ", ".join(f"{k}={v!r}" for k, v in row.items()) for row in rows)
@@ -298,8 +336,9 @@ class SchemaBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SchemaBlock:
-        return cls(heading=str(options.get("heading",
-                                           "Database schema (tables and their columns):")))
+        return cls(heading=read_string(dict(options), "heading",
+                                       "Database schema (tables and their columns):",
+                                       label="schema block"))
 
     def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
                context: Mapping[str, Any]) -> str | None:
@@ -333,8 +372,10 @@ class ReadingsBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> ReadingsBlock:
-        return cls(keys=tuple(options.get("keys", ())),
-                   heading=str(options.get("heading", "Reported readings and codes:")))
+        opts = dict(options)
+        return cls(keys=read_string_list(opts, "keys", label="readings block"),
+                   heading=read_string(opts, "heading", "Reported readings and codes:",
+                                       label="readings block"))
 
     def render(self, record: Record,
                context: Mapping[str, Any]) -> str | None:  # noqa: ARG002  -- reads the record only

@@ -91,6 +91,7 @@ accumulating-memory use case, a deliberate, separate post-run step, never automa
 | [`docs/tutorial.md`](docs/tutorial.md) | **how to actually build things** — a new pipeline from scratch, and every extension point with runnable examples |
 | [`docs/architecture.md`](docs/architecture.md) | the shape of the whole thing: layer boundaries, the one extension mechanism, the `Record`, durability, evaluation |
 | [`docs/config.md`](docs/config.md) | the per-file config reference — every key, type, default, and meaning |
+| [`docs/api/`](docs/api) | the per-symbol API reference — every public module, class, and function with real signatures, arguments, returns, and errors |
 | [`recipes/<task>/README.md`](recipes) | each worked recipe: its data, prompts, validators, and eval |
 | [`.audit/`](.audit) | design investigations kept across sessions (e.g. the circular-metric lesson the eval layer encodes) |
 

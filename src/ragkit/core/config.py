@@ -26,10 +26,10 @@ from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any
 
-from .errors import RagkitError
+from .errors import LocatedError
 
 
-class ConfigError(RagkitError):
+class ConfigError(LocatedError):
     """A configuration file is missing, malformed, or internally inconsistent.
 
     Carries the ``path`` and, where known, the ``label`` of the section at fault, so the
@@ -39,7 +39,6 @@ class ConfigError(RagkitError):
     def __init__(self, reason: str, *, path: Path | None = None,
                  label: str | None = None) -> None:
         super().__init__(reason, path=path, label=label)
-        self.path = path
         self.label = label
 
 
@@ -178,3 +177,22 @@ def read_string_list(section: dict[str, Any], key: str, *, label: str,
         raise ConfigError(
             f"{label}.{key} must be an array of strings, got {value!r}", path=path, label=label)
     return tuple(value)
+
+
+def read_required_path(section: dict[str, Any], key: str, *, label: str,
+                       path: Path | None = None) -> str:
+    """A required filesystem path from a config section — refused, not defaulted, when absent or
+    blank.
+
+    Unlike :func:`read_string`, there is no default: for a store whose whole purpose is durable
+    persistence, a forgotten ``path`` would otherwise silently become an ephemeral ``:memory:``
+    database that loses everything between runs, with no error anywhere. An explicit ``:memory:``
+    is a valid, deliberate value (tests, a scratch store) and is accepted."""
+    value = section.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(
+            f"{label} needs a {key!r} (the database file); without it the store would silently be "
+            f"an ephemeral in-memory database that loses everything between runs. Set {key} to the "
+            f"file path, or to ':memory:' explicitly for a deliberately ephemeral store.",
+            path=path, label=label)
+    return value

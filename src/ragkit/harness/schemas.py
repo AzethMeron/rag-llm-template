@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ragkit.core.config import read_bool, read_string
 from ragkit.core.ports import OutputSchema
 from ragkit.core.registry import Registry
 
@@ -108,11 +109,13 @@ class FormSchema:
         for entry in raw:
             if not isinstance(entry, Mapping) or "name" not in entry:
                 raise ValueError("each form field needs at least a 'name'")
+            field_opts = dict(entry)
             fields.append(FormField(
-                name=str(entry["name"]), type=str(entry.get("type", "string")),
-                description=str(entry.get("description", "")),
-                required=bool(entry.get("required", True))))
-        return cls(fields, name=str(options.get("name", "form")))
+                name=read_string(field_opts, "name", "", label="form field"),
+                type=read_string(field_opts, "type", "string", label="form field"),
+                description=read_string(field_opts, "description", "", label="form field"),
+                required=read_bool(field_opts, "required", True, label="form field")))
+        return cls(fields, name=read_string(dict(options), "name", "form", label="form schema"))
 
     def json_schema(self) -> dict[str, Any]:
         properties: dict[str, Any] = {}

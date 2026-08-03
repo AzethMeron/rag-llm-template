@@ -24,7 +24,23 @@ from ragkit.core.ports import Retriever
 
 
 class CircularEvaluationError(RagkitError):
-    """The evaluation is configured so a result would be true by construction."""
+    """The evaluation is configured so a result would be true by construction.
+
+    **The guard behind this is nominal, and that is worth knowing.** It compares
+    :attr:`Qrels.source` against the names of the systems being ranked — a *label* check. Ground
+    truth genuinely produced by a system under evaluation, but labelled anything else, passes.
+    It catches the mistake (an evaluator wiring its own retriever's output back in as gold), not
+    an adversary, and it cannot verify provenance it is not told about.
+    """
+
+
+class IncompleteGroundTruthError(RagkitError):
+    """A query being evaluated has no ground-truth judgments.
+
+    Its own type, not :class:`CircularEvaluationError`: "the gold set is incomplete" is a data
+    problem with a different fix from "the gold set is not independent", and a caller handling
+    circularity should not silently absorb it.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,9 +58,23 @@ class Qrels:
                              "from; an unlabelled ground truth cannot be checked for independence")
 
 
+def _require_relevant(relevant: frozenset[str]) -> None:
+    """Every per-query metric here is undefined with no relevant ids (recall/AP would divide by
+    zero; a 0.0 would be a made-up number for an unanswerable question). ``evaluate_retrieval``
+    already excludes such queries via :class:`IncompleteGroundTruthError`; this guards the metric
+    functions themselves, since they are public and a direct caller has no such upstream check.
+    Raised uniformly so all five metrics reject the same bad input the same way, rather than two
+    crashing with ``ZeroDivisionError`` while three silently return 0.0."""
+    if not relevant:
+        raise ValueError("a retrieval metric needs at least one relevant id, got an empty set; a "
+                         "query with no gold judgments is unscorable (evaluate_retrieval excludes "
+                         "it via IncompleteGroundTruthError before scoring)")
+
+
 def recall_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
-    """Fraction of the relevant ids that appear in the top ``k``. Undefined with no relevant ids,
-    which the harness excludes before calling this."""
+    """Fraction of the relevant ids that appear in the top ``k``. Raises ``ValueError`` with no
+    relevant ids (the quantity is undefined); the harness excludes such queries before calling."""
+    _require_relevant(relevant)
     top = set(ranked[:k])
     return len(top & relevant) / len(relevant)
 
@@ -54,12 +84,16 @@ def hit_rate_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> fl
     hit/miss, unlike ``recall_at_k``'s fraction of *all* relevant ids captured. This is the "top-k
     accuracy" metric reported by PolQA (Rybak et al., 2022) and similar OpenQA retrieval papers;
     kept alongside recall_at_k/mrr/ndcg so a recipe can report a literature-comparable number
-    instead of only this framework's own recall/MRR/NDCG convention."""
+    instead of only this framework's own recall/MRR/NDCG convention. Raises ``ValueError`` with no
+    relevant ids."""
+    _require_relevant(relevant)
     return 1.0 if set(ranked[:k]) & relevant else 0.0
 
 
 def reciprocal_rank(ranked: Sequence[str], relevant: frozenset[str]) -> float:
-    """``1 / rank`` of the first relevant id (rank counted from 1), or 0 if none is retrieved."""
+    """``1 / rank`` of the first relevant id (rank counted from 1), or 0 if none is retrieved.
+    Raises ``ValueError`` with no relevant ids."""
+    _require_relevant(relevant)
     for index, doc_id in enumerate(ranked, start=1):
         if doc_id in relevant:
             return 1.0 / index
@@ -68,7 +102,9 @@ def reciprocal_rank(ranked: Sequence[str], relevant: frozenset[str]) -> float:
 
 def average_precision(ranked: Sequence[str], relevant: frozenset[str]) -> float:
     """Mean of the precision values taken at each rank where a relevant id is hit, normalised by
-    the number of relevant ids — the per-query term of MAP."""
+    the number of relevant ids — the per-query term of MAP. Raises ``ValueError`` with no relevant
+    ids (the normalisation is undefined); the harness excludes such queries before calling."""
+    _require_relevant(relevant)
     hits = 0
     summed = 0.0
     for index, doc_id in enumerate(ranked, start=1):
@@ -80,7 +116,10 @@ def average_precision(ranked: Sequence[str], relevant: frozenset[str]) -> float:
 
 def ndcg_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
     """NDCG@k with binary relevance: DCG of the top ``k`` over the ideal DCG (every relevant id
-    ranked first). 1.0 when the top ``k`` hold as many relevant ids, as high as possible."""
+    ranked first). 1.0 when the top ``k`` hold as many relevant ids, as high as possible. Raises
+    ``ValueError`` with no relevant ids. The ``idcg`` fallback still guards ``k == 0`` (a
+    degenerate depth), which yields an empty ideal ranking even when relevant ids exist."""
+    _require_relevant(relevant)
     dcg = sum(1.0 / math.log2(index + 1)
               for index, doc_id in enumerate(ranked[:k], start=1) if doc_id in relevant)
     ideal_hits = min(k, len(relevant))
@@ -90,7 +129,8 @@ def ndcg_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalScores:
-    """Metrics for one system, averaged over the evaluated queries."""
+    """Metrics for one system, averaged over the evaluated queries. Each depth is recorded
+    alongside its metric, so a report is self-describing when they differ."""
 
     k: int
     queries: int
@@ -99,19 +139,34 @@ class RetrievalScores:
     mrr: float
     map: float
     ndcg_at_k: float
+    hit_rate_k: int
+    """Depth ``hit_rate_at_k`` was measured at — ``k`` unless the caller asked otherwise."""
+    rank_k: int
+    """Depth ``mrr``, ``map`` and ``ndcg_at_k`` were measured at."""
 
 
 def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, str], qrels: Qrels,
-                       *, k: int = 10) -> dict[str, RetrievalScores]:
+                       *, k: int = 10, hit_rate_k: int | None = None,
+                       rank_k: int | None = None) -> dict[str, RetrievalScores]:
     """Score each named retriever over ``queries`` against ``qrels``, returning per-system metrics.
 
-    Refuses, before doing any work, a configuration that would be true by construction: ground truth
-    produced by a system under evaluation (:class:`CircularEvaluationError`). Also refuses a query
-    with no ground-truth relevant ids, since scoring it would silently invent a 0 (or a 1) for a
-    question the gold set never answered.
+    Refuses, before doing any work, a configuration that would be true by construction: ground
+    truth *labelled* as coming from a system under evaluation
+    (:class:`CircularEvaluationError` — see it for the guard's nominal scope). Separately refuses
+    a query with no ground-truth relevant ids (:class:`IncompleteGroundTruthError`), since scoring
+    it would silently invent a 0 (or a 1) for a question the gold set never answered.
+
+    **Per-metric depths.** ``k`` is recall's depth; ``hit_rate_k`` and ``rank_k`` (MRR, MAP, NDCG)
+    default to it. They exist because the conventional depths genuinely differ — a recipe reporting
+    Recall@20 alongside a literature-comparable Acc@10 and MRR@10 needs all three at once, and
+    without this it had to reimplement the metric loop and so lost the guards above. Retrieval
+    happens once per query, at the deepest of the three; each metric slices what it needs.
     """
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}")
+    for name, depth in (("k", k), ("hit_rate_k", hit_rate_k), ("rank_k", rank_k)):
+        if depth is not None and depth < 1:
+            raise ValueError(f"{name} must be >= 1, got {depth}")
+    hit_depth = k if hit_rate_k is None else hit_rate_k
+    rank_depth = k if rank_k is None else rank_k
     if not systems:
         raise ValueError("no systems to evaluate")
     if qrels.source in systems:
@@ -121,25 +176,27 @@ def evaluate_retrieval(systems: Mapping[str, Retriever], queries: Mapping[str, s
             f"systems it ranks; supply gold judgments from a source that is not being evaluated.")
     missing = [qid for qid in queries if not qrels.relevant.get(qid)]
     if missing:
-        raise CircularEvaluationError(
+        raise IncompleteGroundTruthError(
             f"{len(missing)} quer(y/ies) have no ground-truth relevant ids "
             f"(e.g. {sorted(missing)[:3]}); scoring them would report a made-up number. Provide "
             f"judgments for every evaluated query, or drop it from the query set.")
 
+    depth = max(k, hit_depth, rank_depth)
     scores: dict[str, RetrievalScores] = {}
     for name, retriever in systems.items():
         recalls, hits, rrs, aps, ndcgs = [], [], [], [], []
         for qid, text in queries.items():
             relevant = qrels.relevant[qid]
-            ranked = [hit.chunk_id for hit in retriever.retrieve(text, k=k)]
+            ranked = [hit.chunk_id for hit in retriever.retrieve(text, k=depth)]
             recalls.append(recall_at_k(ranked, relevant, k))
-            hits.append(hit_rate_at_k(ranked, relevant, k))
-            rrs.append(reciprocal_rank(ranked, relevant))
-            aps.append(average_precision(ranked, relevant))
-            ndcgs.append(ndcg_at_k(ranked, relevant, k))
+            hits.append(hit_rate_at_k(ranked, relevant, hit_depth))
+            rrs.append(reciprocal_rank(ranked[:rank_depth], relevant))
+            aps.append(average_precision(ranked[:rank_depth], relevant))
+            ndcgs.append(ndcg_at_k(ranked, relevant, rank_depth))
         scores[name] = RetrievalScores(
             k=k, queries=len(queries), recall_at_k=_mean(recalls), hit_rate_at_k=_mean(hits),
-            mrr=_mean(rrs), map=_mean(aps), ndcg_at_k=_mean(ndcgs))
+            mrr=_mean(rrs), map=_mean(aps), ndcg_at_k=_mean(ndcgs),
+            hit_rate_k=hit_depth, rank_k=rank_depth)
     return scores
 
 

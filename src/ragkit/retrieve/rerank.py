@@ -6,20 +6,32 @@ the opposite trade — expensive but precise, so it only ever scores a short lis
 narrowed down. It never replaces a first-stage retriever on its own; the hybrid retriever is what
 puts one in front of it. Behind an injectable ``httpx.Client`` so it is testable with an in-memory
 transport and no server.
+
+**Normalisation happens here, in the driver.** ``rerank()`` returns relevance already in
+``[0, 1]``, the convention the vector drivers also follow — each one knows its own backend's scale
+and converts, rather than leaving every caller to guess. The scales genuinely differ: llama.cpp
+returns an unbounded cross-encoder logit, while Jina and Cohere return a ``relevance_score``
+already in ``[0, 1]``. ``score_scale`` says which, because nothing in the response distinguishes
+them; getting it wrong is silent, not loud (squashing an already-``[0, 1]`` score maps it into
+``[0.5, 0.731]``, which preserves ranking but makes every floor meaningless).
 """
 from __future__ import annotations
 
 import math
+import time
 from collections import Counter
 from collections.abc import Sequence
+from typing import Any
 
 import httpx
 
 from ragkit.core.errors import RagkitError
+from ragkit.llm.http import is_transient_http_error
 
-DEFAULT_RERANK_MIN_SCORE = 0.30
-"""A starting floor for the reranker's relevance (after the caller squashes the raw logit to
-``[0, 1]``). Tune per corpus and model, like the lexical and embedding floors."""
+SCORE_SCALES = frozenset({"logit", "unit"})
+"""What an endpoint's ``relevance_score`` means. ``logit``: an unbounded cross-encoder logit
+(llama.cpp ``--reranking``), squashed with :func:`sigmoid`. ``unit``: already in ``[0, 1]``
+(Jina, Cohere, most TEI deployments), passed through with a clamp."""
 
 
 class RerankError(RagkitError):
@@ -37,29 +49,54 @@ class RerankClient:
     no index to build); every call is a fresh request over the candidates it is given."""
 
     def __init__(self, *, base_url: str, model: str = "local", timeout_seconds: float = 120.0,
-                 client: httpx.Client | None = None) -> None:
+                 score_scale: str = "logit", max_retries: int = 2,
+                 retry_backoff_seconds: float = 1.0, client: httpx.Client | None = None) -> None:
+        if score_scale not in SCORE_SCALES:
+            raise RerankError(
+                f"score_scale must be one of {sorted(SCORE_SCALES)}, got {score_scale!r}",
+                url=base_url)
+        if max_retries < 0:
+            raise RerankError(f"max_retries must be >= 0, got {max_retries}", url=base_url)
         self._url = base_url.rstrip("/") + "/rerank"
         self._model = model
+        self._score_scale = score_scale
+        self._max_retries = max_retries
+        self._backoff = retry_backoff_seconds
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
 
+    def _post_with_retry(self, query: str, documents: Sequence[str]) -> list[Any]:
+        """POST the rerank request, retrying a transient failure (timeout, dropped connection, or a
+        5xx/429) with exponential backoff -- the same discipline the embedding client uses, so a
+        busy rerank server (llama.cpp answers 503 when every --parallel slot is in use) does not
+        abort a long hybrid run. A deterministic failure (4xx, bad reply) is raised at once."""
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._client.post(
+                    self._url,
+                    json={"model": self._model, "query": query, "documents": list(documents)})
+                response.raise_for_status()
+                results: list[Any] = response.json()["results"]
+            except (KeyError, ValueError) as exc:
+                raise RerankError(f"malformed rerank response: {exc}", url=self._url) from exc
+            except httpx.HTTPError as exc:
+                if attempt >= self._max_retries or not is_transient_http_error(exc):
+                    raise RerankError(
+                        f"rerank request failed after {attempt + 1} attempt(s): {exc}",
+                        url=self._url) from exc
+                time.sleep(self._backoff * 2 ** attempt)
+            else:
+                return results
+        raise RerankError("rerank retries exhausted", url=self._url)  # pragma: no cover
+
     def rerank(self, query: str, documents: Sequence[str]) -> list[tuple[int, float]]:
-        """Score ``documents`` against ``query``, best first. Returns ``(index, raw_score)`` pairs;
-        the indices are guaranteed a permutation of ``range(len(documents))`` and every score
-        non-NaN, so a caller may index by them without defending itself. Empty ``documents``
-        short-circuits with no HTTP call."""
+        """Score ``documents`` against ``query``, best first. Returns ``(index, relevance)`` pairs
+        with ``relevance`` in ``[0, 1]`` (see ``score_scale`` and the module docstring); the
+        indices are guaranteed a permutation of ``range(len(documents))``, so a caller may index by
+        them without defending itself. Empty ``documents`` short-circuits with no HTTP call."""
         if not documents:
             return []
-        try:
-            response = self._client.post(
-                self._url,
-                json={"model": self._model, "query": query, "documents": list(documents)})
-            response.raise_for_status()
-            results = response.json()["results"]
-        except httpx.HTTPError as exc:
-            raise RerankError(f"rerank request failed: {exc}", url=self._url) from exc
-        except (KeyError, ValueError) as exc:
-            raise RerankError(f"malformed rerank response: {exc}", url=self._url) from exc
+        results = self._post_with_retry(query, documents)
         if len(results) != len(documents):
             raise RerankError(
                 f"endpoint returned {len(results)} results for {len(documents)} documents",
@@ -71,10 +108,17 @@ class RerankClient:
                 f"malformed rerank response, a result is missing 'index' or 'relevance_score': "
                 f"{exc}", url=self._url) from exc
         self._validate(scored, len(documents))
+        normalized = [(index, self._to_relevance(score)) for index, score in scored]
         # Defensively re-sorted: the server conventionally returns best-first, but the contract
-        # does not require it and a caller must be able to trust the order.
-        scored.sort(key=lambda pair: -pair[1])
-        return scored
+        # does not require it and a caller must be able to trust the order. Both scales are
+        # monotone, so sorting before or after normalisation gives the same order.
+        normalized.sort(key=lambda pair: -pair[1])
+        return normalized
+
+    def _to_relevance(self, score: float) -> float:
+        if self._score_scale == "logit":
+            return sigmoid(score)
+        return max(0.0, min(1.0, score))
 
     def _validate(self, scored: list[tuple[int, float]], n: int) -> None:
         for index, score in scored:

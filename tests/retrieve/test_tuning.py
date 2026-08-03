@@ -54,6 +54,52 @@ class TestLoad:
         with pytest.raises(ConfigError, match="no model is set"):
             load_retrieval(_write(tmp_path, text))
 
+    def test_rerank_under_a_single_arm_kind_is_refused(self, tmp_path: Path) -> None:
+        # The bug this pins: kind="dense" + rerank enabled used to validate, assemble, and run
+        # with no reranking and no warning.
+        text = ("[retrieval]\nkind = \"dense\"\n[retrieval.dense]\nmodel = \"e\"\n"
+                "[retrieval.rerank]\nenabled = true\nmodel = \"r\"\n")
+        with pytest.raises(ConfigError, match="only the hybrid stack builds"):
+            load_retrieval(_write(tmp_path, text))
+
+    @pytest.mark.parametrize(("kind", "extra", "wanted"), [
+        ("lexical", "candidate_pool = 25\n", r"\[retrieval\]\.candidate_pool"),
+        ("lexical", "mmr_lambda = 0.5\n", r"\[retrieval\]\.mmr_lambda"),
+        ("lexical", "[retrieval.lexical]\nmin_score = 0.2\n", r"\[retrieval\.lexical\]\.min_score"),
+        ("lexical", "[retrieval.rerank]\nenabled = false\n", r"\[retrieval\.rerank\]\.enabled"),
+        ("lexical", "[retrieval.rerank]\nmodel = \"r\"\n", r"\[retrieval\.rerank\]\.model"),
+        ("dense", "[retrieval.lexical]\nmin_score = 0.2\n", r"\[retrieval\.lexical\]\.min_score"),
+        ("dense", "candidate_pool = 25\n", r"\[retrieval\]\.candidate_pool"),
+    ])
+    def test_hybrid_only_keys_refused_for_single_arm_kinds(
+            self, tmp_path: Path, kind: str, extra: str, wanted: str) -> None:
+        dense_model = "[retrieval.dense]\nmodel = \"e\"\n" if kind == "dense" else ""
+        text = f"[retrieval]\nkind = \"{kind}\"\n{extra}{dense_model}"
+        with pytest.raises(ConfigError, match=wanted):
+            load_retrieval(_write(tmp_path, text))
+
+    def test_an_unknown_rerank_score_scale_is_refused(self, tmp_path: Path) -> None:
+        text = ("[retrieval]\nkind = \"hybrid\"\n[retrieval.dense]\nmodel = \"e\"\n"
+                "[retrieval.rerank]\nenabled = true\nmodel = \"r\"\nscore_scale = \"percent\"\n")
+        with pytest.raises(ConfigError, match="score_scale must be one of"):
+            load_retrieval(_write(tmp_path, text))
+
+    def test_rerank_score_scale_round_trips(self, tmp_path: Path) -> None:
+        text = ("[retrieval]\nkind = \"hybrid\"\n[retrieval.dense]\nmodel = \"e\"\n"
+                "[retrieval.rerank]\nenabled = true\nmodel = \"r\"\nscore_scale = \"unit\"\n")
+        assert load_retrieval(_write(tmp_path, text)).rerank_score_scale == "unit"
+
+    def test_dense_min_score_refused_for_the_dense_kind(self, tmp_path: Path) -> None:
+        # A fusion-input floor, not a stack floor: even the arm's *own* kind cannot use it.
+        text = "[retrieval]\nkind = \"dense\"\n[retrieval.dense]\nmodel = \"e\"\nmin_score = 0.6\n"
+        with pytest.raises(ConfigError, match=r"min_score in context\.toml"):
+            load_retrieval(_write(tmp_path, text))
+
+    def test_dense_model_refused_for_the_lexical_kind(self, tmp_path: Path) -> None:
+        text = "[retrieval]\nkind = \"lexical\"\n[retrieval.dense]\nmodel = \"e\"\n"
+        with pytest.raises(ConfigError, match="never embeds"):
+            load_retrieval(_write(tmp_path, text))
+
     def test_mistyped_value_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigError, match="must be a number"):
             load_retrieval(_write(tmp_path, "[retrieval]\nmmr_lambda = \"hot\"\n"))
@@ -71,3 +117,14 @@ class TestSettings:
     def test_min_score_range(self) -> None:
         with pytest.raises(ValueError, match=r"lexical\.min_score must be in"):
             RetrievalSettings(kind="lexical", lexical_min_score=1.5)
+
+    def test_rerank_requires_the_hybrid_kind(self) -> None:
+        # Guarded on the dataclass too, so a caller building settings in Python (no TOML, so no
+        # key-presence check) cannot assemble a reranker that would never be called.
+        with pytest.raises(ValueError, match="only the hybrid stack builds"):
+            RetrievalSettings(kind="dense", embedding_model="e", rerank_enabled=True,
+                              rerank_model="r")
+
+    def test_embedding_model_requires_an_embedding_kind(self) -> None:
+        with pytest.raises(ValueError, match="never embeds"):
+            RetrievalSettings(kind="lexical", embedding_model="e")

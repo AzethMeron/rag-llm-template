@@ -128,6 +128,22 @@ class TestRetryPolicy:
         assert _json_call(client) == {"translation": "ok"}
         assert client.stats.retries == 1
 
+    def test_a_429_rate_limit_is_retried_then_succeeds(self) -> None:
+        # 429 (Too Many Requests) and 408 are transient -- retried with backoff like a 5xx, not
+        # raised at once the way a deterministic 4xx is (the chat client used to raise on a 429 the
+        # embedding client already retried).
+        calls = {"n": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, text="Too Many Requests")
+            return chat_reply('{"translation": "ok"}')
+
+        client = client_returning(handler, config=ServerConfig(retry_backoff_seconds=0))
+        assert _json_call(client) == {"translation": "ok"}
+        assert client.stats.retries == 1
+
     def test_a_4xx_is_not_retried_and_names_the_fix(self) -> None:
         client = client_returning(
             always(httpx.Response(400, text="Failed to initialize samplers")),

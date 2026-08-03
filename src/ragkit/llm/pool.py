@@ -15,6 +15,7 @@ slots, not weight memory.
 """
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +129,14 @@ class ModelPool:
     ``client_factory`` builds the ``httpx.Client`` for an endpoint (given its ``base_url`` and
     ``timeout``); a test injects one wrapping a ``MockTransport``. The pool closes every client it
     opened; an injected transport's lifecycle is the test's.
+
+    **Thread-safe lazily.** ``run_batch`` starts ``concurrency`` workers that all call
+    :meth:`client_for` for the same persona model at once, on a cold pool. The two caches are
+    therefore built under a lock: an unguarded check-then-set let several threads each build an
+    ``LlmClient`` + ``httpx.Client`` for the same key, and every loser was overwritten in the dict
+    and so never closed by :meth:`close` — a leaked connection pool per race, plus usage stats
+    split across the discarded clients. Reentrant because :meth:`client_for` builds an endpoint's
+    HTTP client while already holding it.
     """
 
     def __init__(self, endpoints: Mapping[str, EndpointSpec], models: Mapping[str, ModelSpec], *,
@@ -142,6 +151,7 @@ class ModelPool:
         self._client_factory = client_factory
         self._http: dict[str, httpx.Client] = {}
         self._clients: dict[str, LlmClient] = {}
+        self._build_lock = threading.RLock()
 
     def check_capacity(self, active_models: Iterable[str]) -> None:
         """Refuse, before any server is contacted, a set of in-use models that would thrash.
@@ -201,26 +211,28 @@ class ModelPool:
                 f"model {model_name!r} is a {spec.kind!r} model, not a chat model; the persona "
                 f"pool serves chat models (embedding/rerank models are used by the retrieval "
                 f"layer)")
-        if model_name not in self._clients:
-            endpoint = self._endpoints[spec.endpoint]
-            http = self._http_for(endpoint)
-            config = ServerConfig(
-                base_url=endpoint.base_url, model=spec.model_id,
-                timeout_seconds=endpoint.timeout_seconds, max_retries=endpoint.max_retries,
-                retry_backoff_seconds=endpoint.retry_backoff_seconds,
-                context_window=spec.context_window, enable_reasoning=endpoint.enable_reasoning)
-            self._clients[model_name] = LlmClient(
-                config, backend=resolve_backend(spec.backend, spec.model_id), client=http)
-        return self._clients[model_name], spec.model_id
+        with self._build_lock:
+            if model_name not in self._clients:
+                endpoint = self._endpoints[spec.endpoint]
+                http = self._http_for(endpoint)
+                config = ServerConfig(
+                    base_url=endpoint.base_url, model=spec.model_id,
+                    timeout_seconds=endpoint.timeout_seconds, max_retries=endpoint.max_retries,
+                    retry_backoff_seconds=endpoint.retry_backoff_seconds,
+                    context_window=spec.context_window, enable_reasoning=endpoint.enable_reasoning)
+                self._clients[model_name] = LlmClient(
+                    config, backend=resolve_backend(spec.backend, spec.model_id), client=http)
+            return self._clients[model_name], spec.model_id
 
     def _http_for(self, endpoint: EndpointSpec) -> httpx.Client:
-        if endpoint.name not in self._http:
-            if self._client_factory is not None:
-                http = self._client_factory(endpoint.base_url, endpoint.timeout_seconds)
-            else:
-                http = httpx.Client(timeout=endpoint.timeout_seconds)
-            self._http[endpoint.name] = http
-        return self._http[endpoint.name]
+        with self._build_lock:
+            if endpoint.name not in self._http:
+                if self._client_factory is not None:
+                    http = self._client_factory(endpoint.base_url, endpoint.timeout_seconds)
+                else:
+                    http = httpx.Client(timeout=endpoint.timeout_seconds)
+                self._http[endpoint.name] = http
+            return self._http[endpoint.name]
 
     def model_spec(self, model_name: str) -> ModelSpec:
         spec = self._models.get(model_name)
@@ -245,8 +257,9 @@ class ModelPool:
     def close(self) -> None:
         """Close every HTTP connection the pool opened. The LlmClients share these, so they are
         not closed individually (each was given an injected client it does not own)."""
-        for http in self._http.values():
-            http.close()
+        with self._build_lock:
+            for http in self._http.values():
+                http.close()
         self._http.clear()
         self._clients.clear()
 

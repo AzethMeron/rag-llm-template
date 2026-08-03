@@ -29,7 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from .errors import RagkitError
+from .errors import LocatedError
 
 if TYPE_CHECKING:
     # Deferred: ports.py imports Record from this module, so a module-level import here would be
@@ -73,15 +73,8 @@ class Status(str, Enum):
         return self in (Status.VERIFIED, Status.SKIPPED)
 
 
-class CatalogError(RagkitError):
+class CatalogError(LocatedError):
     """A catalogue or journal is malformed or internally inconsistent."""
-
-    def __init__(self, reason: str, *, path: Path | None = None,
-                 line_no: int | None = None) -> None:
-        location = f"{path}:{line_no}" if path and line_no else (str(path) if path else None)
-        super().__init__(reason, location=location)
-        self.path = path
-        self.line_no = line_no
 
 
 _EMPTY_META: Mapping[str, Any] = MappingProxyType({})
@@ -175,6 +168,22 @@ class Record:
             raise CatalogError(
                 f"meta must be a JSON object, got {type(meta).__name__}",
                 path=path, line_no=line_no)
+        notes = raw.get("notes", ())
+        if not isinstance(notes, (list, tuple)):
+            # tuple("abc") is ("a", "b", "c"): a JSON *string* here used to become one note per
+            # character rather than being refused.
+            raise CatalogError(
+                f"notes must be a JSON array, got {type(notes).__name__}",
+                path=path, line_no=line_no)
+        for field in ("line_no", "span_start", "span_end"):
+            value = raw.get(field, 0)
+            if not isinstance(value, int) or isinstance(value, bool):
+                # __post_init__ raises a bare TypeError for a non-int span, which the `except
+                # ValueError` below does not catch -- so `ragkit import` crashed with an
+                # unstructured traceback instead of naming the file, line, and field.
+                raise CatalogError(
+                    f"{field} must be an integer, got {type(value).__name__} {value!r}",
+                    path=path, line_no=line_no)
         try:
             return cls(
                 record_id=raw["record_id"],
@@ -185,12 +194,13 @@ class Record:
                 line_no=raw.get("line_no", 0),
                 span_start=raw.get("span_start", 0),
                 span_end=raw.get("span_end", 0),
-                notes=tuple(raw.get("notes", ())),
+                notes=tuple(notes),
                 meta=meta,
             )
-        except ValueError as exc:
-            # An unknown status value, mostly -- Status(...) raises ValueError. Reported with
-            # its location rather than as a bare traceback.
+        except (ValueError, TypeError) as exc:
+            # An unknown status value, mostly -- Status(...) raises ValueError. TypeError too,
+            # for whatever __post_init__ checks the explicit validation above does not cover.
+            # Reported with its location rather than as a bare traceback.
             raise CatalogError(f"bad field value: {exc}", path=path, line_no=line_no) from exc
 
 
@@ -288,8 +298,8 @@ def read_journal(journal: Path) -> Iterator[Record]:
         except CatalogError as exc:
             if index == len(lines) - 1 and not raw.endswith("\n"):
                 return
-            # CatalogError already renders its own location, so take the bare reason rather
-            # than the formatted message, or the path prints twice.
+            # CatalogError renders its own path/line_no context, so take the bare reason rather
+            # than the formatted message, or the location prints twice.
             raise CatalogError(f"corrupt journal record: {exc.reason}",
                                path=journal, line_no=index + 1) from exc
 

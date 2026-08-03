@@ -14,31 +14,77 @@ so the conversion happens here.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+import math
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
-from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Filter
 
 from ..filters import to_sql
+from .common import VectorIndexError, reconcile_against, validate_upsert
+
+_NPROBE_FRACTION = 0.05
+"""Share of the IVF partitions a query probes by default. 5% is the usual operating point where
+IVF recall is close to exact while still reading a small slice of the corpus; see
+:meth:`LanceVectorIndex.search_nprobes` for why this is a fraction and not a fixed count."""
+
+_MIN_NPROBES = 20
+"""Floor for the derived default, matching LanceDB's own default, so adding this never probes a
+small table *less* than not having it would have."""
 
 
-class VectorIndexError(RagkitError):
-    """A vector-index operation failed, or LanceDB/pyarrow is unavailable."""
+__all__ = ["LanceVectorIndex", "VectorIndexError"]  # VectorIndexError re-exported from .common
+
+
+_FILTERABLE_FIELDS = frozenset({"id"})
+"""The only real columns this table has, besides the vector itself. Metadata lives in one opaque
+JSON string (``meta``), so there is nothing for a predicate on a metadata key to resolve against."""
+
+
+def _supported(where: Filter) -> Filter:
+    """``where``, or a structured refusal — at the boundary, as :class:`VectorIndex` requires.
+
+    A predicate on a metadata key used to compile to a column this table does not have, and
+    LanceDB then failed at query time with a raw engine error about an unknown field. Refusing
+    here says what is actually wrong and what to do about it. Qdrant *can* filter on metadata (it
+    stores each key as a payload field), so this is a genuine capability difference between the
+    drivers — made explicit rather than discovered mid-query.
+
+    Not fixable by storing metadata as columns: which keys exist varies per record, and LanceDB
+    needs a fixed schema at table creation. LanceDB also offers no JSON-path filter to reach into
+    the ``meta`` string (checked directly: ``json_extract``/``get_json_object`` are unavailable).
+    """
+    unsupported = sorted({p.field for p in where if p.field not in _FILTERABLE_FIELDS})
+    if unsupported:
+        raise VectorIndexError(
+            f"the LanceDB vector index cannot filter on {unsupported}: metadata is stored as one "
+            f"opaque JSON column, so only {sorted(_FILTERABLE_FIELDS)} can be filtered. Use the "
+            f"'qdrant' driver, which stores each metadata key as a filterable payload field.")
+    return where
+
+
+def _ivf_partitions(row_count: int) -> int:
+    """The standard IVF heuristic: ``~sqrt(n)`` partitions, so each holds ``~sqrt(n)`` vectors.
+    One home for it, because the default ``nprobes`` is a fraction of what ``create_index``
+    actually built — if the two ever disagreed, search would silently under- or over-probe."""
+    return max(1, int(row_count ** 0.5))
 
 
 class LanceVectorIndex:
     """A :class:`~ragkit.core.ports.VectorIndex` over an embedded LanceDB table."""
 
-    CONFIG_KEYS = frozenset({"path", "table", "dim", "metric"})
+    CONFIG_KEYS = frozenset({"path", "table", "dim", "metric", "nprobes"})
 
     def __init__(self, path: str, *, table: str = "chunks", dim: int = 0,
-                 metric: str = "cosine") -> None:
+                 metric: str = "cosine", nprobes: int | None = None) -> None:
         if dim < 1:
             raise VectorIndexError(f"a vector index needs a positive dim, got {dim}")
+        if nprobes is not None and nprobes < 1:
+            raise VectorIndexError(f"nprobes must be >= 1 when set, got {nprobes}")
         self._metric = metric
         self._dim = dim
+        self._nprobes = nprobes
         lancedb, pa = _require_lancedb()
         self._pa = pa
         try:
@@ -58,39 +104,80 @@ class LanceVectorIndex:
         path = str(options.get("path", ""))
         if not path:
             raise VectorIndexError("the LanceDB vector index needs a 'path'")
+        raw_nprobes = options.get("nprobes")
         return cls(path=path, table=str(options.get("table", "chunks")),
-                   dim=int(options.get("dim", 0)), metric=str(options.get("metric", "cosine")))
+                   dim=int(options.get("dim", 0)), metric=str(options.get("metric", "cosine")),
+                   nprobes=None if raw_nprobes is None else int(raw_nprobes))
 
     def upsert(self, ids: Sequence[str], vectors: Sequence[Sequence[float]],
                metas: Sequence[Mapping[str, Any]]) -> None:
-        if not (len(ids) == len(vectors) == len(metas)):
-            raise VectorIndexError(
-                f"upsert got mismatched lengths: {len(ids)} ids, {len(vectors)} vectors, "
-                f"{len(metas)} metas")
+        """Replace the rows for ``ids`` and insert the rest, as **one** transaction.
+
+        Via LanceDB's native ``merge_insert``, not delete-then-add. The old two-statement form
+        left a window in which a crash had removed the old vectors without adding the new, and
+        wrote two fragments per call instead of one -- the fragment growth ``compact()`` exists to
+        clean up. It also had no structural defence against writing the same id twice; that is
+        exactly the shape of this table's real 5,000-duplicate-row corruption incident (see
+        ``compact``). ``merge_insert`` joins on ``id``, so a matched row is *updated in place*
+        rather than deleted and re-added, and a duplicate cannot be created by this path.
+        """
+        validate_upsert(ids, vectors, metas, dim=self._dim)
         if not ids:
             return
-        for vector in vectors:
-            if len(vector) != self._dim:
-                raise VectorIndexError(
-                    f"a vector has dimension {len(vector)}, but the index is {self._dim}-d")
-        self.delete(ids)  # upsert = replace any existing rows for these ids
         rows = [{"id": i, "vector": list(v), "meta": json.dumps(dict(m))}
                 for i, v, m in zip(ids, vectors, metas, strict=True)]
-        self._table.add(rows)
+        try:
+            (self._table.merge_insert("id")
+             .when_matched_update_all()
+             .when_not_matched_insert_all()
+             .execute(rows))
+        except Exception as exc:
+            raise VectorIndexError(f"could not upsert {len(rows)} row(s): {exc}") from exc
 
     def search(self, vector: Sequence[float], *, k: int,
                where: Filter = ()) -> list[tuple[str, float]]:
-        if k <= 0 or self.count() == 0:
+        if k <= 0:
+            return []
+        row_count = self.count()
+        if row_count == 0:
             return []
         if len(vector) != self._dim:
             raise VectorIndexError(
                 f"the query vector has dimension {len(vector)}, but the index is {self._dim}-d")
-        builder = self._table.search(list(vector)).metric(self._metric).limit(k)
-        predicate = to_sql(where)
+        builder = (self._table.search(list(vector)).metric(self._metric).limit(k)
+                   .nprobes(self.search_nprobes(row_count)))
+        predicate = to_sql(_supported(where))
         if predicate:
             builder = builder.where(predicate)
         return [(row["id"], _distance_to_score(row["_distance"], self._metric))
                 for row in builder.to_list()]
+
+    def search_nprobes(self, row_count: int) -> int:
+        """How many IVF partitions a query probes: the configured ``nprobes``, or a default scaled
+        to the table.
+
+        This has to be set explicitly. LanceDB's own default probes a small fixed number of
+        partitions, which is fine for a table with a handful of them and quietly lossy for one
+        with thousands: ``create_index`` builds ``~sqrt(n)`` partitions, so a 7.1M-row table has
+        ~2,650 and the default would read well under 1% of it per query. The observable symptom is
+        a recall *drop* on the very tables the ANN index was added to speed up — measured as a
+        Recall@20 dip on legal_procurement right after the index was first built.
+
+        The default probes :data:`_NPROBE_FRACTION` of the partitions (floored at
+        :data:`_MIN_NPROBES` so a small table is never probed less than LanceDB would have). Query
+        cost is therefore a roughly fixed *fraction* of the corpus rather than a fixed count — the
+        recall side of the trade is held constant as the table grows, and latency is what scales.
+        Deliberately uncapped: an upper bound would silently reintroduce the recall cliff on the
+        largest tables, which is the bug being fixed. Set ``nprobes`` in ``[vector]`` to override —
+        necessary if ``create_index`` was given an explicit ``num_partitions``, since the default
+        assumes the ``sqrt(n)`` heuristic both sides share via :func:`_ivf_partitions`.
+
+        Harmless when no index exists (the scan is exact and ignores it) and when it exceeds the
+        partition count (every partition is probed, i.e. exact).
+        """
+        if self._nprobes is not None:
+            return self._nprobes
+        return max(_MIN_NPROBES, math.ceil(_NPROBE_FRACTION * _ivf_partitions(row_count)))
 
     def delete(self, ids: Sequence[str]) -> None:
         if not ids:
@@ -101,24 +188,17 @@ class LanceVectorIndex:
     def count(self) -> int:
         return int(self._table.count_rows())
 
-    def indexed_ids(self) -> set[str]:
+    def iter_indexed_ids(self) -> Iterator[str]:
         # table.to_arrow() takes no column argument -- it would materialize every column (the
         # full 1024-d vector + meta JSON) for every row just to throw all but "id" away. At
         # millions of rows that is tens of GB for a single call. search().select(["id"]) projects
         # at the scan level so only the id column is ever read, and to_batches() streams it
         # instead of building one giant pyarrow Table.
-        ids: set[str] = set()
         for batch in self._table.search().select(["id"]).limit(None).to_batches():
-            ids.update(batch.column("id").to_pylist())
-        return ids
+            yield from batch.column("id").to_pylist()
 
     def reconcile(self, chunk_ids: Iterable[str]) -> set[str]:
-        authoritative = set(chunk_ids)
-        indexed = self.indexed_ids()
-        orphans = indexed - authoritative
-        if orphans:
-            self.delete(sorted(orphans))
-        return authoritative - indexed  # missing: the caller's to re-embed or refuse
+        return reconcile_against(chunk_ids, self.iter_indexed_ids(), self.delete)
 
     def close(self) -> None:
         # LanceDB holds no long-lived handle that needs explicit release for a local table; the
@@ -139,6 +219,15 @@ class LanceVectorIndex:
         standard IVF heuristic balancing per-partition scan cost against the number of partitions
         probed.
 
+        **The index makes search approximate, and how approximate is a query-side decision.** An
+        IVF query probes only some of the partitions; the rest of the table is never looked at, so
+        a neighbour in an unprobed partition is simply missed. How many are probed is
+        :meth:`search_nprobes`, which defaults to a fixed *fraction* of the count built here --
+        that coupling is why both sides derive from :func:`_ivf_partitions`. Passing an explicit
+        ``num_partitions`` breaks it, so pair that with an explicit ``nprobes`` in ``[vector]``.
+        More partitions means faster queries at the same nprobes but a coarser cell each, so a
+        matching nprobes rise is needed to hold recall.
+
         Not built automatically on upsert(): training needs a representative sample of the already-
         written data and is itself an expensive batch operation, so callers build it once after a
         corpus is (mostly) loaded, not on every write -- same reasoning as compact() below.
@@ -153,7 +242,7 @@ class LanceVectorIndex:
         row_count = self.count()
         if row_count == 0:
             raise VectorIndexError("cannot build a vector index on an empty table")
-        partitions = num_partitions if num_partitions is not None else max(1, int(row_count ** 0.5))
+        partitions = num_partitions if num_partitions is not None else _ivf_partitions(row_count)
         try:
             self._table.create_index(
                 "vector", config=IvfFlat(distance_type=self._metric, num_partitions=partitions),

@@ -239,14 +239,21 @@ directory, so a config is portable.
 | Table | Driver (built-in) | Key options |
 |---|---|---|
 | `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only`, `schema_sql` (the external data source is `read_only = true`; `schema_sql` initialises the framework's own writable store and is refused on a read-only binding). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
-| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
-| `[pairings]` | `sqlite` \| `duckdb` | `path`, `tokenizer` (sqlite only; defaults to `unicode61`). The reference memory: one row per `(source, target, context)` pairing, plus its FTS5 BM25 search index, **co-located in one database** — a hit's id, display text, and metadata all resolve through this one store. Give it a `path` to keep the corpus on disk (required for a large corpus and for build-once reuse); with no `path` it is in-memory, the default for small corpora and tests. Swapping `sqlite`↔`duckdb` is a one-line edit; both pass the same conformance suite. The sqlite driver is WAL (a concurrent reader is never blocked by a writer's in-flight transaction) with a 5s busy-timeout for the rest. |
-| `[run]` | `sqlite` | `path` (default `:memory:`), `synchronous` (`FULL` \| `NORMAL`; default `FULL` = fsync every commit). The record catalogue + append-only result history a run reads/writes while it executes (WAL, busy-timeout, foreign-key-enforced). |
-| `[lexicon]` | `sqlite` | `path` (default `:memory:`). Established terminology (term → rendering); usually co-located in the same file as `[pairings]` as its own table. WAL + busy-timeout, same as `[pairings]`. |
+| `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric`, `nprobes` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
+| `[pairings]` | `sqlite` \| `duckdb` | `path`, `tokenizer` (sqlite only; defaults to `unicode61`). The reference memory: one row per `(source, target, context)` pairing, plus its FTS5 BM25 search index, **co-located in one database** — a hit's id, display text, and metadata all resolve through this one store. A `path` is **required** (the corpus lives on disk, for a large corpus and build-once reuse); a forgotten `path` is refused rather than silently becoming an ephemeral in-memory store that loses the corpus between runs — pass `path = ":memory:"` explicitly for a deliberately ephemeral store (tests, a scratch corpus). Swapping `sqlite`↔`duckdb` is a one-line edit; both pass the same conformance suite. The sqlite driver is WAL (a concurrent reader is never blocked by a writer's in-flight transaction) with a 5s busy-timeout for the rest. |
+| `[run]` | `sqlite` | `path` (**required**; an explicit `:memory:` is allowed but a forgotten path is refused, since a run store that silently vanishes between runs cannot resume), `synchronous` (`FULL` \| `NORMAL`; default `FULL` = fsync every commit). The record catalogue + append-only result history a run reads/writes while it executes (WAL, busy-timeout, foreign-key-enforced). |
+| `[lexicon]` | `sqlite` | `path` (**required**; explicit `:memory:` allowed, forgotten path refused). Established terminology (term → rendering); usually co-located in the same file as `[pairings]` as its own table. WAL + busy-timeout, same as `[pairings]`. |
 | `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
 
 Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a
 third-party driver — resolved through the registry, no framework change.
+
+**`nprobes` (lancedb).** How many IVF partitions a query probes once `tools/build_vector_index.sh`
+has built an ANN index. Leave it unset and it scales with the table (5% of the `~sqrt(rows)`
+partitions the index build creates, never below 20), trading query latency for recall the same way
+at every size. Set it explicitly to move along that trade — and you **must** set it if you built
+the index with an explicit `--num-partitions`, since the default assumes the `sqrt` heuristic both
+sides share. Without an index the setting is inert: search is exact.
 
 Three database roles are kept apart: the framework's own reference memory (`[pairings]`/
 `[lexicon]`) and run state (`[run]`), and the external, read-only task data source (`[sql]` with
@@ -260,10 +267,11 @@ rows into a pairing store directly, for a recipe migrating forward from before t
 
 **On-disk streaming ingest, built once.** `[reference].file` is streamed into `[pairings]`
 line-by-line in batches, so a multi-GB corpus never materialises in RAM. When `[pairings]` is
-given a `path`, the on-disk store persists across runs and is **built once**: assembly re-imports
-only past what the store already holds (`count()` is the resume floor), so an already-populated
-on-disk corpus is read once and reused. An in-memory store (no `path`) is empty at every startup
-and so is rebuilt each run.
+given a file `path`, the on-disk store persists across runs and is **built once**: assembly
+re-imports only past what the store already holds (`count()` is the resume floor), so an
+already-populated on-disk corpus is read once and reused. An explicit `path = ":memory:"` store is
+empty at every startup and so is rebuilt each run (a forgotten `path` is refused rather than
+silently behaving this way).
 
 ---
 
@@ -320,16 +328,30 @@ floors.
 
 ### `[retrieval]`
 
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `kind` | `"lexical" \| "dense" \| "hybrid"` | `"lexical"` | Which stack to build. |
-| `candidate_pool` | int ≥ 1 | `40` | Candidates fetched per arm before fusion (hybrid). |
-| `mmr_lambda` | float in `[0,1]` | `0.7` | MMR relevance-vs-diversity trade-off (hybrid). |
-
-| Sub-table | Key | Type | Default | Meaning |
+| Key | Type | Default | Applies to | Meaning |
 |---|---|---|---|---|
-| `[retrieval.lexical]` | `min_score` | float in `[0,1]` | `0.30` | Lexical-arm fusion floor. |
-| `[retrieval.dense]` | `model` | string | required for dense/hybrid | Embedding model (`models.toml`, `kind="embedding"`). |
-| `[retrieval.dense]` | `min_score` | float in `[0,1]` | `0.55` | Dense-arm fusion floor. |
-| `[retrieval.rerank]` | `enabled` | bool | `false` | Add a cross-encoder rerank stage (hybrid). |
-| `[retrieval.rerank]` | `model` | string | required if enabled | Rerank model (`models.toml`, `kind="rerank"`). |
+| `kind` | `"lexical" \| "dense" \| "hybrid"` | `"lexical"` | all | Which stack to build. |
+| `candidate_pool` | int ≥ 1 | `40` | `hybrid` | Candidates fetched per arm before fusion. |
+| `mmr_lambda` | float in `[0,1]` | `0.7` | `hybrid` | MMR relevance-vs-diversity trade-off. |
+
+| Sub-table | Key | Type | Default | Applies to | Meaning |
+|---|---|---|---|---|---|
+| `[retrieval.lexical]` | `min_score` | float in `[0,1]` | `0.30` | `hybrid` | Lexical-arm fusion floor. |
+| `[retrieval.dense]` | `model` | string | required for dense/hybrid | `dense`, `hybrid` | Embedding model (`models.toml`, `kind="embedding"`). |
+| `[retrieval.dense]` | `min_score` | float in `[0,1]` | `0.55` | `hybrid` | Dense-arm fusion floor. |
+| `[retrieval.rerank]` | `enabled` | bool | `false` | `hybrid` | Add a cross-encoder rerank stage. |
+| `[retrieval.rerank]` | `model` | string | required if enabled | `hybrid` | Rerank model (`models.toml`, `kind="rerank"`). |
+| `[retrieval.rerank]` | `score_scale` | `"logit" \| "unit"` | `"logit"` | `hybrid` | What the endpoint's `relevance_score` means (see below). |
+
+**`score_scale`.** Rerank endpoints do not agree on a scale and nothing in the response says which
+one you got. llama.cpp `--reranking` returns an unbounded cross-encoder **logit** (the default,
+squashed with a sigmoid); Jina, Cohere and most TEI deployments return a score already in `[0, 1]`
+(`"unit"`, passed through). Getting this wrong is silent rather than loud — squashing an
+already-`[0, 1]` score maps it into `[0.5, 0.731]`, so the ranking still looks right while every
+floor below `0.5` stops meaning anything.
+
+**A key outside its kind's "Applies to" column is refused, not ignored.** Only the hybrid stack
+fuses two arms, so only it has a candidate pool, per-arm floors, MMR, and a rerank stage. Setting
+`[retrieval.rerank].enabled = true` under `kind = "dense"` is a `ConfigError`, not a dense stack
+that quietly never reranks. To put a floor under a **single-arm** stack, set the retrieved block's
+`min_score` in [`context.toml`](#contexttoml) — that is the run's final relevance floor either way.
