@@ -240,9 +240,9 @@ directory, so a config is portable.
 |---|---|---|
 | `[sql]` | `sqlite` \| `duckdb` | `path`, `read_only`, `schema_sql` (the external data source is `read_only = true`; `schema_sql` initialises the framework's own writable store and is refused on a read-only binding). Swapping `sqlite`↔`duckdb` is a one-line config edit — both are real embedded SQL engines and pass the same conformance suite. |
 | `[vector]` | `lancedb` \| `qdrant` | `path`, `dim` (plus `table`, `metric`, `nprobes` for `lancedb`; `collection` for `qdrant`). Two real embedded vector DBs behind one port — swapping `lancedb`↔`qdrant` is a one-line edit; both pass the same conformance suite. `qdrant` also takes `url` to point at a Qdrant server. |
-| `[pairings]` | `sqlite` \| `duckdb` | `path`, `tokenizer` (sqlite only; defaults to `unicode61`). The reference memory: one row per `(source, target, context)` pairing, plus its FTS5 BM25 search index, **co-located in one database** — a hit's id, display text, and metadata all resolve through this one store. Give it a `path` to keep the corpus on disk (required for a large corpus and for build-once reuse); with no `path` it is in-memory, the default for small corpora and tests. Swapping `sqlite`↔`duckdb` is a one-line edit; both pass the same conformance suite. The sqlite driver is WAL (a concurrent reader is never blocked by a writer's in-flight transaction) with a 5s busy-timeout for the rest. |
-| `[run]` | `sqlite` | `path` (default `:memory:`), `synchronous` (`FULL` \| `NORMAL`; default `FULL` = fsync every commit). The record catalogue + append-only result history a run reads/writes while it executes (WAL, busy-timeout, foreign-key-enforced). |
-| `[lexicon]` | `sqlite` | `path` (default `:memory:`). Established terminology (term → rendering); usually co-located in the same file as `[pairings]` as its own table. WAL + busy-timeout, same as `[pairings]`. |
+| `[pairings]` | `sqlite` \| `duckdb` | `path`, `tokenizer` (sqlite only; defaults to `unicode61`). The reference memory: one row per `(source, target, context)` pairing, plus its FTS5 BM25 search index, **co-located in one database** — a hit's id, display text, and metadata all resolve through this one store. A `path` is **required** (the corpus lives on disk, for a large corpus and build-once reuse); a forgotten `path` is refused rather than silently becoming an ephemeral in-memory store that loses the corpus between runs — pass `path = ":memory:"` explicitly for a deliberately ephemeral store (tests, a scratch corpus). Swapping `sqlite`↔`duckdb` is a one-line edit; both pass the same conformance suite. The sqlite driver is WAL (a concurrent reader is never blocked by a writer's in-flight transaction) with a 5s busy-timeout for the rest. |
+| `[run]` | `sqlite` | `path` (**required**; an explicit `:memory:` is allowed but a forgotten path is refused, since a run store that silently vanishes between runs cannot resume), `synchronous` (`FULL` \| `NORMAL`; default `FULL` = fsync every commit). The record catalogue + append-only result history a run reads/writes while it executes (WAL, busy-timeout, foreign-key-enforced). |
+| `[lexicon]` | `sqlite` | `path` (**required**; explicit `:memory:` allowed, forgotten path refused). Established terminology (term → rendering); usually co-located in the same file as `[pairings]` as its own table. WAL + busy-timeout, same as `[pairings]`. |
 | `[introspector]` | `sqlite` \| `duckdb` | `path` (reads a schema without importing a store driver). |
 
 Any table also accepts a **dotted path** (`driver = "mypkg:MyStore"`) or an entry-point name for a
@@ -267,10 +267,11 @@ rows into a pairing store directly, for a recipe migrating forward from before t
 
 **On-disk streaming ingest, built once.** `[reference].file` is streamed into `[pairings]`
 line-by-line in batches, so a multi-GB corpus never materialises in RAM. When `[pairings]` is
-given a `path`, the on-disk store persists across runs and is **built once**: assembly re-imports
-only past what the store already holds (`count()` is the resume floor), so an already-populated
-on-disk corpus is read once and reused. An in-memory store (no `path`) is empty at every startup
-and so is rebuilt each run.
+given a file `path`, the on-disk store persists across runs and is **built once**: assembly
+re-imports only past what the store already holds (`count()` is the resume floor), so an
+already-populated on-disk corpus is read once and reused. An explicit `path = ":memory:"` store is
+empty at every startup and so is rebuilt each run (a forgotten `path` is refused rather than
+silently behaving this way).
 
 ---
 

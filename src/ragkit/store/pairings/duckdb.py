@@ -27,6 +27,7 @@ import threading
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
+from ragkit.core.config import read_required_path
 from ragkit.core.ports import Pairing
 
 from ..lexical.bm25 import bm25_to_relevance
@@ -95,7 +96,7 @@ class DuckDBPairings:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> DuckDBPairings:
-        return cls(path=str(options.get("path", ":memory:")))
+        return cls(path=read_required_path(dict(options), "path", label="[pairings] store"))
 
     def _rebuild_fts(self) -> None:
         # stemmer/stopwords='none': the SQLite driver's FTS5 unicode61 tokenizer does neither, and

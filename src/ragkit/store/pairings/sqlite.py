@@ -15,6 +15,7 @@ import threading
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
+from ragkit.core.config import read_required_path
 from ragkit.core.ports import Pairing
 
 from ..lexical.bm25 import as_match, bm25_to_relevance
@@ -94,7 +95,8 @@ class SqlitePairings:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SqlitePairings:
-        return cls(path=str(options.get("path", ":memory:")),
+        opts = dict(options)
+        return cls(path=read_required_path(opts, "path", label="[pairings] store"),
                    tokenizer=str(options.get("tokenizer", "unicode61")))
 
     def add(self, pairings: Iterable[Pairing]) -> int:

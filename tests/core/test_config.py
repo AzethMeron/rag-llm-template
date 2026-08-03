@@ -13,6 +13,7 @@ from ragkit.core.config import (
     read_bool,
     read_float,
     read_int,
+    read_required_path,
     read_string,
     read_string_list,
     reject_unknown,
@@ -157,3 +158,23 @@ class TestReadStringList:
     def test_non_string_entry_is_refused(self) -> None:
         with pytest.raises(ConfigError, match="must be an array of strings"):
             read_string_list({"xs": ["a", 2]}, "xs", label="[x]")
+
+
+class TestReadRequiredPath:
+    def test_reads_a_path(self) -> None:
+        assert read_required_path({"path": "/data/x.db"}, "path", label="[s]") == "/data/x.db"
+
+    def test_explicit_memory_is_allowed(self) -> None:
+        # An explicit :memory: is a deliberate ephemeral choice, not the silent-default trap.
+        assert read_required_path({"path": ":memory:"}, "path", label="[s]") == ":memory:"
+
+    def test_absent_is_refused(self) -> None:
+        # The whole point: a forgotten path must not silently default to an ephemeral store.
+        with pytest.raises(ConfigError, match="needs a 'path'"):
+            read_required_path({}, "path", label="[pairings] store")
+
+    def test_blank_or_non_string_is_refused(self) -> None:
+        with pytest.raises(ConfigError, match="needs a 'path'"):
+            read_required_path({"path": "  "}, "path", label="[s]")
+        with pytest.raises(ConfigError, match="needs a 'path'"):
+            read_required_path({"path": 5}, "path", label="[s]")

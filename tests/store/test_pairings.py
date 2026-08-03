@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from ragkit.core.config import ConfigError
 from ragkit.core.ports import Pairing
 from ragkit.store.pairings.common import PairingStoreError
 from ragkit.store.pairings.duckdb import DuckDBPairings
@@ -111,6 +112,13 @@ class TestLifecycle:
         store = driver.from_config({"path": str(tmp_path / filename)})
         store.add([Pairing(chunk_id="c1", source="x")])
         assert store.count() == 1
+
+    def test_from_config_without_a_path_is_refused(self, driver: type[Any], filename: str) -> None:
+        # A forgotten path must not silently become an ephemeral :memory: store that persists
+        # nothing across runs; from_config refuses it (an explicit :memory: is still allowed).
+        with pytest.raises(ConfigError, match="needs a 'path'"):
+            driver.from_config({})
+        assert driver.from_config({"path": ":memory:"}).count() == 0
 
     def test_in_memory_default(self, driver: type[Any], filename: str) -> None:
         store = driver()
