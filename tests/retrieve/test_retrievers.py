@@ -1,10 +1,18 @@
 """The first-stage retrievers over real storage indexes."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
+import pytest
+
 from ragkit.core.ports import Pairing
-from ragkit.retrieve.retrievers import DenseRetriever, LexicalRetriever, trigram_similarity
+from ragkit.retrieve.retrievers import (
+    DenseRetriever,
+    LexicalRetriever,
+    RetrieverError,
+    trigram_similarity,
+)
 from ragkit.store.pairings.sqlite import SqlitePairings
 from ragkit.store.vector.lancedb import LanceVectorIndex
 
@@ -36,12 +44,14 @@ class TestLexical:
     def test_k_zero(self) -> None:
         assert LexicalRetriever(self._index(), _resolve).retrieve("quick", k=0) == ()
 
-    def test_unresolvable_id_is_dropped(self) -> None:
-        # The index knows 'ghost' but the text store has lost it: dropped, not surfaced empty.
+    def test_unresolvable_id_raises_because_the_store_is_co_located(self) -> None:
+        # The lexical index and text store are the SAME PairingStore, whose contract says a hit and
+        # its text cannot drift apart -- so an unresolvable hit is an internal invariant violation
+        # (a corrupt store), raised loudly rather than silently dropped into a short result list.
         index = SqlitePairings()
         index.add([Pairing(chunk_id="ghost", source="the quick brown fox")])
-        hits = LexicalRetriever(index, lambda cid: None).retrieve("fox", k=5)
-        assert hits == ()
+        with pytest.raises(RetrieverError, match="internally inconsistent"):
+            LexicalRetriever(index, lambda cid: None).retrieve("fox", k=5)
 
 
 class TestDense:
@@ -60,6 +70,18 @@ class TestDense:
     def test_k_zero(self, tmp_path: Path) -> None:
         embedder = fake_embedder(lambda t: [1.0, 0.0])
         assert DenseRetriever(self._index(tmp_path), embedder, _resolve).retrieve("x", k=0) == ()
+
+    def test_unresolvable_id_is_dropped_with_a_warning(self, tmp_path: Path,
+                                                       caplog: pytest.LogCaptureFixture) -> None:
+        # The dense arm's vector index and pairing store are separate and can legitimately drift
+        # between reconciles, so an unresolvable hit is dropped -- but never silently: a warning
+        # names the drop count so a badly-stale index cannot quietly halve every result set.
+        embedder = fake_embedder(lambda t: [1.0, 0.0])
+        retriever = DenseRetriever(self._index(tmp_path), embedder, lambda cid: None)
+        with caplog.at_level(logging.WARNING):
+            hits = retriever.retrieve("x", k=2)
+        assert hits == ()
+        assert "dropped 2 of 2" in caplog.text and "stale" in caplog.text
 
 
 def test_trigram_similarity() -> None:

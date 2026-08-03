@@ -3,17 +3,31 @@
 Each adapts a storage index to the :class:`~ragkit.core.ports.Retriever` port — ``retrieve(query,
 k, min_score) -> tuple[Retrieved, ...]``, best-first, deterministic, safe to share across a run's
 workers. The index returns ``(chunk_id, score)``; a ``resolve`` callable maps an id back to its
-text (returning ``None`` for an id the index knows but the text store has lost — dropped rather
-than surfaced as an empty result). A hit whose score is below ``min_score`` is dropped.
+text. A hit whose score is below ``min_score`` is dropped.
+
+An id the search index returns but ``resolve`` cannot map to text is handled by *where* the two
+come from, never silently dropped without a trace:
+
+* **lexical** — the search index and the text store are the *same* co-located
+  :class:`~ragkit.core.ports.PairingStore`, whose contract guarantees a hit and its text cannot
+  drift apart, so an unresolvable hit is an internal invariant violation (a corrupt store) and is
+  raised as a :class:`RetrieverError`;
+* **dense** — the vector index and the pairing store are separately written and can legitimately
+  drift between reconciles, so an unresolvable hit is dropped, but with a ``logger.warning`` naming
+  the count so a badly-stale index cannot silently halve every result set.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Retrieved, SearchIndex, VectorIndex
 
 from .embedding import EmbeddingClient
+
+logger = logging.getLogger(__name__)
 
 # Maps a chunk id to its text, or None if the text store no longer has it.
 Resolver = Callable[[str], str | None]
@@ -22,20 +36,37 @@ Resolver = Callable[[str], str | None]
 MetaResolver = Callable[[str], Mapping[str, Any]]
 
 
+class RetrieverError(RagkitError):
+    """A retriever hit an inconsistency it cannot paper over — e.g. a co-located store returned a
+    search hit whose text it cannot resolve, which its port contract says is impossible."""
+
+
 def _no_meta(_chunk_id: str) -> Mapping[str, Any]:
     return {}
 
 
 def _collect(scored: list[tuple[str, float]], resolve: Resolver, meta: MetaResolver,
-             min_score: float) -> tuple[Retrieved, ...]:
+             min_score: float, *, arm: str, colocated: bool) -> tuple[Retrieved, ...]:
     hits: list[Retrieved] = []
+    dropped = 0
     for chunk_id, score in scored:
         if score < min_score:
             continue
         text = resolve(chunk_id)
         if text is None:
+            if colocated:
+                raise RetrieverError(
+                    f"{arm} retriever: the search index returned id {chunk_id!r} that the "
+                    f"co-located store cannot resolve to text — the pairing store is internally "
+                    f"inconsistent (its rows and search index have drifted apart)")
+            dropped += 1
             continue
         hits.append(Retrieved(chunk_id=chunk_id, text=text, score=score, meta=meta(chunk_id)))
+    if dropped:
+        logger.warning(
+            "%s retriever: dropped %d of %d hit(s) whose text the store no longer has; the vector "
+            "index may be stale versus the pairing store — run reconcile",
+            arm, dropped, len(scored))
     return tuple(hits)
 
 
@@ -55,7 +86,8 @@ class LexicalRetriever:
     def retrieve(self, query: str, *, k: int, min_score: float = 0.0) -> tuple[Retrieved, ...]:
         if k <= 0:
             return ()
-        return _collect(self._index.search(query, k=k), self._resolve, self._meta, min_score)
+        return _collect(self._index.search(query, k=k), self._resolve, self._meta, min_score,
+                        arm="lexical", colocated=True)
 
 
 class DenseRetriever:
@@ -75,7 +107,8 @@ class DenseRetriever:
             return ()
         vector = self._embedder.embed_one(query)
         scored = self._index.search(vector, k=k)
-        return _collect(scored, self._resolve, self._meta, min_score)
+        return _collect(scored, self._resolve, self._meta, min_score,
+                        arm="dense", colocated=False)
 
 
 def _trigrams(text: str) -> set[str]:
