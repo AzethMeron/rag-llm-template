@@ -306,4 +306,5 @@ def _rerank_client(settings: RetrievalSettings, pool: ModelPool,
     endpoint = pool.endpoint(spec.endpoint)
     client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
     return RerankClient(base_url=endpoint.base_url, model=spec.model_id,
-                        score_scale=settings.rerank_score_scale, client=client)
+                        score_scale=settings.rerank_score_scale, max_retries=endpoint.max_retries,
+                        retry_backoff_seconds=endpoint.retry_backoff_seconds, client=client)

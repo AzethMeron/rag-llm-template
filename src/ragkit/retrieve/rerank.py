@@ -18,12 +18,15 @@ them; getting it wrong is silent, not loud (squashing an already-``[0, 1]`` scor
 from __future__ import annotations
 
 import math
+import time
 from collections import Counter
 from collections.abc import Sequence
+from typing import Any
 
 import httpx
 
 from ragkit.core.errors import RagkitError
+from ragkit.llm.http import is_transient_http_error
 
 SCORE_SCALES = frozenset({"logit", "unit"})
 """What an endpoint's ``relevance_score`` means. ``logit``: an unbounded cross-encoder logit
@@ -46,16 +49,45 @@ class RerankClient:
     no index to build); every call is a fresh request over the candidates it is given."""
 
     def __init__(self, *, base_url: str, model: str = "local", timeout_seconds: float = 120.0,
-                 score_scale: str = "logit", client: httpx.Client | None = None) -> None:
+                 score_scale: str = "logit", max_retries: int = 2,
+                 retry_backoff_seconds: float = 1.0, client: httpx.Client | None = None) -> None:
         if score_scale not in SCORE_SCALES:
             raise RerankError(
                 f"score_scale must be one of {sorted(SCORE_SCALES)}, got {score_scale!r}",
                 url=base_url)
+        if max_retries < 0:
+            raise RerankError(f"max_retries must be >= 0, got {max_retries}", url=base_url)
         self._url = base_url.rstrip("/") + "/rerank"
         self._model = model
         self._score_scale = score_scale
+        self._max_retries = max_retries
+        self._backoff = retry_backoff_seconds
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
+
+    def _post_with_retry(self, query: str, documents: Sequence[str]) -> list[Any]:
+        """POST the rerank request, retrying a transient failure (timeout, dropped connection, or a
+        5xx/429) with exponential backoff -- the same discipline the embedding client uses, so a
+        busy rerank server (llama.cpp answers 503 when every --parallel slot is in use) does not
+        abort a long hybrid run. A deterministic failure (4xx, bad reply) is raised at once."""
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._client.post(
+                    self._url,
+                    json={"model": self._model, "query": query, "documents": list(documents)})
+                response.raise_for_status()
+                results: list[Any] = response.json()["results"]
+            except (KeyError, ValueError) as exc:
+                raise RerankError(f"malformed rerank response: {exc}", url=self._url) from exc
+            except httpx.HTTPError as exc:
+                if attempt >= self._max_retries or not is_transient_http_error(exc):
+                    raise RerankError(
+                        f"rerank request failed after {attempt + 1} attempt(s): {exc}",
+                        url=self._url) from exc
+                time.sleep(self._backoff * 2 ** attempt)
+            else:
+                return results
+        raise RerankError("rerank retries exhausted", url=self._url)  # pragma: no cover
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[tuple[int, float]]:
         """Score ``documents`` against ``query``, best first. Returns ``(index, relevance)`` pairs
@@ -64,16 +96,7 @@ class RerankClient:
         them without defending itself. Empty ``documents`` short-circuits with no HTTP call."""
         if not documents:
             return []
-        try:
-            response = self._client.post(
-                self._url,
-                json={"model": self._model, "query": query, "documents": list(documents)})
-            response.raise_for_status()
-            results = response.json()["results"]
-        except httpx.HTTPError as exc:
-            raise RerankError(f"rerank request failed: {exc}", url=self._url) from exc
-        except (KeyError, ValueError) as exc:
-            raise RerankError(f"malformed rerank response: {exc}", url=self._url) from exc
+        results = self._post_with_retry(query, documents)
         if len(results) != len(documents):
             raise RerankError(
                 f"endpoint returned {len(results)} results for {len(documents)} documents",

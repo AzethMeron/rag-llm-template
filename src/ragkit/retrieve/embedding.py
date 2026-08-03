@@ -16,11 +16,9 @@ from typing import Any
 import httpx
 
 from ragkit.core.errors import RagkitError
+from ragkit.llm.http import is_transient_http_error
 
 _PLACEHOLDER = re.compile(r"\[\[\d+\]\]")
-# Transient failures worth retrying: a timed-out or dropped connection, or a server-side/rate-limit
-# status. A 4xx (bad request) or a malformed reply is deterministic and is raised at once.
-_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 
 DEFAULT_EMBEDDING_MIN_SCORE = 0.55
 """A sensible starting cosine floor. On a different scale from the lexical floor: embedding
@@ -120,7 +118,7 @@ class EmbeddingClient:
             except (KeyError, ValueError) as exc:
                 raise EmbeddingError(f"malformed embedding response: {exc}", url=self._url) from exc
             except httpx.HTTPError as exc:
-                if attempt >= self._max_retries or not _is_transient(exc):
+                if attempt >= self._max_retries or not is_transient_http_error(exc):
                     raise EmbeddingError(
                         f"embedding request failed after {attempt + 1} attempt(s): {exc}",
                         url=self._url) from exc
@@ -167,12 +165,6 @@ def dedup_embed(embedder: EmbeddingClient, texts: Sequence[str]) -> dict[str, Se
     persisted across batches — a rare cross-batch duplicate is simply re-embedded."""
     unique = list(dict.fromkeys(texts))
     return dict(zip(unique, embedder.embed(unique), strict=True))
-
-
-def _is_transient(exc: httpx.HTTPError) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in _TRANSIENT_STATUS
-    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
 
 
 def _require_numpy() -> Any:

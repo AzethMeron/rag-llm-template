@@ -104,7 +104,8 @@ class TestTheDependencyDirectionHolds:
 # so the dependency may appear only in the listed module(s) (a leaf path substring) and nowhere
 # else. That confinement keeps the core/harness import path clean and lets a run without that
 # feature omit the dependency entirely. httpx is the OpenAI-compatible transport: it is confined to
-# the four HTTP-client modules that wrap it, so it cannot leak into core, harness, store, or ingest.
+# the HTTP-client modules that wrap it (plus llm/http.py, which classifies its errors), so it cannot
+# leak into core, harness, store, or ingest.
 DRIVER_DEP_LOCATIONS = {
     "lancedb": ("store/vector/lancedb.py",),
     "lance": ("store/vector/lancedb.py",),  # pylance: only compact()'s to_lance()/optimize() path
@@ -116,7 +117,8 @@ DRIVER_DEP_LOCATIONS = {
     "psycopg": ("store/",),
     "chromadb": ("store/vector/",),
     "duckdb": ("store/sql/duckdb.py", "store/pairings/duckdb.py"),
-    "httpx": ("llm/client.py", "llm/pool.py", "retrieve/embedding.py", "retrieve/rerank.py"),
+    "httpx": ("llm/client.py", "llm/http.py", "llm/pool.py", "retrieve/embedding.py",
+              "retrieve/rerank.py"),
 }
 
 

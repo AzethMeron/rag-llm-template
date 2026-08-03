@@ -18,8 +18,11 @@ def embedding_client(handler: Callable[[httpx.Request], httpx.Response], *,
 
 
 def rerank_client(handler: Callable[[httpx.Request], httpx.Response],
-                  *, score_scale: str = "logit") -> RerankClient:
-    return RerankClient(base_url="http://x/v1", score_scale=score_scale,
+                  *, score_scale: str = "logit", max_retries: int = 0) -> RerankClient:
+    # Default max_retries=0 (fail fast) keeps the tests deterministic and quick; retry tests pass a
+    # count explicitly. retry_backoff_seconds=0 means a retry never actually sleeps.
+    return RerankClient(base_url="http://x/v1", score_scale=score_scale, max_retries=max_retries,
+                        retry_backoff_seconds=0,
                         client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 

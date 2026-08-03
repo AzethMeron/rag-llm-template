@@ -38,6 +38,42 @@ class TestRerank:
         with pytest.raises(RerankError, match="rerank request failed"):
             rerank_client(handler).rerank("q", ["a"])
 
+    def test_a_transient_status_is_retried_then_succeeds(self) -> None:
+        # A busy rerank server answers 503 (all --parallel slots in use); retried with backoff like
+        # the embedding client, rather than aborting a long hybrid run (the client had no retry).
+        calls = {"n": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(503, text="busy") if calls["n"] == 1 else _results(0.5)
+        result = rerank_client(handler, max_retries=3).rerank("q", ["a"])
+        assert result == [(0, pytest.approx(sigmoid(0.5)))]
+        assert calls["n"] == 2  # one retry
+
+    def test_gives_up_after_the_retry_budget(self) -> None:
+        calls = {"n": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(503, text="busy")
+        with pytest.raises(RerankError, match="after 3 attempt"):
+            rerank_client(handler, max_retries=2).rerank("q", ["a"])
+        assert calls["n"] == 3  # initial + 2 retries
+
+    def test_a_4xx_is_not_retried(self) -> None:
+        calls = {"n": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(400, text="bad request")
+        with pytest.raises(RerankError, match="rerank request failed"):
+            rerank_client(handler, max_retries=3).rerank("q", ["a"])
+        assert calls["n"] == 1  # deterministic 4xx -> no retry
+
+    def test_bad_retry_config(self) -> None:
+        with pytest.raises(RerankError, match="max_retries"):
+            RerankClient(base_url="http://x", max_retries=-1)
+
     def test_wrong_count(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return _results(0.5)  # one result for two docs

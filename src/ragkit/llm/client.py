@@ -26,6 +26,7 @@ from ragkit.core.jsonshape import json_type_matches
 from ragkit.core.ports import Message, SamplingParams
 
 from .backends import DEFAULT_BACKEND, BaseBackend, SchemaBackend, get_backend, suggest_backend
+from .http import TRANSIENT_HTTP_STATUS
 from .errors import (
     LlmContentError,
     LlmError,
@@ -209,14 +210,16 @@ class LlmClient:
                 last = LlmError(f"transport failure: {exc}", role=role)
                 continue
 
-            if response.status_code >= 500:
-                last = LlmError(self._server_error_reason(schema, response.text),
-                                role=role, status=response.status_code, body=response.text)
-                continue
             if response.status_code != 200:
-                # 4xx indicates a malformed request; retrying cannot help.
-                raise LlmError(self._server_error_reason(schema, response.text),
-                               role=role, status=response.status_code, body=response.text)
+                error = LlmError(self._server_error_reason(schema, response.text),
+                                 role=role, status=response.status_code, body=response.text)
+                # A transient status (5xx, plus 429 rate-limit and 408 request-timeout) is retried
+                # with backoff, the same set the embedding/rerank clients retry. A deterministic 4xx
+                # (400/401/403/404/422) cannot be helped by retrying, so it is raised at once.
+                if response.status_code in TRANSIENT_HTTP_STATUS:
+                    last = error
+                    continue
+                raise error
 
             try:
                 body = response.json()
