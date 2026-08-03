@@ -66,6 +66,11 @@ class SqliteStore:
 
     def __init__(self, path: str = ":memory:", *, read_only: bool = False,
                  schema_sql: str | None = None) -> None:
+        # A read-only store running schema_sql is a contradiction -- rejected before opening the
+        # connection, so a bad config never orphans an open file handle (matching DuckDBStore) and
+        # the error names the real mistake rather than a downstream open failure.
+        if schema_sql and read_only:
+            raise SqlStoreError.schema_on_read_only()
         self.read_only = read_only
         self._lock = threading.Lock()
         # A read-only binding opens the file in read-only mode via URI, so even a bug that slips a
@@ -75,8 +80,6 @@ class SqliteStore:
                       else sqlite3.connect(path, check_same_thread=False))
         self._conn.row_factory = sqlite3.Row
         if schema_sql:
-            if read_only:
-                raise SqlStoreError.schema_on_read_only()
             with self._lock:
                 self._conn.executescript(schema_sql)
                 self._conn.commit()
