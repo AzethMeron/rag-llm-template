@@ -168,6 +168,66 @@ selection is never silent.
 **Raises:**
 - `BackendError`: (via `get_backend`) the resolved name is not registered.
 
+## ragkit.llm.providers
+
+The inference *providers* — the endpoint kinds the transport can talk to — and the registry that
+selects one. Every provider speaks OpenAI-compatible HTTP, so one transport serves them all; the
+provider carries what the transport cannot infer from the wire: which capabilities the endpoint
+offers, and which request extras are safe to send. Concrete implementation of the
+`ragkit.core.ports.Provider` port; the same codec-registry pattern as `ragkit.llm.backends`.
+
+**Module constants:**
+- `DEFAULT_PROVIDER` (`str`, `"llamacpp-router"`): the provider assumed when none is named.
+- `CAPABILITIES` (`frozenset[str]`, `{"chat", "embedding", "rerank"}`): the roles an endpoint may fill.
+
+Three built-ins are registered at import: `llamacpp-router` (all capabilities, sends
+`chat_template_kwargs`), `ollama` (chat + embedding only, no template kwarg), `openai-compatible`
+(all capabilities, no template kwarg — a strict server would reject it).
+
+### ProviderError
+
+`RagkitError` subclass: a provider was requested that does not exist, two were registered under one
+name, or a provider was declared with an unknown capability.
+
+### LlmProvider
+
+One endpoint kind: its `name`, the `capabilities` it can serve, and its request quirks. Stateless
+and shared, `slots`-based; satisfies the `Provider` port structurally. Constructed as
+`LlmProvider(name: str, *, capabilities: frozenset[str] | set[str], sends_template_kwargs: bool)`.
+
+**Attributes:**
+- `name` (`str`): the registered name.
+- `capabilities` (`frozenset[str]`): the served roles, a subset of `CAPABILITIES`.
+
+**Raises (at construction):**
+- `ProviderError`: the name is blank, or a declared capability is not in `CAPABILITIES`.
+
+#### `supports(self, capability: str) -> bool`
+
+Whether this endpoint kind can serve `capability`. An unknown capability name raises `ProviderError`
+(a typo would otherwise read as an unsupported feature) rather than returning `False`.
+
+#### `chat_payload_extras(self, *, enable_reasoning: bool) -> Mapping[str, Any]`
+
+The extra chat-completion payload fields this endpoint kind understands. `llamacpp-router` returns
+`{"chat_template_kwargs": {"enable_thinking": False}}` when `enable_reasoning` is `False` (and `{}`
+when it is `True`); the others always return `{}`.
+
+### register_provider(provider: LlmProvider) -> LlmProvider
+
+Register `provider` under its name; returns it. A name collision with a *different* provider is a
+`ProviderError`, not a silent overwrite; re-registering the same instance is a no-op.
+
+### get_provider(name: str) -> LlmProvider
+
+Look up a provider by name (case-insensitive), listing what is available when it is missing.
+
+**Raises:** `ProviderError` — no provider registered under `name`.
+
+### available_providers() -> list[str]
+
+The registered provider names, sorted.
+
 ## ragkit.llm.client
 
 Synchronous client for a local, OpenAI-compatible inference server. Model-agnostic on purpose:
@@ -199,7 +259,8 @@ wants a structured request shaped is a backend concern, not a field here. A plai
 - `max_retries` (`int`, default `4`): attempts before giving up; must be `>= 1`.
 - `retry_backoff_seconds` (`float`, default `2.0`): base backoff between retries (doubled each attempt); must be `>= 0` (a negative value would make `time.sleep` raise on the first retry).
 - `context_window` (`int`, default `0`): the server's context size, for the proactive budget warning; `0` disables the warning. Must be `>= 0`.
-- `enable_reasoning` (`bool`, default `False`): whether to let a reasoning model emit chain-of-thought; when `False`, `complete` sends `chat_template_kwargs: {"enable_thinking": False}`.
+- `enable_reasoning` (`bool`, default `False`): whether to let a reasoning model emit chain-of-thought. When `False` **and** the provider honours it, `complete` adds the provider's reasoning-suppression extras (llama.cpp's `chat_template_kwargs: {"enable_thinking": False}`); a provider that does not honour the field adds nothing.
+- `provider` (`Provider`, default `get_provider("llamacpp-router")`): the endpoint kind. Consulted by `complete` for provider-specific request extras (see `chat_payload_extras`), so a llama.cpp-only field never reaches a server that would reject it.
 
 **Raises (at construction):**
 - `ValueError`: `max_retries < 1`; `timeout_seconds <= 0`; `retry_backoff_seconds < 0`; or `context_window < 0`.
@@ -471,7 +532,7 @@ dataclass; `__post_init__` validates its own invariants.
 
 **Attributes:**
 - `name` (`str`): the endpoint's name (matches its `[endpoint.<name>]` table).
-- `provider` (`str`, default `"llamacpp-router"`): one of `"llamacpp-router"`, `"ollama"`, `"openai-compatible"`.
+- `provider` (`str`, default `"llamacpp-router"`): the endpoint kind, a registered provider name (`"llamacpp-router"`, `"ollama"`, `"openai-compatible"`, or a custom one registered via `register_provider`). Validated at construction; resolved to its `LlmProvider` by `provider_profile`, which drives capability gating and request quirks.
 - `base_url` (`str`, default `"http://127.0.0.1:8080/v1"`): the endpoint's OpenAI-compatible base URL.
 - `resident_max` (`int`, default `4`): how many distinct models stay resident before the server evicts by LRU (llama.cpp `--models-max`, Ollama `OLLAMA_MAX_LOADED_MODELS`) — the thrash guard's ceiling. Must be `>= 1`.
 - `parallel` (`int`, default `2`): server request slots; must be `>= 1`, and must be `>=` the harness concurrency or in-flight requests serialise.
@@ -482,8 +543,11 @@ dataclass; `__post_init__` validates its own invariants.
 - `enable_reasoning` (`bool`, default `False`): whether models on this endpoint may emit chain-of-thought.
 - `server_args` (`tuple[str, ...]`, default `()`): launch-time flags for the server hosting this endpoint (GPU offload, KV-cache type, rope scaling, flash attention, ...) — not per-request; `serve_models.sh` reads these via `ragkit.llm.serveargs` so `models.toml` is the single source of truth for both routing and serving. The pool itself never launches a server.
 
+**Properties:**
+- `provider_profile` (`LlmProvider`): the resolved provider for this endpoint's `provider` name — its capabilities and request quirks. A registry lookup validated at construction, so it cannot fail for a constructed spec.
+
 **Raises (at construction):**
-- `ModelPoolError`: `provider` is not one of the known providers; `resident_max < 1`; `parallel < 1`; or `vram_budget_mb < 0`.
+- `ModelPoolError`: `provider` is not a registered provider name; `resident_max < 1`; `parallel < 1`; or `vram_budget_mb < 0`.
 
 ### ModelSpec
 
@@ -545,9 +609,9 @@ sharing a model share the client) over the endpoint's shared connection.
 **Returns:** `tuple[LlmClient, str]` — the shared client for this model, and its served `model_id`.
 
 **Raises:**
-- `ModelPoolError`: `model_name` is not a defined model; or it is defined with `kind != "chat"` (the persona pool serves chat models only — embedding/rerank models are used by the retrieval layer).
+- `ModelPoolError`: `model_name` is not a defined model; it is defined with `kind != "chat"` (the persona pool serves chat models only — embedding/rerank models are used by the retrieval layer); or its endpoint's provider does not serve chat.
 
-**Side effects:** lazily builds and caches an `httpx.Client` per endpoint and an `LlmClient` per model, under `self._build_lock`.
+**Side effects:** lazily builds and caches an `httpx.Client` per endpoint and an `LlmClient` per model, under `self._build_lock`. The built client's `ServerConfig` carries the endpoint's resolved provider, so provider-specific request extras are applied.
 
 #### `model_spec(self, model_name: str) -> ModelSpec`
 
@@ -651,7 +715,7 @@ then the endpoint's own launch `server_args` verbatim.
 **Returns:** `list[str]` — flags in order: `--host`, `--port`, `--models-dir`, `--models-max`, `--jinja`, then `endpoint.server_args` appended verbatim.
 
 **Raises:**
-- `ServeArgsError`: (via `_validate_server_args_files`) `endpoint.server_args` contains a file-taking flag (currently `--models-preset`) with no following value, or whose value does not exist as a file relative to the current working directory; or (via `host_port`) `endpoint.base_url` has no host or no explicit port.
+- `ServeArgsError`: `endpoint.provider` is not `"llamacpp-router"` (this renders a llama-server command; an Ollama or hosted OpenAI-compatible endpoint is not launched here); or (via `_validate_server_args_files`) `endpoint.server_args` contains a file-taking flag (currently `--models-preset`) with no following value, or whose value does not exist as a file relative to the current working directory; or (via `host_port`) `endpoint.base_url` has no host or no explicit port.
 
 #### `flags_for(config: Path, endpoint_name: str, *, models_dir: str) -> list[str]`
 

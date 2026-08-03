@@ -1054,13 +1054,28 @@ response_format)` a specific server will honour (strict grammar, or a prompt-des
 
 ### Provider (Protocol)
 
-A transport to one endpoint kind (llama.cpp router, ollama, any OpenAI-compatible server). Routes
-a chat completion to a named model and returns its text. `runtime_checkable`. No concrete
-implementation of this exact port exists in `ragkit.core`/`ragkit.llm` today — `ragkit.llm.client.
-LlmClient` plays the equivalent role for one endpoint but exposes a richer surface (`complete`,
-`complete_json`, retry, usage stats) rather than this minimal `chat` shape.
+An inference endpoint *kind* — a llama.cpp router, Ollama, or a generic OpenAI-compatible server —
+described by what it can serve and the transport quirks a request must respect. `runtime_checkable`.
+Every backend speaks the same OpenAI-compatible HTTP, so one transport (the clients in `ragkit.llm`
+/ `ragkit.retrieve`) covers them all; the Provider is what keeps that honest — it answers which
+capabilities the endpoint offers (so an unsupported one is refused at build time, not with a 404
+mid-run) and which extra request fields are safe to send (so a per-family quirk never leaks onto a
+server that would reject it). The concrete built-ins and their registry live in
+`ragkit.llm.providers` (`LlmProvider`, `get_provider`, `register_provider`).
 
-#### `chat(self, messages: Sequence[Message], *, model: str, schema: Mapping[str, Any] | None, temperature: float, max_tokens: int) -> str`
+**Attributes:**
+- `name` (`str`): the provider's registered name (e.g. `"llamacpp-router"`).
+- `capabilities` (`frozenset[str]`): the roles it can serve, a subset of `{"chat", "embedding", "rerank"}`.
+
+#### `supports(self, capability: str) -> bool`
+
+Whether this endpoint kind can serve `capability` (one of `chat` / `embedding` / `rerank`).
+
+#### `chat_payload_extras(self, *, enable_reasoning: bool) -> Mapping[str, Any]`
+
+The extra chat-completion payload fields this endpoint kind understands (e.g. llama.cpp's
+`chat_template_kwargs` to suppress a reasoning model's chain-of-thought), or an empty mapping for a
+server that would reject them.
 
 **Args:**
 - `messages` (`Sequence[Message]`): the conversation so far.
