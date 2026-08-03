@@ -58,9 +58,23 @@ class Qrels:
                              "from; an unlabelled ground truth cannot be checked for independence")
 
 
+def _require_relevant(relevant: frozenset[str]) -> None:
+    """Every per-query metric here is undefined with no relevant ids (recall/AP would divide by
+    zero; a 0.0 would be a made-up number for an unanswerable question). ``evaluate_retrieval``
+    already excludes such queries via :class:`IncompleteGroundTruthError`; this guards the metric
+    functions themselves, since they are public and a direct caller has no such upstream check.
+    Raised uniformly so all five metrics reject the same bad input the same way, rather than two
+    crashing with ``ZeroDivisionError`` while three silently return 0.0."""
+    if not relevant:
+        raise ValueError("a retrieval metric needs at least one relevant id, got an empty set; a "
+                         "query with no gold judgments is unscorable (evaluate_retrieval excludes "
+                         "it via IncompleteGroundTruthError before scoring)")
+
+
 def recall_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
-    """Fraction of the relevant ids that appear in the top ``k``. Undefined with no relevant ids,
-    which the harness excludes before calling this."""
+    """Fraction of the relevant ids that appear in the top ``k``. Raises ``ValueError`` with no
+    relevant ids (the quantity is undefined); the harness excludes such queries before calling."""
+    _require_relevant(relevant)
     top = set(ranked[:k])
     return len(top & relevant) / len(relevant)
 
@@ -70,12 +84,16 @@ def hit_rate_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> fl
     hit/miss, unlike ``recall_at_k``'s fraction of *all* relevant ids captured. This is the "top-k
     accuracy" metric reported by PolQA (Rybak et al., 2022) and similar OpenQA retrieval papers;
     kept alongside recall_at_k/mrr/ndcg so a recipe can report a literature-comparable number
-    instead of only this framework's own recall/MRR/NDCG convention."""
+    instead of only this framework's own recall/MRR/NDCG convention. Raises ``ValueError`` with no
+    relevant ids."""
+    _require_relevant(relevant)
     return 1.0 if set(ranked[:k]) & relevant else 0.0
 
 
 def reciprocal_rank(ranked: Sequence[str], relevant: frozenset[str]) -> float:
-    """``1 / rank`` of the first relevant id (rank counted from 1), or 0 if none is retrieved."""
+    """``1 / rank`` of the first relevant id (rank counted from 1), or 0 if none is retrieved.
+    Raises ``ValueError`` with no relevant ids."""
+    _require_relevant(relevant)
     for index, doc_id in enumerate(ranked, start=1):
         if doc_id in relevant:
             return 1.0 / index
@@ -84,7 +102,9 @@ def reciprocal_rank(ranked: Sequence[str], relevant: frozenset[str]) -> float:
 
 def average_precision(ranked: Sequence[str], relevant: frozenset[str]) -> float:
     """Mean of the precision values taken at each rank where a relevant id is hit, normalised by
-    the number of relevant ids — the per-query term of MAP."""
+    the number of relevant ids — the per-query term of MAP. Raises ``ValueError`` with no relevant
+    ids (the normalisation is undefined); the harness excludes such queries before calling."""
+    _require_relevant(relevant)
     hits = 0
     summed = 0.0
     for index, doc_id in enumerate(ranked, start=1):
@@ -96,7 +116,10 @@ def average_precision(ranked: Sequence[str], relevant: frozenset[str]) -> float:
 
 def ndcg_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float:
     """NDCG@k with binary relevance: DCG of the top ``k`` over the ideal DCG (every relevant id
-    ranked first). 1.0 when the top ``k`` hold as many relevant ids, as high as possible."""
+    ranked first). 1.0 when the top ``k`` hold as many relevant ids, as high as possible. Raises
+    ``ValueError`` with no relevant ids. The ``idcg`` fallback still guards ``k == 0`` (a
+    degenerate depth), which yields an empty ideal ranking even when relevant ids exist."""
+    _require_relevant(relevant)
     dcg = sum(1.0 / math.log2(index + 1)
               for index, doc_id in enumerate(ranked[:k], start=1) if doc_id in relevant)
     ideal_hits = min(k, len(relevant))

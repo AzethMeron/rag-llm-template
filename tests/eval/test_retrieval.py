@@ -57,6 +57,19 @@ class TestMetrics:
         assert ndcg_at_k(["a", "b"], frozenset({"b"}), 2) == pytest.approx(1 / math.log2(3))
         assert ndcg_at_k(["b", "a"], frozenset({"b"}), 2) == 1.0  # relevant first = perfect
         assert ndcg_at_k(["x"], frozenset({"b"}), 2) == 0.0
+        assert ndcg_at_k(["a"], frozenset({"a"}), 0) == 0.0  # k=0 -> empty ideal ranking
+
+    def test_every_metric_rejects_empty_relevant(self) -> None:
+        # All five reject an empty gold set the same way (a ValueError), rather than two crashing
+        # with ZeroDivisionError while three silently return a made-up 0.0.
+        empty: frozenset[str] = frozenset()
+        for call in (lambda: recall_at_k(["a"], empty, 1),
+                     lambda: hit_rate_at_k(["a"], empty, 1),
+                     lambda: reciprocal_rank(["a"], empty),
+                     lambda: average_precision(["a"], empty),
+                     lambda: ndcg_at_k(["a"], empty, 1)):
+            with pytest.raises(ValueError, match="at least one relevant id"):
+                call()
 
 
 class TestQrels:
