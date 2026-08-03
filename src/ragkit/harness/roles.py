@@ -138,6 +138,17 @@ class Persona:
             raise ValueError(f"persona {self.id!r}: kind must be one of {sorted(_PERSONA_KINDS)}")
         if self.max_tokens is not None:
             _at_least(self.max_tokens, 1, what="max_tokens")
+        # The from_rules/instructions invariants live here, on the type, so an invalid Persona
+        # cannot be constructed at all -- not only via the config loader. These messages carry no
+        # ``persona {id}`` prefix on purpose: load_panel wraps a ValueError from here into a
+        # ConfigError that adds the id (and file path), so prefixing here would double it.
+        if self.from_rules and self.kind != "reviewer":
+            raise ValueError("from_rules applies only to a reviewer")
+        if self.from_rules and self.instructions.strip():
+            raise ValueError("sets both from_rules and instructions; one would be silently ignored")
+        if not self.from_rules and not self.instructions.strip():
+            raise ValueError("has no instructions and does not set from_rules, so it would act "
+                             "against nothing")
 
     @property
     def is_reviewer(self) -> bool:
@@ -279,21 +290,13 @@ def _one_persona(entry: dict[str, Any], identifier: str, fill: Callable[..., str
         raise ConfigError(f"persona {identifier!r} needs a 'model' (a logical model name)",
                           path=path)
     from_rules = read_bool(entry, "from_rules", False, label=f"persona {identifier!r}", path=path)
-    if from_rules and kind != "reviewer":
-        raise ConfigError(f"persona {identifier!r}: from_rules applies only to a reviewer",
-                          path=path)
     text = entry.get("instructions", "")
     if not isinstance(text, str):
         raise ConfigError(f"persona {identifier!r}: instructions must be a string", path=path)
-    if from_rules and text.strip():
-        raise ConfigError(
-            f"persona {identifier!r} sets both from_rules and instructions; one would be silently "
-            f"ignored", path=path)
     text = fill(text, where=f"persona {identifier!r} instructions")
-    if not from_rules and not text.strip():
-        raise ConfigError(
-            f"persona {identifier!r} has no instructions and does not set from_rules, so it would "
-            f"act against nothing", path=path)
+    # The from_rules/instructions invariants are enforced by Persona.__post_init__ (kept on the
+    # type, not duplicated here); the try/except below turns its ValueError into a located
+    # ConfigError naming this persona.
     leniency = (_leniency(entry["leniency"], default_leniency,
                           label=f"persona {identifier!r} leniency", path=path)
                 if "leniency" in entry else default_leniency)

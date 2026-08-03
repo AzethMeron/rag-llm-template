@@ -207,3 +207,16 @@ class TestPanelInvariants:
     def test_persona_bad_kind(self) -> None:
         with pytest.raises(ValueError, match="kind must be one of"):
             Persona("p", "boss", "m", instructions="x")
+
+    def test_persona_from_rules_invariants_are_enforced_on_the_type(self) -> None:
+        # These invariants live in Persona.__post_init__, not only in the config loader, so an
+        # invalid persona cannot be constructed directly either (load_panel's ConfigError wraps the
+        # same ValueError with the persona id + file path).
+        with pytest.raises(ValueError, match="from_rules applies only to a reviewer"):
+            Persona("p", "producer", "m", instructions="x", from_rules=True)
+        with pytest.raises(ValueError, match="both from_rules and instructions"):
+            Persona("r", "reviewer", "m", instructions="judge it", from_rules=True)
+        with pytest.raises(ValueError, match="act against nothing"):
+            Persona("r", "reviewer", "m")  # neither instructions nor from_rules
+        # A reviewer built purely from the rule set (no own instructions) is valid.
+        assert Persona("r", "reviewer", "m", from_rules=True).from_rules is True
