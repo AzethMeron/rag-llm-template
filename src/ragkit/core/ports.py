@@ -486,8 +486,30 @@ class Backend(Protocol):
 
 @runtime_checkable
 class Provider(Protocol):
-    """A transport to one endpoint kind (llama.cpp router, ollama, any OpenAI-compatible
-    server). Routes a chat completion to a named model and returns its text."""
+    """An inference endpoint *kind* — a llama.cpp router, Ollama, or a generic OpenAI-compatible
+    server — described by what it can serve and the transport quirks a request must respect.
 
-    def chat(self, messages: Sequence[Message], *, model: str, schema: Mapping[str, Any] | None,
-             temperature: float, max_tokens: int) -> str: ...
+    Every backend this framework supports speaks the same OpenAI-compatible HTTP, so one transport
+    (the clients in :mod:`ragkit.llm` / :mod:`ragkit.retrieve`) covers them all; the Provider is
+    what keeps that honest. It answers two things the transport cannot infer from the wire: which
+    ``capabilities`` (``chat`` / ``embedding`` / ``rerank``) the endpoint actually offers — so an
+    unsupported one (reranking on Ollama, say) is refused with a clear error at build time instead
+    of a puzzling ``404`` mid-run — and which extra request fields are safe to send, since a
+    per-family quirk like llama.cpp's ``chat_template_kwargs`` reasoning toggle would make a strict
+    OpenAI server reject the whole request. The concrete built-ins and their registry live in
+    :mod:`ragkit.llm.providers`.
+    """
+
+    name: str
+    capabilities: frozenset[str]
+
+    def supports(self, capability: str) -> bool:
+        """Whether this endpoint kind can serve ``capability`` (one of ``chat`` / ``embedding`` /
+        ``rerank``)."""
+        ...
+
+    def chat_payload_extras(self, *, enable_reasoning: bool) -> Mapping[str, Any]:
+        """The extra chat-completion payload fields this endpoint kind understands (e.g. llama.cpp's
+        ``chat_template_kwargs`` to suppress a reasoning model's chain-of-thought), or an empty
+        mapping for a server that would reject them."""
+        ...

@@ -11,10 +11,28 @@ from ragkit.core.errors import RagkitError
 from ragkit.core.records import Record, Status
 from ragkit.harness import run_batch
 from ragkit.llm.pool import ModelPoolError
+from ragkit.llm.providers import LlmProvider, register_provider
 from ragkit.store.run.sqlite import SqliteRunStore
 from ragkit.cli.app import assemble
 
-from .conftest import RETRIEVAL_MODELS, retrieval_factory, scripted_factory, write_config
+from .conftest import MODELS, RETRIEVAL_MODELS, retrieval_factory, scripted_factory, write_config
+
+# A chat-only endpoint kind, to prove the embedding build site refuses an embedding model on a
+# provider that cannot serve one (every built-in provider serves embeddings, so the guard needs a
+# synthetic kind — which doubles as an exercise of the public provider-registration seam).
+register_provider(LlmProvider("test-cli-chat-only", capabilities={"chat"},
+                              sends_template_kwargs=False))
+
+# An Ollama endpoint (no /v1/rerank) hosting a reranker, and a chat-only endpoint hosting an
+# embedder, used by the capability-refusal tests below.
+_OLLAMA_RERANK_MODELS = MODELS + (
+    '[endpoint.ollama]\nprovider = "ollama"\nbase_url = "http://127.0.0.1:11434/v1"\n'
+    '[model.embedder]\nendpoint = "local"\nmodel_id = "emb"\nkind = "embedding"\n'
+    '[model.reranker]\nendpoint = "ollama"\nmodel_id = "rr"\nkind = "rerank"\n')
+_CHATONLY_EMBED_MODELS = MODELS + (
+    '[endpoint.chatonly]\nprovider = "test-cli-chat-only"\n'
+    'base_url = "http://127.0.0.1:9099/v1"\n'
+    '[model.embedder]\nendpoint = "chatonly"\nmodel_id = "emb"\nkind = "embedding"\n')
 
 _REF = [{"source": "the cat sat", "target": "kot"}, {"source": "a dog ran", "target": "pies"}]
 _VECTOR_STORAGE = '[vector]\ndriver = "lancedb"\npath = "v.lance"\ndim = 3\n'
@@ -166,6 +184,28 @@ class TestRetrievalToml:
                                         'model = "embedder"\n[retrieval.rerank]\nenabled = true\n'
                                         'model = "prod"\n')  # prod is a chat model
         with pytest.raises(ConfigError, match="not a rerank model"):
+            assemble(config, client_factory=retrieval_factory())
+
+    def test_rerank_on_a_provider_without_rerank_is_refused(self, tmp_path: Path) -> None:
+        # The reranker is served by an Ollama endpoint, which has no /v1/rerank. Refused at build
+        # time with a clear message, not a 404 mid-run.
+        config = write_config(tmp_path / "cfg", models=_OLLAMA_RERANK_MODELS,
+                              recipe=_RECIPE_WITH_REF, reference=_REF,
+                              storage=_VECTOR_STORAGE + _PAIRINGS_STORAGE,
+                              retrieval='[retrieval]\nkind = "hybrid"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n[retrieval.rerank]\nenabled = true\n'
+                                        'model = "reranker"\n')
+        with pytest.raises(ConfigError, match="no rerank endpoint"):
+            assemble(config, client_factory=retrieval_factory())
+
+    def test_embedding_on_a_provider_without_embedding_is_refused(self, tmp_path: Path) -> None:
+        # The embedder is served by a chat-only endpoint kind. Refused at build time.
+        config = write_config(tmp_path / "cfg", models=_CHATONLY_EMBED_MODELS,
+                              recipe=_RECIPE_WITH_REF, reference=_REF,
+                              storage=_VECTOR_STORAGE + _PAIRINGS_STORAGE,
+                              retrieval='[retrieval]\nkind = "dense"\n[retrieval.dense]\n'
+                                        'model = "embedder"\n')
+        with pytest.raises(ConfigError, match="does not serve embeddings"):
             assemble(config, client_factory=retrieval_factory())
 
 

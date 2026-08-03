@@ -11,6 +11,7 @@ from ragkit.core.ports import Message, SamplingParams
 from ragkit.llm import LlmClient, ServerConfig
 from ragkit.llm.client import UsageStats
 from ragkit.llm.backends import resolve_backend
+from ragkit.llm.providers import get_provider
 from ragkit.llm.errors import (
     LlmContentError,
     LlmError,
@@ -342,6 +343,18 @@ class TestPlainAndConfig:
 
         client_returning(handler).complete(USER, role="x")
         assert seen["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_non_llamacpp_provider_never_sends_the_llamacpp_kwarg(self) -> None:
+        # The kwarg is a llama.cpp --jinja extension; a strict OpenAI/Ollama server would reject it.
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(request_body(request))
+            return chat_reply("t")
+
+        config = ServerConfig(provider=get_provider("ollama"))
+        client_returning(handler, config=config).complete(USER, role="x")
+        assert "chat_template_kwargs" not in seen
 
     def test_rate_is_zero_before_any_request(self) -> None:
         client = client_returning(always(chat_reply("t")))

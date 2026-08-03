@@ -13,8 +13,15 @@ import pytest
 
 from ragkit.core.config import ConfigError
 from ragkit.llm import EndpointSpec, ModelPool, ModelPoolError, ModelSpec, load_models
+from ragkit.llm.providers import LlmProvider, get_provider, register_provider
 
 from .conftest import always, chat_reply
+
+# A custom endpoint kind that cannot serve chat, to prove the pool refuses a chat model on it (no
+# built-in provider lacks chat, so the guard needs a synthetic one — which also exercises the
+# public provider-registration extension point).
+_EMBED_ONLY = register_provider(
+    LlmProvider("test-embed-only", capabilities={"embedding"}, sends_template_kwargs=False))
 
 
 def _factory(_base_url: str, _timeout: float) -> httpx.Client:
@@ -201,6 +208,21 @@ class TestClientRouting:
         with ModelPool(endpoints, models) as pool:
             client, model_id = pool.client_for("p")
             assert model_id == "qwen3" and client is not None
+
+    def test_built_client_carries_the_endpoints_provider(self, tmp_path: Path) -> None:
+        client, _ = self._pool(tmp_path).client_for("producer")
+        assert client.config.provider is get_provider("llamacpp-router")
+
+
+class TestProviderCapabilities:
+    def test_provider_profile_resolves_the_endpoints_kind(self) -> None:
+        assert EndpointSpec("e", provider="ollama").provider_profile is get_provider("ollama")
+
+    def test_chat_model_on_a_chatless_provider_is_refused(self) -> None:
+        endpoints = {"e": EndpointSpec("e", provider="test-embed-only")}
+        models = {"p": ModelSpec("p", "e", "m")}
+        with pytest.raises(ModelPoolError, match="does not serve chat"):
+            ModelPool(endpoints, models, client_factory=_factory).client_for("p")
 
 
 class TestConcurrentColdStart:

@@ -35,6 +35,15 @@ from .pool import (
     ModelSpec,
     load_models,
 )
+from .providers import (
+    CAPABILITIES,
+    DEFAULT_PROVIDER,
+    LlmProvider,
+    ProviderError,
+    available_providers,
+    get_provider,
+    register_provider,
+)
 
 __all__ = [
     # transport
@@ -42,6 +51,9 @@ __all__ = [
     # backends
     "BaseBackend", "SchemaBackend", "JsonObjectBackend", "BackendError",
     "register_backend", "get_backend", "resolve_backend", "available_backends", "suggest_backend",
+    # providers (endpoint kinds: capabilities + request quirks)
+    "LlmProvider", "ProviderError", "CAPABILITIES", "DEFAULT_PROVIDER",
+    "register_provider", "get_provider", "available_providers",
     # errors (typed by blast radius)
     "LlmError", "LlmContentError", "LlmRefusalError", "LlmTruncationError",
     "LlmIncompleteJsonError",

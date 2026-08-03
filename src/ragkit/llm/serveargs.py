@@ -64,7 +64,19 @@ def host_port(base_url: str) -> tuple[str, int]:
 
 def render_flags(endpoint: EndpointSpec, *, models_dir: str) -> list[str]:
     """The ``llama-server`` router-mode flags for ``endpoint``: bind address, resident cap, models
-    directory, then the endpoint's own launch ``server_args`` verbatim."""
+    directory, then the endpoint's own launch ``server_args`` verbatim.
+
+    Refuses an endpoint that is not a ``llamacpp-router``: this renders a *llama-server* command, so
+    launching an Ollama or hosted OpenAI-compatible endpoint through it would silently produce flags
+    for the wrong program. Ollama serves itself (``ollama serve``); a hosted endpoint is reached by
+    pointing ``base_url`` at it, not launched here.
+    """
+    if endpoint.provider != "llamacpp-router":
+        raise ServeArgsError(
+            f"endpoint {endpoint.name!r} uses provider {endpoint.provider!r}; serve_models.sh "
+            f"launches llama-server, which only serves the 'llamacpp-router' provider. Start an "
+            f"'ollama' endpoint with `ollama serve`, and reach an 'openai-compatible' endpoint by "
+            f"pointing base_url at it — neither is launched here.")
     _validate_server_args_files(endpoint.server_args)
     host, port = host_port(endpoint.base_url)
     flags = ["--host", host, "--port", str(port), "--models-dir", models_dir,

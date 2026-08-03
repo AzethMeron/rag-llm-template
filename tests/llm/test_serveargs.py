@@ -86,6 +86,13 @@ class TestRenderFlags:
                                 server_args=("-ngl", "99"))
         assert render_flags(endpoint, models_dir="/m")[-2:] == ["-ngl", "99"]
 
+    def test_a_non_llamacpp_provider_is_refused(self) -> None:
+        # This renders a llama-server command; an ollama/openai-compatible endpoint is not launched
+        # here, so producing flags for it would target the wrong program.
+        endpoint = EndpointSpec(name="ol", base_url="http://127.0.0.1:11434/v1", provider="ollama")
+        with pytest.raises(ServeArgsError, match="only serves the 'llamacpp-router' provider"):
+            render_flags(endpoint, models_dir="/m")
+
 
 class TestFlagsFor:
     def test_reads_the_named_endpoint_from_config(self, tmp_path: Path) -> None:

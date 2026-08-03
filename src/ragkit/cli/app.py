@@ -296,6 +296,11 @@ def _embedding_client(settings: RetrievalSettings, pool: ModelPool,
         raise CliError(f"[retrieval.dense].model {settings.embedding_model!r} is a {spec.kind!r} "
                        f"model, not an embedding model")
     endpoint = pool.endpoint(spec.endpoint)
+    if not endpoint.provider_profile.supports("embedding"):
+        raise CliError(
+            f"[retrieval.dense].model {settings.embedding_model!r} runs on endpoint "
+            f"{spec.endpoint!r}, whose provider {endpoint.provider!r} does not serve embeddings; "
+            f"use an embedding-capable endpoint or a lexical-only retrieval config")
     client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
     return EmbeddingClient(base_url=endpoint.base_url, model=spec.model_id,
                            timeout_seconds=endpoint.timeout_seconds,
@@ -310,6 +315,12 @@ def _rerank_client(settings: RetrievalSettings, pool: ModelPool,
         raise CliError(f"[retrieval.rerank].model {settings.rerank_model!r} is a {spec.kind!r} "
                        f"model, not a rerank model")
     endpoint = pool.endpoint(spec.endpoint)
+    if not endpoint.provider_profile.supports("rerank"):
+        raise CliError(
+            f"[retrieval.rerank].model {settings.rerank_model!r} runs on endpoint "
+            f"{spec.endpoint!r}, whose provider {endpoint.provider!r} has no rerank endpoint "
+            f"(Ollama, for one, does not); serve the reranker on a llamacpp-router or "
+            f"openai-compatible endpoint, or disable reranking")
     client = client_factory(endpoint.base_url, endpoint.timeout_seconds) if client_factory else None
     return RerankClient(base_url=endpoint.base_url, model=spec.model_id,
                         score_scale=settings.rerank_score_scale, max_retries=endpoint.max_retries,

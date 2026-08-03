@@ -23,10 +23,11 @@ from typing import Any, cast
 import httpx
 
 from ragkit.core.jsonshape import json_type_matches
-from ragkit.core.ports import Message, SamplingParams
+from ragkit.core.ports import Message, Provider, SamplingParams
 
 from .backends import DEFAULT_BACKEND, BaseBackend, SchemaBackend, get_backend, suggest_backend
 from .http import TRANSIENT_HTTP_STATUS
+from .providers import DEFAULT_PROVIDER, get_provider
 from .errors import (
     LlmContentError,
     LlmError,
@@ -57,6 +58,7 @@ class ServerConfig:
         "enable_reasoning",
         "max_retries",
         "model",
+        "provider",
         "retry_backoff_seconds",
         "timeout_seconds",
     )
@@ -64,7 +66,7 @@ class ServerConfig:
     def __init__(self, *, base_url: str = "http://127.0.0.1:8080/v1", model: str = "local",
                  timeout_seconds: float = 300.0, max_retries: int = 4,
                  retry_backoff_seconds: float = 2.0, context_window: int = 0,
-                 enable_reasoning: bool = False) -> None:
+                 enable_reasoning: bool = False, provider: Provider | None = None) -> None:
         if max_retries < 1:
             raise ValueError(f"max_retries must be >= 1, got {max_retries}")
         if timeout_seconds <= 0:
@@ -82,6 +84,9 @@ class ServerConfig:
         self.retry_backoff_seconds = retry_backoff_seconds
         self.context_window = context_window
         self.enable_reasoning = enable_reasoning
+        # The endpoint kind. Defaults to a llama.cpp router (what serve_models.sh launches), which
+        # is why a default client still sends the reasoning-suppression template kwarg.
+        self.provider = provider or get_provider(DEFAULT_PROVIDER)
 
 
 @dataclass
@@ -187,12 +192,12 @@ class LlmClient:
         }
         if response_format is not None:
             payload["response_format"] = response_format
-        if not self.config.enable_reasoning:
-            # Suppress chain-of-thought. A reasoning model otherwise spends hidden tokens against
-            # max_tokens and truncates the answer; for a bounded task the reasoning buys nothing.
-            # Sent as the chat-template kwarg the reasoning families read; a template that does not
-            # declare it ignores the kwarg, so this is inert for other models.
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # Provider-specific request extras. A llama.cpp router adds chat_template_kwargs to suppress
+        # a reasoning model's chain-of-thought (hidden tokens spent against max_tokens buy nothing
+        # for a bounded task); a strict OpenAI-compatible server, which would 400 on that field,
+        # adds nothing. The client owns the transport, not the per-family quirk — the provider does.
+        payload.update(self.config.provider.chat_payload_extras(
+            enable_reasoning=self.config.enable_reasoning))
 
         self._warn_if_context_tight(sent, max_tokens, role)
 
