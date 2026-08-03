@@ -133,6 +133,30 @@ retrieval is the real lever.** On an identical controlled 25k-passage set (100 q
 
 Dense lifts Recall +32% relative and ranks better (MRR/NDCG); hybrid ranks best.
 
+### The answer pipeline at full scale (2026-08-03) — first real measurement
+
+The numbers above score **retrieval**, which is this recipe's headline. The answer side had never
+actually been run: `config/models.toml` pointed `[model.author]` at a GGUF repo that does not
+exist, so the chat pipeline could not start at all until that was corrected
+(`.audit/2026-08-02-deep-audit.md`, C1). Run now over all 956 held-out questions with the
+corrected default author (`Qwen3-4B-Q4_K_M`) and reviewer (`Qwen3-1.7B-Q8_0`):
+
+| | count |
+|---|---:|
+| `VERIFIED` | 19 |
+| `PRODUCED` (kept, flagged for review) | 112 |
+| `REJECTED` | 825 |
+| **citation-grounding over what it did produce** | **131/131 = 1.000** |
+
+**Read that as the guardrail working, not the recipe failing.** 819 of the rejections are
+`ungrounded_citation`: a 4B model asked to answer Polish public-procurement law cites *topic
+names* it invented ("Stopień", "Ocenianie kształtujące") instead of the ids of the passages it was
+shown, and the validator refuses them rather than shipping an ungrounded legal answer. Every
+answer that did survive was perfectly grounded. A 4B author is simply too weak for this task's
+citation discipline — as `med_evidence` does for its own domain, point `[model.author]` at
+something larger (`tools/fetch_models.sh --only med_author` fetches a 14B) before expecting usable
+answers here.
+
 ### Full-scale results (2026-08-01) — dense and hybrid at 7.1M passages / 956 questions
 
 The 25k/100-question table above was a controlled subset; here dense and hybrid+reranker
