@@ -46,11 +46,28 @@ def reference_pairings(path: Path, *, index_field: str = "source", target_field:
             except json.JSONDecodeError as exc:
                 raise ReferenceImportError(
                     f"line {line_no}: invalid JSON in reference corpus: {exc}", path=path) from exc
-            source = str(record.get(index_field, ""))
-            if not source:
+            raw_source = record.get(index_field)
+            # A JSON null (or absent) source is a blank source -- skipped, never yielded as "None".
+            # str(None) used to be "None" (truthy), so the guard below never fired and a null field
+            # was silently stored as the 4-char string "None".
+            if raw_source is None:
                 continue
-            target = str(record[target_field]) if target_field in record else ""
-            yield Pairing(chunk_id=f"ref-{line_no}", source=source, target=target, meta=record)
+            if not isinstance(raw_source, str):
+                raise ReferenceImportError(
+                    f"line {line_no}: {index_field!r} must be a string, "
+                    f"got {type(raw_source).__name__}", path=path)
+            if not raw_source:
+                continue
+            raw_target = record.get(target_field)
+            if raw_target is None:  # absent or null -> a lexical-only entry (empty target)
+                target = ""
+            elif isinstance(raw_target, str):
+                target = raw_target
+            else:
+                raise ReferenceImportError(
+                    f"line {line_no}: {target_field!r} must be a string, "
+                    f"got {type(raw_target).__name__}", path=path)
+            yield Pairing(chunk_id=f"ref-{line_no}", source=raw_source, target=target, meta=record)
 
 
 def import_reference(path: Path, pairing_store: PairingStore, *, index_field: str = "source",

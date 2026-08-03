@@ -67,6 +67,35 @@ class TestReferencePairings:
         with pytest.raises(ReferenceImportError, match="invalid JSON"):
             list(reference_pairings(path))
 
+    def test_null_source_is_skipped_not_stored_as_the_string_none(self, tmp_path: Path) -> None:
+        # A JSON null source is a blank source -> skipped, never yielded as the 4-char string "None"
+        # (str(None) used to slip past the empty-source guard).
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": None, "target": "t"}, {"source": "real"}])
+        [pairing] = list(reference_pairings(path))
+        assert pairing.source == "real"
+
+    def test_empty_string_source_is_skipped(self, tmp_path: Path) -> None:
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": ""}, {"source": "real"}])
+        [pairing] = list(reference_pairings(path))
+        assert pairing.source == "real"
+
+    def test_null_target_is_empty_not_the_string_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": "s", "target": None}])
+        [pairing] = list(reference_pairings(path))
+        assert pairing.target == ""  # a lexical-only entry, not "None"
+
+    def test_non_string_field_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "ref.jsonl"
+        _write_jsonl(path, [{"source": 42}])
+        with pytest.raises(ReferenceImportError, match="'source' must be a string"):
+            list(reference_pairings(path))
+        _write_jsonl(path, [{"source": "s", "target": ["a", "b"]}])
+        with pytest.raises(ReferenceImportError, match="'target' must be a string"):
+            list(reference_pairings(path))
+
     def test_skip_fast_forwards_without_parsing(self, tmp_path: Path) -> None:
         path = tmp_path / "ref.jsonl"
         # A malformed early line would raise if parsed; skip must never reach it.

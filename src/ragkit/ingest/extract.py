@@ -76,13 +76,24 @@ class JsonlExtractor:
                 raise ExtractError(f"line {line_no}: invalid JSON: {exc}") from exc
             if not isinstance(record, dict) or self._field not in record:
                 raise ExtractError(f"line {line_no}: record has no {self._field!r} field")
-            if self._id_field and self._id_field not in record:
-                # A structured error like every other failure in this module -- this used to
-                # escape as a bare KeyError naming only the missing key.
-                raise ExtractError(f"line {line_no}: record has no id field "
-                                   f"{self._id_field!r}")
-            doc_id = str(record[self._id_field]) if self._id_field else f"line-{line_no}"
-            yield Document(doc_id=doc_id, text=str(record[self._field]),
+            text = record[self._field]
+            # A document needs real text: a null/non-string field used to be str()'d into "None"
+            # (or "42", "['a']") and indexed as content. Refuse it, naming the line.
+            if not isinstance(text, str):
+                raise ExtractError(f"line {line_no}: {self._field!r} must be a string, "
+                                   f"got {type(text).__name__}")
+            if self._id_field:
+                if self._id_field not in record:
+                    # A structured error like every other failure in this module -- this used to
+                    # escape as a bare KeyError naming only the missing key.
+                    raise ExtractError(f"line {line_no}: record has no id field "
+                                       f"{self._id_field!r}")
+                if record[self._id_field] is None:
+                    raise ExtractError(f"line {line_no}: id field {self._id_field!r} is null")
+                doc_id = str(record[self._id_field])
+            else:
+                doc_id = f"line-{line_no}"
+            yield Document(doc_id=doc_id, text=text,
                            meta={k: v for k, v in record.items() if k != self._field})
 
 

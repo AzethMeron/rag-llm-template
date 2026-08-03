@@ -55,6 +55,22 @@ class TestJsonl:
         with pytest.raises(ExtractError, match="line 1: record has no id field 'k'"):
             list(JsonlExtractor(id_field="k").extract('{"text": "t"}'))
 
+    def test_null_or_non_string_text_is_refused(self) -> None:
+        # A null/non-string text field used to be str()'d into "None"/"42" and indexed as content.
+        with pytest.raises(ExtractError, match="'text' must be a string"):
+            list(JsonlExtractor().extract('{"text": null}'))
+        with pytest.raises(ExtractError, match="'text' must be a string"):
+            list(JsonlExtractor().extract('{"text": 42}'))
+
+    def test_null_id_field_is_refused(self) -> None:
+        with pytest.raises(ExtractError, match="id field 'k' is null"):
+            list(JsonlExtractor(id_field="k").extract('{"text": "t", "k": null}'))
+
+    def test_numeric_id_is_stringified(self) -> None:
+        # A numeric id is legitimate (JSON ids are often numbers) -- stringified, not refused.
+        [doc] = list(JsonlExtractor(id_field="k").extract('{"text": "t", "k": 7}'))
+        assert doc.doc_id == "7"
+
 
 class TestHtml:
     def test_strips_tags_and_captures_headings(self) -> None:
