@@ -20,4 +20,5 @@ than a deleted one.
   reference (not a dedicated audit): 5 worth fixing (a `ZeroDivisionError` footgun in two eval
   metrics, an unwrapped error path in `reader_eval.py`, a `:memory:` introspector blind spot, an
   unenforced `Persona` invariant, a resource-ordering nit) plus several intentional/informational
-  notes. Not yet fixed.
+  notes. **Resolved**: 4 fixed, 1 (`reader_eval.py`) re-assessed as intentional; status recorded
+  per finding in the file.
