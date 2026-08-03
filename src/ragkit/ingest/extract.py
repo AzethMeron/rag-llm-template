@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from html.parser import HTMLParser
 from typing import Any
 
+from ragkit.core.config import read_string
 from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Document, Extractor
 from ragkit.core.registry import Registry
@@ -40,7 +41,7 @@ class TextExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> TextExtractor:
-        return cls(doc_id=str(options.get("doc_id", "text")))
+        return cls(doc_id=read_string(dict(options), "doc_id", "text", label="text extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:
@@ -59,8 +60,9 @@ class JsonlExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> JsonlExtractor:
-        return cls(field=str(options.get("field", "text")),
-                   id_field=str(options.get("id_field", "")))
+        opts = dict(options)
+        return cls(field=read_string(opts, "field", "text", label="jsonl extractor"),
+                   id_field=read_string(opts, "id_field", "", label="jsonl extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:  # noqa: ARG002
@@ -160,7 +162,7 @@ class HtmlExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> HtmlExtractor:
-        return cls(doc_id=str(options.get("doc_id", "html")))
+        return cls(doc_id=read_string(dict(options), "doc_id", "html", label="html extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:
@@ -192,7 +194,7 @@ class MarkdownExtractor:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> MarkdownExtractor:
-        return cls(doc_id=str(options.get("doc_id", "md")))
+        return cls(doc_id=read_string(dict(options), "doc_id", "md", label="markdown extractor"))
 
     def extract(self, source: bytes | str, *,
                 meta: Mapping[str, Any] = _EMPTY) -> Iterator[Document]:

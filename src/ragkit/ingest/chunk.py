@@ -13,6 +13,7 @@ import re
 from collections.abc import Iterator, Mapping
 from typing import Any
 
+from ragkit.core.config import read_int
 from ragkit.core.errors import RagkitError
 from ragkit.core.ports import Chunk, Chunker, Document
 from ragkit.core.registry import Registry
@@ -59,7 +60,9 @@ class FixedChunker:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> FixedChunker:
-        return cls(size=int(options.get("size", 1000)), overlap=int(options.get("overlap", 150)))
+        opts = dict(options)
+        return cls(size=read_int(opts, "size", 1000, label="fixed chunker"),
+                   overlap=read_int(opts, "overlap", 150, label="fixed chunker"))
 
     def chunk(self, document: Document) -> Iterator[Chunk]:
         text = document.text
@@ -87,7 +90,7 @@ class SentenceChunker:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SentenceChunker:
-        return cls(target=int(options.get("target", 800)))
+        return cls(target=read_int(dict(options), "target", 800, label="sentence chunker"))
 
     def chunk(self, document: Document) -> Iterator[Chunk]:
         yield from _pack(document, _SENTENCE.split(document.text), self._target, "sentence")
@@ -108,8 +111,9 @@ class StructureChunker:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> StructureChunker:
-        return cls(target=int(options.get("target", 600)),
-                   maximum=int(options.get("maximum", 1200)))
+        opts = dict(options)
+        return cls(target=read_int(opts, "target", 600, label="structure chunker"),
+                   maximum=read_int(opts, "maximum", 1200, label="structure chunker"))
 
     def chunk(self, document: Document) -> Iterator[Chunk]:
         elements: list[str] = []

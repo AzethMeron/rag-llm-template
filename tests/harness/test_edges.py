@@ -143,6 +143,12 @@ class TestFormSchema:
         with pytest.raises(ConfigError, match="needs at least a 'name'"):
             OUTPUT_SCHEMAS.create("form", {"fields": [{"type": "string"}]})
 
+    def test_from_config_refuses_a_mistyped_required(self) -> None:
+        # required="false" must be refused, not silently coerced to bool("false")=True (which would
+        # invert the constraint) -- from_config now reads through the strict core.config helpers.
+        with pytest.raises(ConfigError, match="required"):
+            OUTPUT_SCHEMAS.create("form", {"fields": [{"name": "x", "required": "false"}]})
+
     def test_array_field_is_a_string_array(self) -> None:
         schema = FormSchema([FormField(name="evidence", type="array")]).json_schema()
         assert schema["properties"]["evidence"] == {"type": "array", "items": {"type": "string"}}
@@ -171,6 +177,17 @@ class TestBlockConfig:
     def test_neighbours_negative(self) -> None:
         with pytest.raises(ContextBlockError, match="before/after must be >= 0"):
             NeighboursBlock(before=-1)
+
+    def test_mistyped_option_is_refused_not_coerced(self) -> None:
+        # from_config reads through the strict core.config helpers, so a mistyped option is refused
+        # rather than silently coerced: true->1.0 (floor becomes exact-match), 12.5->12 (truncated),
+        # a bare string->char-tuple (every key absent, block renders nothing).
+        with pytest.raises(ConfigError, match="min_score"):
+            CONTEXT_BLOCKS.create("retrieved", {"min_score": True})
+        with pytest.raises(ConfigError, match="limit"):
+            CONTEXT_BLOCKS.create("lexicon", {"limit": 12.5})
+        with pytest.raises(ConfigError, match="param_keys"):
+            CONTEXT_BLOCKS.create("sql_rows", {"query": "select 1", "param_keys": "customer_id"})
 
     def test_sql_rows_bad_limit(self) -> None:
         with pytest.raises(ContextBlockError, match="limit must be >= 1"):

@@ -26,6 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ragkit.core.config import read_float, read_int, read_string, read_string_list
 from ragkit.core.errors import RagkitError
 from ragkit.core.lexicon import Entry, relevant_entries
 from ragkit.core.ports import ContextBlock, Retriever, SchemaIntrospector, SqlStore
@@ -80,7 +81,9 @@ class LiteralBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> LiteralBlock:
-        return cls(text=str(options.get("text", "")), heading=str(options.get("heading", "")))
+        opts = dict(options)
+        return cls(text=read_string(opts, "text", "", label="literal block"),
+                   heading=read_string(opts, "heading", "", label="literal block"))
 
     def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
                context: Mapping[str, Any]) -> str | None:  # noqa: ARG002
@@ -99,8 +102,10 @@ class LexiconBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> LexiconBlock:
-        return cls(heading=str(options.get("heading", cls._DEFAULT_HEADING)),
-                   limit=int(options.get("limit", 12)))
+        opts = dict(options)
+        return cls(heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="lexicon block"),
+                   limit=read_int(opts, "limit", 12, label="lexicon block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         lexicon: Sequence[Entry] = context.get("lexicon", ())
@@ -130,8 +135,11 @@ class NeighboursBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> NeighboursBlock:
-        return cls(before=int(options.get("before", 3)), after=int(options.get("after", 2)),
-                   heading=str(options.get("heading", cls._DEFAULT_HEADING)))
+        opts = dict(options)
+        return cls(before=read_int(opts, "before", 3, label="neighbours block"),
+                   after=read_int(opts, "after", 2, label="neighbours block"),
+                   heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="neighbours block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         stand_in = str(context.get("stand_in", "they"))
@@ -159,8 +167,11 @@ class EstablishedBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> EstablishedBlock:
-        return cls(before=int(options.get("before", 3)), after=int(options.get("after", 2)),
-                   heading=str(options.get("heading", cls._DEFAULT_HEADING)))
+        opts = dict(options)
+        return cls(before=read_int(opts, "before", 3, label="established block"),
+                   after=read_int(opts, "after", 2, label="established block"),
+                   heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="established block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         memory = context.get("memory")
@@ -198,8 +209,11 @@ class RetrievedBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> RetrievedBlock:
-        return cls(heading=str(options.get("heading", cls._DEFAULT_HEADING)),
-                   k=int(options.get("k", 3)), min_score=float(options.get("min_score", 0.3)))
+        opts = dict(options)
+        return cls(heading=read_string(opts, "heading", cls._DEFAULT_HEADING,
+                                       label="retrieved block"),
+                   k=read_int(opts, "k", 3, label="retrieved block"),
+                   min_score=read_float(opts, "min_score", 0.3, label="retrieved block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         retriever = context.get("retriever")
@@ -227,7 +241,8 @@ class PreviousAttemptBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> PreviousAttemptBlock:
-        return cls(heading=str(options.get("heading", "Your previous attempt:")))
+        return cls(heading=read_string(dict(options), "heading", "Your previous attempt:",
+                                       label="previous-attempt block"))
 
     def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
                context: Mapping[str, Any]) -> str | None:
@@ -269,10 +284,12 @@ class SqlRowsBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SqlRowsBlock:
-        return cls(query=str(options.get("query", "")),
-                   heading=str(options.get("heading", "Relevant historical records:")),
-                   param_keys=tuple(options.get("param_keys", ())),
-                   limit=int(options.get("limit", 20)))
+        opts = dict(options)
+        return cls(query=read_string(opts, "query", "", label="sql_rows block"),
+                   heading=read_string(opts, "heading", "Relevant historical records:",
+                                       label="sql_rows block"),
+                   param_keys=read_string_list(opts, "param_keys", label="sql_rows block"),
+                   limit=read_int(opts, "limit", 20, label="sql_rows block"))
 
     def render(self, record: Record, context: Mapping[str, Any]) -> str | None:
         store = context.get("sql_store")
@@ -307,8 +324,9 @@ class SchemaBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> SchemaBlock:
-        return cls(heading=str(options.get("heading",
-                                           "Database schema (tables and their columns):")))
+        return cls(heading=read_string(dict(options), "heading",
+                                       "Database schema (tables and their columns):",
+                                       label="schema block"))
 
     def render(self, record: Record,  # noqa: ARG002  -- required by the ContextBlock port
                context: Mapping[str, Any]) -> str | None:
@@ -342,8 +360,10 @@ class ReadingsBlock:
 
     @classmethod
     def from_config(cls, options: Mapping[str, Any]) -> ReadingsBlock:
-        return cls(keys=tuple(options.get("keys", ())),
-                   heading=str(options.get("heading", "Reported readings and codes:")))
+        opts = dict(options)
+        return cls(keys=read_string_list(opts, "keys", label="readings block"),
+                   heading=read_string(opts, "heading", "Reported readings and codes:",
+                                       label="readings block"))
 
     def render(self, record: Record,
                context: Mapping[str, Any]) -> str | None:  # noqa: ARG002  -- reads the record only
