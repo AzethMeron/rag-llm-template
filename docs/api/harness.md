@@ -485,6 +485,14 @@ a placeholder shown in a *neighbour* line), `capture` (the run's `Capture` sink,
 **Module-level registry:** `CONTEXT_BLOCKS: Registry[ContextBlock]` — registers built-in and
 third-party (via the `ragkit.context_blocks` entry-point group) context-block components.
 
+**Strict option parsing (every block's `from_config`).** Each built-in block's `from_config` reads
+its options through the strict `ragkit.core.config` readers (`read_string`, `read_int`,
+`read_float`, `read_string_list`), so an option present with the wrong TOML type is refused with a
+`ConfigError` rather than silently coerced (a non-integer `limit`, a `min_score` given as a string,
+and so on). The per-block `from_config` "Raises" notes below list only each block's own
+constructor-level validation (the `ContextBlockError`s); this `ConfigError` type-check applies to
+every block ahead of its constructor and is not repeated per entry.
+
 **The no-empty-section render contract, precisely:** a block returns `None` (never a heading with
 nothing under it) whenever it has nothing to contribute for this record. This is enforced
 differently depending on the block:
@@ -592,13 +600,15 @@ paired with it — so the model sees how a neighbour was actually rendered, keep
 pronouns continuous. Implements `ContextBlock`. `CONFIG_KEYS = {"before", "after", "heading"}`.
 
 **Constructor:** `__init__(self, before: int = 3, after: int = 2, heading: str = _DEFAULT_HEADING)
--> None`. No validation (unlike `NeighboursBlock`, a negative `before`/`after` is not rejected
-here).
+-> None`. Raises `ContextBlockError` ("established block: before/after must be >= 0") if either is
+negative — the same guard as `NeighboursBlock` (a negative window would otherwise fall through
+`_meta_strings`'s `limit <= 0` path and silently drop the established context).
 
 #### `from_config(cls, options: Mapping[str, Any]) -> EstablishedBlock`
 
 **Args:** `options` — `before` (default `3`), `after` (default `2`), `heading`. **Returns:**
-`EstablishedBlock`. **Raises:** none.
+`EstablishedBlock`. **Raises:** `ContextBlockError` via the constructor if `before`/`after` is
+negative.
 
 #### `render(self, record: Record, context: Mapping[str, Any]) -> str | None`
 
@@ -690,10 +700,16 @@ block: limit must be >= 1").
 
 **Raises:** `ContextBlockError` ("a 'sql_rows' context block is configured but no sql_store was
 wired into the run") if `context.get("sql_store")` is `None`; or ("the wired 'sql_store' does not
-satisfy the SqlStore port") if present but not an `isinstance(store, SqlStore)`. Otherwise
+satisfy the SqlStore port") if present but not an `isinstance(store, SqlStore)`; or ("sql_rows
+block: record ... is missing param_key(s) ... needed by the query; a missing bind would silently
+match nothing"), naming the record and the missing keys, if any declared `param_key` is absent from
+`record.meta`. This last check is a documented fix: a declared `param_key` missing from the record
+previously bound SQL NULL silently, and `= NULL` matches nothing, so the block rendered no rows —
+indistinguishable from a genuine no-match, the historical context silently dropped. Otherwise
 propagates whatever `store.query(...)` raises.
 
-**Returns:** builds `params = [record.meta.get(key) for key in self._param_keys]`, then runs
+**Returns:** builds `params = [record.meta[key] for key in self._param_keys]` (direct indexing,
+safe because every key is guaranteed present by the missing-key check above), then runs
 `SELECT * FROM (<query, trailing ';' stripped>) LIMIT ?` with `[*params, self._limit]` — the row
 limit is applied by the database itself via the wrapping subquery, not by slicing the full result
 set in Python (a documented fix: the previous form fetched every matching row across the port and
@@ -901,13 +917,18 @@ One member of the run: the producer, or a reviewer. Frozen dataclass (`slots=Tru
 - `kind: str` — `"producer"` or `"reviewer"`; validated in `__post_init__` against
   `{"producer", "reviewer"}` (`ValueError` otherwise).
 - `model: str` — the logical model name, resolved through `ModelPool.client_for`.
-- `instructions: str = ""` — this persona's system-prompt text. **Not** validated by `Persona.
-  __post_init__` itself — the "must be non-empty unless `from_rules`" rule, and the "`from_rules`
-  and non-empty `instructions` are mutually exclusive" rule, are enforced only by the config
-  loader (`_one_persona`), not by directly constructing a `Persona`.
+- `instructions: str = ""` — this persona's system-prompt text. Validated by `Persona.
+  __post_init__`: a non-`from_rules` persona with blank `instructions` raises `ValueError` ("has no
+  instructions and does not set from_rules, so it would act against nothing"), and setting both
+  `from_rules` and non-empty `instructions` raises `ValueError` ("sets both from_rules and
+  instructions; one would be silently ignored"). These invariants live on the type, so an invalid
+  `Persona` cannot be constructed directly (not only via the loader); the config loader
+  (`_one_persona`) relies on them and wraps the `ValueError` into a `ConfigError` naming the persona
+  and file.
 - `from_rules: bool = False` — reviewer-only: build instructions from the rule set's advisory
-  criteria instead of its own (see `Harness._rule_instructions`). Also loader-enforced only, not
-  validated by `Persona` itself.
+  criteria instead of its own (see `Harness._rule_instructions`). Also validated by `Persona.
+  __post_init__`: `from_rules=True` on a non-reviewer raises `ValueError` ("from_rules applies only
+  to a reviewer"), and it is mutually exclusive with non-empty `instructions` (see above).
 - `max_tokens: int | None = None` — an explicit override of the reviewer token ceiling. If set,
   must be `>= 1` (`ValueError` otherwise, raised by `__post_init__`).
 - `leniency: Leniency = Leniency()` — per-reviewer leniency window. The class-level default is a
@@ -1262,7 +1283,11 @@ field name ("FormSchema has a duplicate field {name!r}"). Sets `self.name = name
 **Raises:** `ValueError` if `fields` is missing or not a non-empty list ("FormSchema needs a
 non-empty 'fields' array"), if an entry is not a `Mapping` or lacks `"name"` ("each form field
 needs at least a 'name'"), or whatever `FormField.__post_init__`/`FormSchema.__init__` raise for
-a bad type, duplicate name, or empty field list.
+a bad type, duplicate name, or empty field list. Each field's `name`/`type`/`description` and the
+top-level `name` are read through the strict `read_string` reader and `required` through
+`read_bool`, so a mistyped field option — e.g. a non-string `type`, or a `required` that is not a
+boolean — raises `ConfigError` rather than being coerced. (`JsonFieldSchema.from_config`, by
+contrast, still uses plain `str(...)` coercion — see above.)
 
 #### `json_schema(self) -> dict[str, Any]`
 

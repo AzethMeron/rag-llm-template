@@ -293,25 +293,32 @@ request over the candidates it is given.
 Constructor:
 ```
 RerankClient(*, base_url: str, model: str = "local", timeout_seconds: float = 120.0,
-              score_scale: str = "logit", client: httpx.Client | None = None)
+              score_scale: str = "logit", max_retries: int = 2,
+              retry_backoff_seconds: float = 1.0, client: httpx.Client | None = None)
 ```
 `base_url` is normalised to `base_url.rstrip("/") + "/rerank"`. `client` ownership follows the same
-rule as `EmbeddingClient`: an injected client is never closed by `close()`.
-**Raises:** `RerankError` if `score_scale` is not one of `SCORE_SCALES`.
+rule as `EmbeddingClient`: an injected client is never closed by `close()`. `max_retries` /
+`retry_backoff_seconds` govern the transient-failure retry (see `rerank` below); previously the
+client did no retrying at all.
+**Raises:** `RerankError` if `score_scale` is not one of `SCORE_SCALES`, or if `max_retries < 0`.
 
 #### rerank(self, query: str, documents: Sequence[str]) -> list[tuple[int, float]]
 
-Scores `documents` against `query`, best first. POSTs `{"model", "query", "documents"}`, reads
-`response["results"]` as a list of `{"index", "relevance_score"}`, converts each score to relevance
-via `sigmoid` (if `score_scale == "logit"`) or a `[0, 1]` clamp (if `"unit"`), validates, and
-re-sorts by descending relevance itself rather than trusting the endpoint's order (both scales are
-monotone, so sorting before or after normalisation gives the same order).
+Scores `documents` against `query`, best first. POSTs `{"model", "query", "documents"}` (retrying a
+transient failure — a timeout, dropped connection, or `408`/`429`/`500`/`502`/`503`/`504` status —
+with exponential backoff `retry_backoff_seconds * 2**attempt` up to `max_retries` attempts; a `4xx`
+or malformed reply is raised at once, never retried), reads `response["results"]` as a list of
+`{"index", "relevance_score"}`, converts each score to relevance via `sigmoid` (if `score_scale ==
+"logit"`) or a `[0, 1]` clamp (if `"unit"`), validates, and re-sorts by descending relevance itself
+rather than trusting the endpoint's order (both scales are monotone, so sorting before or after
+normalisation gives the same order).
 
 **Args:** `query` — the query text; `documents` — candidate texts to score (empty short-circuits
 with no HTTP call).
 **Returns:** `(index, relevance)` pairs, best first, `relevance` in `[0, 1]`; `index` is a
 permutation of `range(len(documents))`, so a caller may index by it without defending itself.
-**Raises:** `RerankError` for: an HTTP-level failure (`httpx.HTTPError`), a malformed response
+**Raises:** `RerankError` for: an HTTP-level failure (a deterministic `4xx`, or a transient failure
+still failing after `max_retries` retries), a malformed response
 (`results` missing or unparseable, an item missing `index`/`relevance_score`), a result count not
 matching the document count, an `index` out of range, a `relevance_score` that is NaN, or duplicate
 result indices (right count and all in-range does not imply distinct — e.g.
@@ -347,11 +354,24 @@ would silently poison the ranking downstream.
 First-stage retrievers over the storage indexes: lexical (BM25) and dense (embeddings). Each
 adapts a storage index to the `Retriever` port — `retrieve(query, *, k, min_score) ->
 tuple[Retrieved, ...]`, best-first, deterministic, safe to share across a run's concurrent workers.
-The underlying index returns `(chunk_id, score)`; a `Resolver` callable maps an id back to its text
-(a hit is dropped, not surfaced as an empty result, if `resolve` returns `None` — the text store no
-longer has it). A hit whose score is below `min_score` is dropped. `Resolver = Callable[[str], str
-| None]`; `MetaResolver = Callable[[str], Mapping[str, Any]]` (defaults to a resolver returning
-`{}`).
+The underlying index returns `(chunk_id, score)`; a `Resolver` callable maps an id back to its text.
+A hit whose score is below `min_score` is dropped. `Resolver = Callable[[str], str | None]`;
+`MetaResolver = Callable[[str], Mapping[str, Any]]` (defaults to a resolver returning `{}`).
+
+An id the search index returns but `resolve` cannot map to text (`resolve` returns `None`) is
+handled by *where* the two come from, never silently dropped without a trace. For the **lexical**
+retriever the search index and the text store are the *same* co-located `PairingStore`, whose
+contract guarantees a hit and its text cannot drift apart, so an unresolvable hit is an internal
+invariant violation (a corrupt store) and is raised as a `RetrieverError`. For the **dense**
+retriever the vector index and the pairing store are written separately and can legitimately drift
+between reconciles, so an unresolvable hit is dropped — but with a `logger.warning` naming the drop
+count, so a badly-stale index cannot silently halve every result set.
+
+### RetrieverError(RagkitError)
+
+Raised when a retriever hits an inconsistency it cannot paper over — e.g. a co-located store (the
+lexical `PairingStore`) returned a search hit whose text it cannot resolve, which its port contract
+says is impossible. Exported from `ragkit.retrieve`.
 
 ### LexicalRetriever()
 
@@ -369,8 +389,11 @@ requires an explicit `k`); it exists for callers/factories (e.g.
 **Args:** `query` — the query text; `k` — how many results to request from the index (returns `()`
 immediately if `k <= 0`); `min_score` — floor on `SearchIndex`'s `[0, 1)` score.
 **Returns:** up to `k` `Retrieved` hits, best-first, in the index's own order, with any hit below
-`min_score` or whose text cannot be resolved dropped.
-**Raises:** whatever `self._index.search` raises; not caught here.
+`min_score` dropped.
+**Raises:** `RetrieverError` if a surviving hit's text cannot be resolved — for the lexical arm the
+search index and text store are the same co-located `PairingStore`, so an unresolvable hit is an
+internal invariant violation (a corrupt store), not a legitimate drop. Also whatever
+`self._index.search` raises; not caught here.
 
 ### DenseRetriever()
 
@@ -387,8 +410,10 @@ resulting vector.
 **Args:** `query` — the query text; `k` — how many results to request (returns `()` immediately if
 `k <= 0`, with no embedding call made); `min_score` — floor on `VectorIndex`'s `[0, 1]` cosine
 score.
-**Returns:** up to `k` `Retrieved` hits, best-first, any hit below `min_score` or unresolvable
-dropped.
+**Returns:** up to `k` `Retrieved` hits, best-first, any hit below `min_score` dropped; a hit whose
+text cannot be resolved is also dropped (the vector index can legitimately drift from the pairing
+store between reconciles), but with a `logger.warning` naming the drop count, so a badly-stale index
+cannot silently shrink every result set.
 **Raises:** `EmbeddingError` from the embed step; whatever `self._index.search` raises from the
 search step.
 

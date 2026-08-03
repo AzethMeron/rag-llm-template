@@ -223,13 +223,16 @@ is in flight elsewhere).
 
 #### from_config(cls, options: Mapping[str, Any]) -> SqliteLexicon
 
-**Args:** `options` (`Mapping[str, Any]`): `{"path": str}`, defaulting `path` to `":memory:"` if
-absent.
+**Args:** `options` (`Mapping[str, Any]`): `{"path": str}`. `path` is **required** (via
+`read_required_path`) — a forgotten `path` is refused rather than silently defaulting to an ephemeral
+`:memory:` store; an explicit `":memory:"` is still accepted.
 
 **Returns:** `SqliteLexicon`.
 
-**Raises:** `LexiconStoreError` — if the underlying `sqlite3.connect`/schema-creation call fails
-(wrapped from `sqlite3.Error`).
+**Raises:**
+- `ConfigError` — `path` is absent or blank (via `read_required_path`, label `"[lexicon] store"`).
+- `LexiconStoreError` — if the underlying `sqlite3.connect`/schema-creation call fails (wrapped from
+  `sqlite3.Error`).
 
 **Side effects:** opens a SQLite connection and creates the `lexicon` table (`CREATE TABLE IF NOT
 EXISTS`) if absent; commits once.
@@ -408,13 +411,18 @@ Implements `PairingStore` (and, like `SqlitePairings`, also satisfies `SearchInd
 
 #### from_config(cls, options: Mapping[str, Any]) -> DuckDBPairings
 
-**Args:** `options`: `{"path": str}`, defaulting to `":memory:"`.
+**Args:** `options`: `{"path": str}`. `path` is **required** (via `read_required_path`) — a
+forgotten `path` is refused rather than silently defaulting to an ephemeral `:memory:` store; an
+explicit `":memory:"` is still accepted.
 
 **Returns:** `DuckDBPairings`.
 
-**Raises:** `PairingStoreError` — the `duckdb` package is not installed; its `fts` extension cannot
-be installed/loaded (offline and not already cached); or the connection/schema-creation call fails
-for any other reason.
+**Raises:**
+- `ConfigError` — `path` is absent or blank (via `read_required_path`, label `"[pairings] store"`),
+  raised before the `duckdb`/`fts` checks in `__init__`.
+- `PairingStoreError` — the `duckdb` package is not installed; its `fts` extension cannot be
+  installed/loaded (offline and not already cached); or the connection/schema-creation call fails
+  for any other reason.
 
 **Side effects:** opens a DuckDB connection, loads the `fts` extension, and runs `CREATE TABLE IF
 NOT EXISTS pairings(...)`. **Does not build the FTS index here** — an existing on-disk store is not
@@ -596,13 +604,19 @@ docstring).
 
 #### from_config(cls, options: Mapping[str, Any]) -> SqlitePairings
 
-**Args:** `options`: `{"path": str, "tokenizer": str}`, defaulting to `":memory:"` and
-`"unicode61"`.
+**Args:** `options`: `{"path": str, "tokenizer": str}`. `path` is **required** (via
+`read_required_path`) — a forgotten `path` is refused rather than silently defaulting to an ephemeral
+`:memory:` store that loses everything between runs; an explicit `":memory:"` is still accepted.
+`tokenizer` defaults to `"unicode61"`.
 
 **Returns:** `SqlitePairings`.
 
-**Raises:** `PairingStoreError` — wraps a `sqlite3.Error` from opening the connection or running the
-schema script (table + FTS5 virtual table + triggers).
+**Raises:**
+- `ConfigError` — `path` is absent or blank (via `read_required_path`, label `"[pairings] store"`);
+  the message names the fix (set `path` to a file, or `":memory:"` explicitly for a deliberately
+  ephemeral store).
+- `PairingStoreError` — wraps a `sqlite3.Error` from opening the connection or running the schema
+  script (table + FTS5 virtual table + triggers).
 
 **Side effects:** opens a SQLite connection; runs the full schema script and commits once.
 
@@ -700,12 +714,16 @@ Callable[[], float] = time.time)` (`clock` is a testing seam, not exposed via `f
 
 #### from_config(cls, options: Mapping[str, Any]) -> SqliteRunStore
 
-**Args:** `options`: `{"path": str, "synchronous": str}`, defaulting to `":memory:"` and `"FULL"`.
+**Args:** `options`: `{"path": str, "synchronous": str}`. `path` is **required** (via
+`read_required_path`) — a forgotten `path` is refused rather than silently defaulting to an ephemeral
+`:memory:` store; an explicit `":memory:"` is still accepted. `synchronous` defaults to `"FULL"`.
 
 **Returns:** `SqliteRunStore`.
 
-**Raises:** `RunStoreError` — `synchronous.upper()` is not one of `{"FULL", "NORMAL"}`; or a
-`sqlite3.Error` from opening the connection/running the schema script.
+**Raises:**
+- `ConfigError` — `path` is absent or blank (via `read_required_path`, label `"[run] store"`).
+- `RunStoreError` — `synchronous.upper()` is not one of `{"FULL", "NORMAL"}`; or a `sqlite3.Error`
+  from opening the connection/running the schema script.
 
 **Side effects:** opens a connection with `journal_mode=WAL`, `busy_timeout=5000`,
 `synchronous=<mode>`, `foreign_keys=ON`; runs the schema script (`records` + `results` tables and
@@ -809,14 +827,13 @@ Implements `SqlStore`. Not a dataclass; `CONFIG_KEYS = frozenset({"path", "read_
 "schema_sql"})`. Constructor: `__init__(self, path: str = ":memory:", *, read_only: bool = False,
 schema_sql: str | None = None)`. Attribute `read_only: bool` (the port's required member).
 
-**Cross-driver divergence — validation order.** `DuckDBStore.__init__` checks the `schema_sql and
-read_only` contradiction and raises **before** opening any connection (`"the error names the real
-mistake rather than a downstream open failure"`, per the module's own comment). `SqliteStore.__init__`
-(below) opens its connection **first**, then raises the identical error if both are set — a
-real, observable difference in when the failure surfaces (and, on the SQLite side, in an unclosed
-connection object existing transiently on the failed instance, cleaned up only by `sqlite3`'s own
-finalizer via GC, not deterministically). Worth double-checking if anything ever relies on
-`__init__` having zero side effects before it raises.
+**Construction order — matched across drivers.** Both `DuckDBStore.__init__` and
+`SqliteStore.__init__` (below) check the `schema_sql and read_only` contradiction and raise
+**before** opening any connection (`"the error names the real mistake rather than a downstream open
+failure"`, per each module's own comment), so a bad config never orphans an open connection handle on
+a half-built instance. This once diverged — the SQLite driver used to open its connection first and
+raise only afterward, transiently leaving an unclosed connection on the failed instance — which is why
+the check's placement is still called out here; the two now agree.
 
 #### from_config(cls, options: Mapping[str, Any]) -> DuckDBStore
 
@@ -898,20 +915,22 @@ which is likewise lazy but for the same reason).
 data_type)` pairs, read from `information_schema.tables`/`information_schema.columns` filtered to
 `table_schema = 'main'`.
 
-**Raises:** whatever `duckdb.connect(..., read_only=...)` raises for a missing/invalid file
-(unwrapped — no explicit `try`/`except` in this method); requires the `duckdb` package (via
-`_require_duckdb`, raising `SqlStoreError` if absent).
+**Raises:**
+- `SqlStoreError` — the `duckdb` package is not installed (via `_require_duckdb`, checked **first**,
+  so a missing package surfaces before the `:memory:` check).
+- `SqlStoreError.memory_introspection()` — `path == ":memory:"`: refused up front rather than opening
+  a fresh, empty per-connection in-memory database and silently returning `{}` (see
+  `SqlStoreError.memory_introspection`).
+- whatever `duckdb.connect(..., read_only=True)` raises for a missing/invalid file (unwrapped — no
+  explicit `try`/`except` around the connect in this method).
 
 **Side effects:** opens its **own** short-lived read-only connection and closes it in a `finally`
 (distinct from any `DuckDBStore` connection already open on the same path — necessary because DuckDB
 refuses two connections to one file with different `read_only` settings, so this always opens
-read-only to be compatible with a read-only `DuckDBStore` on the same file). **Divergent, verified
-edge case**: if `path == ":memory:"`, this opens a **fresh, empty** in-memory DuckDB database (since
-`:memory:` is per-connection in DuckDB), completely disconnected from any other `:memory:`
-`DuckDBStore` — introspecting a `:memory:` store this way always returns `{}`, never the schema of
-another connection's tables. (`SqliteIntrospector.schema` shares the identical limitation for the
-identical reason — see below — so this is a property of `:memory:` databases generally, not a
-DuckDB-specific gap.)
+read-only to be compatible with a read-only `DuckDBStore` on the same file). No connection is opened
+for a `:memory:` path — it is refused first (see Raises); `SqliteIntrospector.schema` refuses
+`:memory:` identically, for the identical reason, so this is a property of `:memory:` databases
+generally, not a DuckDB-specific gap.
 
 ---
 
@@ -927,10 +946,11 @@ connection shared by the runner's concurrent workers, guarded by a lock, opened 
 
 ### SqlStoreError
 
-`class SqlStoreError(RagkitError)`. Raised when a SQL store operation fails, or a write is attempted
-on a read-only binding. The two read-only refusals are constructors here so **every** `SqlStore`
-driver (SQLite, DuckDB) raises the identical message from one home rather than each re-typing it —
-an SSOT for the error text, used by both `sql/sqlite.py` and `sql/duckdb.py`.
+`class SqlStoreError(RagkitError)`. Raised when a SQL store operation fails, a write is attempted
+on a read-only binding, or a schema introspector is pointed at a `:memory:` database. The two
+read-only refusals and the `:memory:`-introspection refusal are constructors here so **every**
+`SqlStore` driver (SQLite, DuckDB) raises the identical message from one home rather than each
+re-typing it — an SSOT for the error text, used by both `sql/sqlite.py` and `sql/duckdb.py`.
 
 #### write_on_read_only(cls, sql: str) -> SqlStoreError
 
@@ -950,6 +970,20 @@ the framework's own store is writable."
 
 **Raises:** nothing itself.
 
+#### memory_introspection(cls) -> SqlStoreError
+
+**Args:** none.
+
+**Returns:** `SqlStoreError` — "a schema introspector cannot read a ':memory:' database: it is
+per-connection and ephemeral, so the introspector's own connection sees an empty database. Point
+[introspector].path at the real database file to introspect." Raised by both
+`SqliteIntrospector.schema` and `DuckDBIntrospector.schema` when their `path` is `":memory:"`: a
+`:memory:` database is per-connection, so an introspector opening its own connection would see a
+*different*, empty database and silently return `{}` — the same silent-empty-schema failure the
+missing-file guard already refuses, so it is refused too.
+
+**Raises:** nothing itself.
+
 ### SqliteStore
 
 Implements `SqlStore`. Not a dataclass; `CONFIG_KEYS = frozenset({"path", "read_only",
@@ -963,9 +997,9 @@ schema_sql: str | None = None)`. Attribute `read_only: bool`.
 
 **Returns:** `SqliteStore`.
 
-**Raises:** `SqlStoreError.schema_on_read_only()` — raised (in `__init__`) **after** the connection
-is already open, if both `read_only=True` and `schema_sql` are given — see the divergence noted under
-`DuckDBStore` above.
+**Raises:** `SqlStoreError.schema_on_read_only()` — raised (in `__init__`) **before** any connection
+is opened, if both `read_only=True` and `schema_sql` are given — matching `DuckDBStore`; see the
+construction-order note above.
 
 **Side effects:** opens a connection — via `_connect_read_only(path)` (a `file:...?mode=ro` URI) if
 `read_only`, else a normal read-write `sqlite3.connect`. `_connect_read_only` is also what makes a
@@ -1025,22 +1059,26 @@ dataclass; `CONFIG_KEYS = frozenset({"path"})`. Constructor: `__init__(self, pat
 declared type)` pairs, for every table in `sqlite_master` not matching `sqlite_%` (excludes SQLite's
 own internal tables), each read via `PRAGMA table_info("<table>")`.
 
-**Raises:** whatever `_connect_read_only` raises for a path that does not exist (unwrapped) — this
-is deliberate and documented: opening **read-only** is what makes a missing file an error at all. A
-plain `sqlite3.connect` would silently create the file it cannot find, so a typo'd
-`[introspector].path` used to produce an empty file and return `{}` with no error, and NL→SQL then
-generated against an empty schema; the DuckDB introspector already failed loudly on the same
-misconfiguration, and this fix brings the two into agreement.
+**Raises:**
+- `SqlStoreError.memory_introspection()` — `path == ":memory:"`, checked **first**, before any
+  connection is opened: a `:memory:` database is per-connection, so this introspector's own
+  connection would see a *different*, empty database and silently return `{}` (see
+  `SqlStoreError.memory_introspection`).
+- whatever `_connect_read_only` raises for a path that does not exist (unwrapped) — deliberate and
+  documented: opening **read-only** is what makes a missing file an error at all. A plain
+  `sqlite3.connect` would silently create the file it cannot find, so a typo'd `[introspector].path`
+  used to produce an empty file and return `{}` with no error, and NL→SQL then generated against an
+  empty schema; the DuckDB introspector already failed loudly on the same misconfiguration, and this
+  fix brought the two into agreement — as does the shared `:memory:` refusal above.
 
-**Side effects:** opens its own short-lived read-only connection, closed in a `finally`. Table names
-from `sqlite_master` are quote-escaped (`"` doubled) before being spliced into the `PRAGMA` string,
-since `PRAGMA` does not accept a bound parameter for a table name — safe because the name comes from
-`sqlite_master`, not user input. **Shares the same `:memory:` limitation as `DuckDBIntrospector`**:
-`_connect_read_only(":memory:")` passes the path straight through to a plain, brand-new in-memory
-connection (SQLite's `:memory:` is likewise per-connection, unless a shared-cache URI is used, which
-this does not), so introspecting a `:memory:` `SqliteStore` this way also returns `{}` rather than
-that store's actual schema — not documented in this method's own docstring, unlike the DuckDB side's
-`in_memory` branch which at least names the reason inline.
+**Side effects:** opens its own short-lived read-only connection, closed in a `finally` (none opened
+for a `:memory:` path — refused first, see Raises). Table names from `sqlite_master` are
+quote-escaped (`"` doubled) before being spliced into the `PRAGMA` string, since `PRAGMA` does not
+accept a bound parameter for a table name — safe because the name comes from `sqlite_master`, not
+user input. **Refuses `:memory:` identically to `DuckDBIntrospector`**: both raise
+`SqlStoreError.memory_introspection` rather than opening a fresh, empty per-connection in-memory
+database and silently returning `{}` — a property of `:memory:` databases generally, not a
+driver-specific gap, and now named in each `schema()` docstring.
 
 ---
 
@@ -1127,8 +1165,9 @@ Implements `VectorIndex`.
 #### from_config(cls, options: Mapping[str, Any]) -> LanceVectorIndex
 
 **Args:** `options`: `{"path": str, "table": str, "dim": int, "metric": str, "nprobes": int |
-None}`; `path` is **required** (no default — unlike every other driver's `from_config`, which
-defaults `path` to `":memory:"`).
+None}`; `path` is **required** (no default) — like the persistence-critical pairing/run/lexicon
+`from_config`s (which require it via `read_required_path`), and unlike the `[sql]` stores,
+introspectors, and the Qdrant driver, whose `from_config` still defaults `path` to `":memory:"`.
 
 **Returns:** `LanceVectorIndex`.
 

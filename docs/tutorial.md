@@ -433,9 +433,11 @@ heading = "Similar past tickets and how they were triaged (examples, not the req
 ```
 
 A `[reference].file` **requires** a `[pairings]` store — there is no in-memory fallback, precisely
-so that "where does this live?" always has an answer. Omit `path` from `[pairings]` and you get an
-in-memory store, which is rebuilt from the source on every startup: right for tests and tiny
-corpora, wrong for anything you care about restarting quickly.
+so that "where does this live?" always has an answer. The `path` is required too: give a file path
+to keep the corpus on disk (built once, reused every run), or write `path = ":memory:"` *explicitly*
+for an ephemeral store rebuilt from the source on every startup (right for tests and tiny corpora,
+wrong for anything you care about restarting quickly). A *forgotten* `path` is refused rather than
+silently becoming an ephemeral store that quietly loses the corpus between runs.
 
 A hit displays as `"source -> target"`. There is no "show this arbitrary field alone" option — the
 display convention is always a pairing's `source`/`target`, so shape the fields you want shown as
@@ -559,7 +561,9 @@ controls how much of it a query actually probes — see [§8](#8-every-storage-o
 ## 8. Every storage option, and when to pick it
 
 Every store is bound in `storage.toml`, resolved through its own registry, and swappable by editing
-one `driver` line. A `path` puts a store on disk; no `path` gives an in-memory store. All the keys
+one `driver` line. A `path` puts a store on disk; the persistence-critical stores (`[pairings]`,
+`[run]`, `[lexicon]`) **require** one — write `path = ":memory:"` explicitly for an ephemeral store,
+since a *forgotten* path is refused rather than silently losing your data between runs. All the keys
 are in [`config.md`](config.md#storagetoml); the trade-offs are here.
 
 ### `[pairings]` — the reference memory

@@ -65,9 +65,10 @@ depth.
 
 **Returns:** the recall fraction, in `[0, 1]`.
 
-**Raises:** none explicitly; `ZeroDivisionError` propagates if `relevant` is empty (the docstring
-calls this case "undefined" — `evaluate_retrieval` excludes it before calling this, via
-`IncompleteGroundTruthError`, but a direct caller gets no such guarantee).
+**Raises:** `ValueError` if `relevant` is empty — the quantity is undefined, and every metric here
+rejects it uniformly via the shared `_require_relevant` guard. `evaluate_retrieval` excludes such
+queries before calling this (via `IncompleteGroundTruthError`), but a direct caller gets no such
+guarantee, which is why the guard lives in the metric itself.
 
 #### hit_rate_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float
 
@@ -80,7 +81,8 @@ literature-comparable number in addition to this framework's own convention.
 
 **Args/Returns:** same shape as `recall_at_k`.
 
-**Raises:** none; unlike `recall_at_k`, safe when `relevant` is empty (returns `0.0`, no division).
+**Raises:** `ValueError` if `relevant` is empty (via the shared `_require_relevant` guard, like the
+other four metrics).
 
 #### reciprocal_rank(ranked: Sequence[str], relevant: frozenset[str]) -> float
 
@@ -89,7 +91,8 @@ The per-query term of MRR (Mean Reciprocal Rank).
 **Formula:** `1 / rank` of the first relevant id in `ranked`, rank counted from 1; `0.0` if no
 relevant id appears anywhere in `ranked`.
 
-**Raises:** none; safe when `relevant` is empty (loop never matches, returns `0.0`).
+**Raises:** `ValueError` if `relevant` is empty (via the shared `_require_relevant` guard, like the
+other four metrics).
 
 #### average_precision(ranked: Sequence[str], relevant: frozenset[str]) -> float
 
@@ -100,8 +103,8 @@ The per-query term of MAP (Mean Average Precision).
 "mean of the precision values taken at each rank where a relevant id is hit, normalised by the
 number of relevant ids."
 
-**Raises:** none explicitly; `ZeroDivisionError` propagates if `relevant` is empty, same caveat as
-`recall_at_k`.
+**Raises:** `ValueError` if `relevant` is empty — the normalisation by `|relevant|` is undefined
+(via the shared `_require_relevant` guard, same as `recall_at_k`).
 
 #### ndcg_at_k(ranked: Sequence[str], relevant: frozenset[str], k: int) -> float
 
@@ -111,10 +114,11 @@ relevance).
 **Formula:** `DCG@k = Σ 1/log2(i+1)` over ranks `i` (1-indexed, within `ranked[:k]`) where
 `ranked[i-1]` is relevant. `IDCG@k = Σ 1/log2(i+1)` for `i` in `1..min(k, |relevant|)` (the ideal
 ordering: every relevant id ranked first). Returns `DCG@k / IDCG@k`, or `0.0` if `IDCG@k` is `0`
-(i.e. `relevant` is empty or `k < 1`). `1.0` when the top `k` hold as many relevant ids as possible.
+(i.e. `k < 1`, a degenerate depth; empty `relevant` now raises before this fallback is reached).
+`1.0` when the top `k` hold as many relevant ids as possible.
 
-**Raises:** none; the only metric among the five that guards its own empty-`relevant` case
-internally.
+**Raises:** `ValueError` if `relevant` is empty (via the shared `_require_relevant` guard, like the
+other four metrics); the `IDCG@k == 0` fallback now guards only the `k < 1` degenerate depth.
 
 ### RetrievalScores
 

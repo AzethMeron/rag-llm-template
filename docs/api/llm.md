@@ -6,8 +6,9 @@ shaping that client consults rather than deciding for itself (`ragkit.llm.backen
 routes each persona's logical model over one shared connection per endpoint while guarding against
 resident-model thrash (`ragkit.llm.pool`), the error taxonomy that lets a caller distinguish "the
 server is broken, stop the run" from "this one reply is bad, record and continue"
-(`ragkit.llm.errors`), and the launch-flag rendering that keeps `models.toml` the single source of
-truth for both routing and serving (`ragkit.llm.serveargs`). It depends only on the core contract
+(`ragkit.llm.errors`), the shared classification of which HTTP failures are transient enough to
+retry (`ragkit.llm.http`), and the launch-flag rendering that keeps `models.toml` the single source
+of truth for both routing and serving (`ragkit.llm.serveargs`). It depends only on the core contract
 (`ragkit.core`) and `httpx` — everything above it (the harness, recipes) talks to a model through
 this layer, never directly to an HTTP endpoint.
 
@@ -302,7 +303,7 @@ how the request asks for conforming JSON.
 **Raises:**
 - `LlmRefusalError`: the server returns `content: null` (also records a refusal via `self.stats.record_refusal()`).
 - `LlmTruncationError`: `finish_reason == "length"` — generation hit the `max_tokens` ceiling before finishing (usually a repetition loop); not retried, since the ceiling is a property of this prompt.
-- `LlmError`: a non-500, non-200 HTTP status (4xx; retrying cannot help — raised immediately); or every retry attempt is exhausted (accumulated from transport failures, 5xx responses, or malformed response bodies — missing `choices`/`message`/`content` or invalid JSON).
+- `LlmError`: a non-transient HTTP status (a deterministic 4xx — 400/401/403/404/422 — not in `ragkit.llm.http.TRANSIENT_HTTP_STATUS`; retrying cannot help, so it is raised immediately); or every retry attempt is exhausted (accumulated from transport failures, transient-status responses in `TRANSIENT_HTTP_STATUS` — 429 and 408 as well as the 5xx family — or malformed response bodies — missing `choices`/`message`/`content` or invalid JSON).
 
 **Side effects:** issues one or more HTTP POSTs to `{base_url}/chat/completions`; sleeps between retries (`retry_backoff_seconds * 2**(attempt-1)`); records retries/usage into `self.stats`; may log one budget warning (`logger.warning`, at most once per client instance, guarded by `self._context_lock`) when the estimated prompt + `max_tokens` nears `CONTEXT_WARN_FRACTION` of `config.context_window`.
 
@@ -412,6 +413,35 @@ behaviour (record and continue).
 - `recovered` (`dict[str, Any]`, required keyword): the repaired-but-unverified JSON object.
 
 **Returns:** none (constructor).
+
+## ragkit.llm.http
+
+Transient-vs-deterministic HTTP failure classification, shared by every client that talks to a
+model-serving endpoint — chat (`ragkit.llm.client`), embeddings and rerank (`ragkit.retrieve`). One
+home so all three retry the *same* failures the same way, rather than each client deciding
+differently (the chat client used to raise on a 429 the embedding client retried, and the rerank
+client retried nothing at all). Depends only on `httpx`.
+
+#### `TRANSIENT_HTTP_STATUS`
+
+A `frozenset[int]` of the HTTP status codes worth retrying with backoff: `{408, 429, 500, 502, 503,
+504}` — rate-limiting (429), request-timeout (408), and the transient 5xx a busy/overloaded server
+returns (llama.cpp answers 503 when every `--parallel` slot is in use; a cloud OpenAI-compatible
+endpoint answers 429 under load). A genuinely deterministic 4xx (400/401/403/404/422) is
+deliberately excluded — retrying it cannot help.
+
+#### `is_transient_http_error(exc: httpx.HTTPError) -> bool`
+
+Whether `exc` is a transient failure worth retrying with backoff: a timeout, a dropped connection,
+or a `TRANSIENT_HTTP_STATUS` response (from `raise_for_status`). A deterministic status error or any
+other `httpx.HTTPError` returns `False`.
+
+**Args:**
+- `exc` (`httpx.HTTPError`): the transport or status error to classify.
+
+**Returns:** `bool` — `True` for an `httpx.HTTPStatusError` whose `response.status_code` is in `TRANSIENT_HTTP_STATUS`, or for any `httpx.TimeoutException`/`httpx.TransportError`; `False` for any other `httpx.HTTPError`.
+
+**Raises:** none.
 
 ## ragkit.llm.pool
 

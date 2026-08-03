@@ -192,6 +192,25 @@ would silently split it into one-character entries instead of failing.
 **Raises:**
 - `ConfigError`: the value present is not a `list`, or contains a non-`str` element.
 
+#### `read_required_path(section: dict[str, Any], key: str, *, label: str, path: Path | None = None) -> str`
+
+A required filesystem path, refused rather than defaulted when absent or blank — there is
+deliberately no `default` parameter. Unlike `read_string`, a forgotten `path` for a store whose
+whole purpose is durable persistence must not silently become an ephemeral `:memory:` database
+that loses everything between runs, with no error anywhere. An explicit `":memory:"` is a valid,
+deliberate value (tests, a scratch store) and is accepted.
+
+**Args:**
+- `section` (`dict[str, Any]`): the table to read from.
+- `key` (`str`): the key to read (the database file path).
+- `label` (`str`): the section name, used in the error message.
+- `path` (`Path | None`, default `None`): the file the section came from, for the error.
+
+**Returns:** `str` — the value at `key`, once confirmed to be a non-blank string; an explicit `":memory:"` is returned unchanged.
+
+**Raises:**
+- `ConfigError`: `key` is absent, or its value is not a `str`, or is blank/whitespace-only (the message names the key and explains the in-memory-fallback hazard).
+
 ## ragkit.core.errors
 
 The one base every deliberate error in the framework derives from. Errors here are structured and

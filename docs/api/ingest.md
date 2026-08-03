@@ -56,10 +56,12 @@ Constructor: `FixedChunker(size: int = 1000, overlap: int = 150)`. Raises `Chunk
 
 #### from_config(cls, options: Mapping[str, Any]) -> FixedChunker
 
-**Args:** `options` — `{"size": int = 1000, "overlap": int = 150}`, both coerced with `int(...)`.
+**Args:** `options` — `{"size": int = 1000, "overlap": int = 150}`, both read through the strict
+`ragkit.core.config.read_int` reader (not a bare `int(...)` coercion; `read_int` also rejects a
+`bool`, so `size = true` cannot read as `1`).
 **Returns:** a new `FixedChunker`.
-**Raises:** `ChunkError` if the resulting `size`/`overlap` violate the constructor's constraints;
-a `TypeError`/`ValueError` from `int(...)` propagates uncaught if a value is not coercible.
+**Raises:** `ConfigError` if `size`/`overlap` is present but not an integer (`read_int`); `ChunkError`
+if the resulting `size`/`overlap` violate the constructor's constraints.
 
 #### chunk(self, document: Document) -> Iterator[Chunk]
 
@@ -83,9 +85,11 @@ Constructor: `SentenceChunker(target: int = 800)`. Raises `ChunkError` if `targe
 
 #### from_config(cls, options: Mapping[str, Any]) -> SentenceChunker
 
-**Args:** `options` — `{"target": int = 800}`, coerced with `int(...)`.
+**Args:** `options` — `{"target": int = 800}`, read through the strict `read_int` reader (not a bare
+`int(...)` coercion).
 **Returns:** a new `SentenceChunker`.
-**Raises:** `ChunkError` if the resulting `target < 1`.
+**Raises:** `ConfigError` if `target` is present but not an integer; `ChunkError` if the resulting
+`target < 1`.
 
 #### chunk(self, document: Document) -> Iterator[Chunk]
 
@@ -114,9 +118,11 @@ unless `1 <= target <= maximum`.
 
 #### from_config(cls, options: Mapping[str, Any]) -> StructureChunker
 
-**Args:** `options` — `{"target": int = 600, "maximum": int = 1200}`, both coerced with `int(...)`.
+**Args:** `options` — `{"target": int = 600, "maximum": int = 1200}`, both read through the strict
+`read_int` reader (not a bare `int(...)` coercion).
 **Returns:** a new `StructureChunker`.
-**Raises:** `ChunkError` if `1 <= target <= maximum` does not hold.
+**Raises:** `ConfigError` if `target`/`maximum` is present but not an integer; `ChunkError` if
+`1 <= target <= maximum` does not hold.
 
 #### chunk(self, document: Document) -> Iterator[Chunk]
 
@@ -187,7 +193,7 @@ registered on the module-level `EXTRACTORS: Registry[Extractor]` under `"text"`,
 ### ExtractError(RagkitError)
 
 Raised when a source cannot be extracted: invalid JSON on a JSONL line, a JSONL record missing its
-configured text or id field.
+configured text or id field, a text field that is present but not a string, or a null id field.
 
 ### TextExtractor()
 
@@ -200,7 +206,8 @@ Constructor: `TextExtractor(doc_id: str = "text")`.
 
 **Args:** `options` — `{"doc_id": str = "text"}`.
 **Returns:** a new `TextExtractor`.
-**Raises:** nothing.
+**Raises:** `ConfigError` if `doc_id` is present but not a string (read through the strict
+`ragkit.core.config.read_string` reader); otherwise nothing.
 
 #### extract(self, source: bytes | str, *, meta: Mapping[str, Any] = {}) -> Iterator[Document]
 
@@ -226,7 +233,8 @@ default) means synthesize `doc_id` as `f"line-{line_no}"` instead of reading it 
 
 **Args:** `options` — `{"field": str = "text", "id_field": str = ""}`.
 **Returns:** a new `JsonlExtractor`.
-**Raises:** nothing.
+**Raises:** `ConfigError` if `field`/`id_field` is present but not a string (read through the strict
+`read_string` reader); otherwise nothing.
 
 #### extract(self, source: bytes | str, *, meta: Mapping[str, Any] = {}) -> Iterator[Document]
 
@@ -237,10 +245,13 @@ fields, minus the text field).
 
 **Args:** `source` — the JSONL text/bytes; `meta` — unused.
 **Returns:** an iterator of `Document`, one per non-blank line, `doc_id` from `id_field` (stringified)
-if configured (and required to be present) else `f"line-{line_no}"`, `text` from the configured
-`field`, `meta` = every other record field.
+if configured (required to be present and non-null) else `f"line-{line_no}"`, `text` from the
+configured `field` (required to be a string), `meta` = every other record field.
 **Raises:** `ExtractError` if a line is not valid JSON, if a parsed record is not a JSON object or
-lacks the configured `field`, or if `id_field` is configured but absent from the record.
+lacks the configured `field`, if the `field` value is present but not a string (previously
+`str()`-coerced — a null/number/list became the string `"None"`/`"42"`/`"['a']"` and was indexed as
+content), if `id_field` is configured but absent from the record, or if the `id_field` value is
+JSON `null`.
 
 ### HtmlExtractor()
 
@@ -260,7 +271,8 @@ since it splits on exactly those blank lines). Script/style content is dropped e
 
 **Args:** `options` — `{"doc_id": str = "html"}`.
 **Returns:** a new `HtmlExtractor`.
-**Raises:** nothing.
+**Raises:** `ConfigError` if `doc_id` is present but not a string (read through the strict
+`read_string` reader); otherwise nothing.
 
 #### extract(self, source: bytes | str, *, meta: Mapping[str, Any] = {}) -> Iterator[Document]
 
@@ -289,7 +301,8 @@ Constructor: `MarkdownExtractor(doc_id: str = "md")`.
 
 **Args:** `options` — `{"doc_id": str = "md"}`.
 **Returns:** a new `MarkdownExtractor`.
-**Raises:** nothing.
+**Raises:** `ConfigError` if `doc_id` is present but not a string (read through the strict
+`read_string` reader); otherwise nothing.
 
 #### extract(self, source: bytes | str, *, meta: Mapping[str, Any] = {}) -> Iterator[Document]
 
@@ -340,23 +353,28 @@ resumable floor. The vector index, when configured, still lives separately from 
 
 ### ReferenceImportError(RagkitError)
 
-Raised when the reference JSONL corpus is malformed (a line fails to parse as JSON). Carries
-`path` in its context (via the `path=` keyword passed to `RagkitError`).
+Raised when the reference JSONL corpus is malformed — a line fails to parse as JSON, or a present
+`index_field`/`target_field` (source/target) value is not a string. Carries `path` in its context
+(via the `path=` keyword passed to `RagkitError`).
 
 #### reference_pairings(path: Path, *, index_field: str = "source", target_field: str = "target", skip: int = 0) -> Iterator[Pairing]
 
 Yields one `Pairing` per non-blank JSONL line beyond `skip`, numbered `chunk_id=f"ref-{line_no}"` —
 a fetch script's own line numbering, so citations, gold data, and `ragkit.eval.retrieval` line up.
 `skip` fast-forwards past already-imported lines by line number, *without parsing them* — the
-mechanism `import_reference`'s resume path relies on. A line whose `index_field` value is empty or
-absent is skipped entirely (never yielded as an empty-source pairing); `target_field`, if absent
-from the record, yields `target=""`.
+mechanism `import_reference`'s resume path relies on. A line whose `index_field` value is absent,
+JSON `null`, or the empty string is skipped entirely (never yielded as an empty-source pairing); a
+present-but-**non-string** `index_field` raises `ReferenceImportError` instead of being
+`str()`-coerced (a JSON `null` used to stringify to the truthy 4-char `"None"`, so the empty-source
+guard never fired and `"None"` was silently indexed as content). `target_field` absent or `null`
+yields `target=""`; a present-but-non-string `target_field` likewise raises `ReferenceImportError`.
 
 **Args:** `path` — the JSONL corpus file; `index_field` — the record key holding the source text;
 `target_field` — the record key holding the target text (optional per record); `skip` — number of
 leading physical lines to skip without parsing (1-based line numbers `<= skip` are skipped).
 **Returns:** an iterator of `Pairing`, each with `meta` set to the full parsed JSON record.
-**Raises:** `ReferenceImportError` if a line beyond `skip` is not valid JSON.
+**Raises:** `ReferenceImportError` if a line beyond `skip` is not valid JSON, or if a present
+`index_field`/`target_field` value is not a string.
 
 #### import_reference(path: Path, pairing_store: PairingStore, *, index_field: str = "source", target_field: str = "target", vector: VectorIndex | None = None, embedder: EmbeddingClient | None = None, batch_size: int = 1000) -> int
 
