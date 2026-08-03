@@ -63,7 +63,7 @@ src/ragkit/
   retrieve/  lexical, dense, fusion (RRF/MMR), rerank, hybrid, config-driven assembly (tuning)
   llm/       client, backends, model pool + thrash guard, serve-args
   harness/   personas, panel, validators, context blocks, memory, output schemas, runner
-  eval/      retrieval metrics (Recall@k/MRR/MAP/NDCG) + a blinded A/B judge
+  eval/      retrieval metrics (Recall@k/hit-rate@k/MRR/MAP/NDCG), classification scoring, + a blinded A/B judge
   cli/       assemble a run from a config directory, and execute it
 recipes/     six fully-worked tasks, each with config/, plugins/, a hardened fetch.sh, eval.py, tests/
 docs/ tools/ tests/ license/ .audit/

@@ -94,14 +94,19 @@ A decode setting is configured where it takes effect, so there is one obvious ho
 
 ## Evaluation
 
-Two separable layers, both in `ragkit.eval`, both built so a circular configuration is *refused*
-rather than reported (the hard-won lesson recorded in `.audit/`): **a metric must be independent of
-what it ranks.**
+Three separable layers, all in `ragkit.eval`. The two that rank one system against another are
+built so a circular configuration is *refused* rather than reported (the hard-won lesson recorded in
+`.audit/`): **a metric must be independent of what it ranks.**
 
-- **Retrieval** — `evaluate_retrieval` scores each system with `Recall@k`, `MRR`, `MAP`, and
-  `NDCG@k` against `Qrels` (ground truth carrying a `source` label). It raises rather than run if
-  the ground truth's source is a system under evaluation (it would score `1.0` by construction), or
-  if an evaluated query has no gold judgments.
+- **Retrieval** — `evaluate_retrieval` scores each system with `Recall@k`, `hit_rate@k` (top-k
+  accuracy), `MRR`, `MAP`, and `NDCG@k` against `Qrels` (ground truth carrying a `source` label).
+  It raises rather than run if the ground truth's source is a system under evaluation (it would
+  score `1.0` by construction), or if an evaluated query has no gold judgments.
+- **Classification** — `score_labels` pairs a run's predicted labels with a gold set (case-folded so
+  casing cannot cost accuracy), and `ClassificationReport` reports accuracy, answered/total counts,
+  and an abstention-aware `rate()` a recipe subclasses to add its own metrics — for the decision
+  recipes (`med_evidence`, `predictive_maintenance`). It compares against a fixed gold file, not
+  another system, so the circularity guard does not apply.
 - **Output** — `evaluate_ab` is a blinded A/B judge: the LLM judge sees neutral "Output 1/2" in an
   injected deterministic order (no hidden RNG), never the system names, and A/B-ing a system against
   itself is refused.

@@ -123,6 +123,10 @@ each grey-zone item:
   a design choice (it covers llama.cpp/Ollama/vLLM/any OpenAI-compatible server); `base_url` is
   configurable. `Backend` keeps its small separate registry (stateless singletons). This is now an
   explicitly-approved exception, not an unreviewed gap.
+  - **Superseded 2026-08-03** (`.audit/2026-08-03-provider-implementation.md`): `Provider` is now a
+    real registry-resolved port with a concrete registry, mirroring `Backend`. The transport stays
+    OpenAI-compatible-only (still the right call — every real provider speaks it), but the endpoint
+    kind now drives capability gating and per-family request quirks instead of being an inert label.
 
 **Known limitation (verification, not code):**
 - **`nl_to_sql` `fetch.sh` is verified statically only** — Spider needs a large gated download URL

@@ -5,8 +5,9 @@ and hybrid search, all in-process with no server or daemon. It is the framework'
 it satisfies "a real vector database" while keeping the self-contained rule (pip-only, nothing to
 launch).
 
-``lancedb``, ``pyarrow`` and ``numpy`` are imported **lazily, inside this one module**, so the core
-import path never pulls them and ``tests/test_boundaries.py`` can confine the allowance here. The
+``lancedb`` and ``pyarrow`` are imported **lazily, inside this one module** (vectors are handled as
+plain Python lists, so no numpy), so the core import path never pulls them and
+``tests/test_boundaries.py`` can confine the allowance here. The
 cosine metric returns a *distance* (``0`` identical, ``2`` opposite); the
 :class:`~ragkit.core.ports.VectorIndex` port promises a higher-is-better score toward ``[0, 1]``,
 so the conversion happens here.

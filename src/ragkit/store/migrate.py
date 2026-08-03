@@ -58,8 +58,8 @@ def migrate_documents_to_pairings(documents_path: Path, pairing_store: PairingSt
     restarting it. Returns the number of pairings actually added.
 
     ``on_batch``, when given, is called after each committed batch with the destination's new total
-    row count (``pairing_store.count()``, cheaply tracked rather than re-queried) — a multi-million
-    row migration run unsupervised needs some sign of life beyond "still running".
+    row count (``floor + total``, tracked cheaply rather than re-queried via ``count()``) — a
+    multi-million row migration run unsupervised needs some sign of life beyond "still running".
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")

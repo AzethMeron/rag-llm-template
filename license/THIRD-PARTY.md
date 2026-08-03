@@ -69,3 +69,5 @@ Each dataset's license governs your use of *that data*, independent of this soft
 | nl_to_sql | Spider; BIRD (optional) | CC BY-SA 4.0 |
 | form_autofill | Chinook; MovieLens 25M (optional) | Chinook: permissive (MIT-style); MovieLens: research-use |
 | predictive_maintenance | NASA C-MAPSS turbofan (sensor requests); Wikipedia articles (manuals memory) | C-MAPSS: US-Gov public domain; Wikipedia: CC BY-SA 4.0 |
+| med_evidence | PubMedQA `ori_pqal.json` (questions + abstracts memory); ClinicalTrials.gov v2 (optional corpus scaling) | PubMedQA: MIT; ClinicalTrials.gov: US-Gov public domain |
+| legal_procurement | polqa passage corpus + `test.csv` (IPIPAN); EUR-Lex / ELI-Sejm (optional swap) | polqa: CC BY-SA |

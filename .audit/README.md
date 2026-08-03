@@ -27,3 +27,9 @@ than a deleted one.
   unenforced `Persona` invariant, a resource-ordering nit) plus several intentional/informational
   notes. **Resolved**: 4 fixed, 1 (`reader_eval.py`) re-assessed as intentional; status recorded
   per finding in the file.
+- `2026-08-03-provider-implementation.md` — closes the deep audit's "weakest seam" verdict: the
+  `Provider` port, previously a dead Protocol with a validated-then-ignored config field, is now a
+  real registry-resolved component (`llm/providers.py`) mirroring `Backend`. Each endpoint kind
+  declares its capabilities and request quirks; an unsupported capability (rerank on Ollama) is
+  refused at build time, and the llama.cpp-only `chat_template_kwargs` no longer leaks to strict
+  servers.

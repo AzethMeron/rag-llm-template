@@ -845,7 +845,7 @@ The complete list of ports, and where each is selected:
 | `OutputSchema` | `recipe.toml output_schema` | `json_field`, `form` |
 | `Backend` | `models.toml backend` | `auto`, `generic`, `bielik`, `eurollm`, `gemma` |
 | `Source` / `Sink` | code | `PairingSink` (write-back) |
-| `Provider` | `models.toml provider` | **unimplemented** — see the note below |
+| `Provider` | `models.toml [endpoint.<name>].provider` | `llamacpp-router`, `ollama`, `openai-compatible`; register your own — see the note below |
 
 ### Validator — `validate(record, output, context) -> list[Violation]`
 Code-decided acceptance checks. Shown in [§5](#5-add-a-mechanical-validator-a-plugin).
@@ -908,11 +908,15 @@ Set `[task].use_memory = true` and the `established` context block shows the out
 produced for neighbouring records, so a long run stays internally consistent. It is seeded from the
 run store on resume, so a restarted run's context is reproducible rather than starting empty.
 
-> **The one seam that is not yet real: `Provider`.** `[endpoint.<name>].provider` is validated and
-> then ignored — every endpoint is driven by the same llama.cpp-flavoured `LlmClient`, so
-> `ollama` and `openai-compatible` behave identically to `llamacpp-router` today. Adding a
-> genuinely different transport currently means editing the pool rather than supplying a component.
-> Named here rather than left to be discovered.
+> **`Provider` — the endpoint-kind seam.** `[endpoint.<name>].provider` drives real behaviour, not
+> just a label. Every backend speaks the same OpenAI-compatible HTTP, so one transport serves them
+> all; the provider declares what that endpoint *can* serve and the request quirks it needs.
+> `llamacpp-router` (the default) serves chat, embeddings and rerank and takes llama.cpp's
+> `chat_template_kwargs` reasoning toggle; `ollama` serves chat + embeddings but **has no rerank
+> endpoint**, so a reranker on it is refused at build time rather than 404-ing mid-run;
+> `openai-compatible` serves all three but never receives the llama.cpp-only field (a strict server
+> would reject the whole request). A custom endpoint kind is a component like any other: call
+> `ragkit.llm.register_provider(LlmProvider(...))` from your own module and name it in config.
 
 ## 13. The tool scripts
 

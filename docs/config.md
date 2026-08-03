@@ -92,7 +92,7 @@ routes each model over it; personas naming the same model share it.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `provider` | `"llamacpp-router" \| "ollama" \| "openai-compatible"` | `"llamacpp-router"` | Server family. Ollama cannot rerank; vLLM is unsupported. |
+| `provider` | `"llamacpp-router" \| "ollama" \| "openai-compatible"` (or a registered name) | `"llamacpp-router"` | Endpoint kind — drives real behaviour, not just a label. Sets the endpoint's **capabilities**: `ollama` serves chat + embeddings but **has no rerank endpoint**, so a reranker on it is refused at build time (the others serve all three). And its **request quirks**: only `llamacpp-router` receives llama.cpp's `chat_template_kwargs` reasoning toggle — a strict `openai-compatible` server would `400` on it. `serve_models.sh` launches `llamacpp-router` only. Add a custom kind with `ragkit.llm.register_provider` and name it here. |
 | `base_url` | string | `http://127.0.0.1:8080/v1` | OpenAI-compatible base URL (must include a port for the serve script). |
 | `resident_max` | int ≥ 1 | `4` | Distinct models kept resident before LRU eviction (the thrash guard's ceiling; mirrors `--models-max`). |
 | `parallel` | int ≥ 1 | `2` | Server request slots; must be ≥ the harness concurrency. |

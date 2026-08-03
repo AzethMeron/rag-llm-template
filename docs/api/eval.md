@@ -426,7 +426,7 @@ columns). Values keep their JSON type (a numeric field is compared numerically, 
 
 **Raises:** `EvalError`, same as `load_label_gold`.
 
-#### load_relevance_gold(path: Path, field: str = "relevant") -> dict[str, frozenset[str]]
+#### load_relevance_gold(path: Path, *, field: str = "relevant") -> dict[str, frozenset[str]]
 
 `{record_id: {relevant_chunk_id, ...}}` — the retrieval gold shape.
 

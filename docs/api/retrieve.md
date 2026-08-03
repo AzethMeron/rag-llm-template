@@ -59,7 +59,7 @@ as-is and never closed by `close()` (ownership stays with the caller); if omitte
 
 Embeds `texts` in batches of `batch_size`, returns rows in **input order**. Internally: each batch
 is POSTed to the endpoint (retrying a transient failure — a timeout, dropped connection, or
-`429`/`500`/`502`/`503`/`504` status — with exponential backoff `retry_backoff_seconds * 2**attempt`
+`408`/`429`/`500`/`502`/`503`/`504` status — with exponential backoff `retry_backoff_seconds * 2**attempt`
 up to `max_retries` attempts; a `4xx` or malformed reply is raised at once, never retried); the
 response's per-item `index` field (not array position) is used to reorder each batch back to input
 order, because array order is not guaranteed by the OpenAI embeddings schema and a reordering
@@ -241,8 +241,8 @@ argument order (always favoring the same arm).
 **Args:** `query` — the query text; `k` — number of results to return (returns `()` if `k <= 0`);
 `min_score` — floor on final relevance (`[0, 1]` scale, reranked or RRF-normalised).
 **Returns:** up to `k` `Retrieved` hits, MMR-ordered, `score` = the final relevance used for
-filtering (**not** the raw fused RRF score). Returns `()` if either arm's fusion is empty or if no
-survivor clears `min_score`.
+filtering (**not** the raw fused RRF score). Returns `()` if the fused candidate set is empty (i.e.
+both arms returned nothing) or if no survivor clears `min_score`.
 **Raises:** `RerankError` if a configured reranker's endpoint fails or returns a malformed
 response — propagates uncaught, no fallback to the unreranked order.
 **Side effects:** calls both arms' `retrieve` and, if configured, the reranker's `rerank` — each a

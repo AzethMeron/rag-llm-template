@@ -37,8 +37,8 @@ from ragkit.core.errors import RagkitError
 
 from .backends import resolve_backend
 from .client import LlmClient, ServerConfig
+from .providers import LlmProvider, ProviderError, get_provider
 
-_PROVIDERS = frozenset({"llamacpp-router", "ollama", "openai-compatible"})
 _KINDS = frozenset({"chat", "embedding", "rerank"})
 
 
@@ -72,16 +72,23 @@ class EndpointSpec:
     so it only carries them."""
 
     def __post_init__(self) -> None:
-        if self.provider not in _PROVIDERS:
-            raise ModelPoolError(
-                f"endpoint {self.name!r}: unknown provider {self.provider!r}; known: "
-                f"{sorted(_PROVIDERS)}")
+        try:
+            get_provider(self.provider)
+        except ProviderError as exc:
+            raise ModelPoolError(f"endpoint {self.name!r}: {exc}") from exc
         for value, what in ((self.resident_max, "resident_max"), (self.parallel, "parallel")):
             if value < 1:
                 raise ModelPoolError(f"endpoint {self.name!r}: {what} must be >= 1, got {value}")
         if self.vram_budget_mb < 0:
             raise ModelPoolError(
                 f"endpoint {self.name!r}: vram_budget_mb must be >= 0, got {self.vram_budget_mb}")
+
+    @property
+    def provider_profile(self) -> LlmProvider:
+        """The resolved :class:`~ragkit.llm.providers.LlmProvider` for this endpoint's kind — its
+        capabilities and request quirks. Resolution is a registry lookup validated at construction,
+        so this cannot fail for a constructed spec."""
+        return get_provider(self.provider)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,12 +221,18 @@ class ModelPool:
         with self._build_lock:
             if model_name not in self._clients:
                 endpoint = self._endpoints[spec.endpoint]
+                if not endpoint.provider_profile.supports("chat"):
+                    raise ModelPoolError(
+                        f"model {model_name!r} is a chat model on endpoint {spec.endpoint!r}, "
+                        f"whose provider {endpoint.provider!r} does not serve chat; move it to a "
+                        f"chat-capable endpoint")
                 http = self._http_for(endpoint)
                 config = ServerConfig(
                     base_url=endpoint.base_url, model=spec.model_id,
                     timeout_seconds=endpoint.timeout_seconds, max_retries=endpoint.max_retries,
                     retry_backoff_seconds=endpoint.retry_backoff_seconds,
-                    context_window=spec.context_window, enable_reasoning=endpoint.enable_reasoning)
+                    context_window=spec.context_window, enable_reasoning=endpoint.enable_reasoning,
+                    provider=endpoint.provider_profile)
                 self._clients[model_name] = LlmClient(
                     config, backend=resolve_backend(spec.backend, spec.model_id), client=http)
             return self._clients[model_name], spec.model_id
