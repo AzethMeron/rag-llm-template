@@ -8,10 +8,11 @@ the established-terminology lexicon (`LexiconStore`), and a read-only schema int
 (`migrate.py`) utilities every driver, or an upgrade off a legacy artifact, needs. Three database
 roles are kept apart (see `docs/architecture.md`): the framework's own writable reference memory
 (`pairings`/`lexicon`), its own writable run state (`run`), and an *external* task data source read
-through `sql`/`introspector` and never written by the framework. Three ports currently ship two
+through `sql`/`introspector` and never written by the framework. Four ports currently ship two
 interchangeable drivers each, selected purely by a `driver` key in `storage.toml`: `VectorIndex`
-(LanceDB, the default, and Qdrant), and `SqlStore` and `PairingStore` (SQLite, the default, and
-DuckDB). `RunStore` and `LexiconStore` currently ship one driver each (SQLite). A `ragkit.store.blob`
+(LanceDB, the default, and Qdrant), and `SqlStore`, `PairingStore`, and `SchemaIntrospector`
+(SQLite, the default, and DuckDB). `RunStore` and `LexiconStore` currently ship one driver each
+(SQLite). A `ragkit.store.blob`
 package exists in source (`src/ragkit/store/blob/__init__.py`) but is presently an empty stub — zero
 bytes, no docstring, no code — a reserved namespace, not an implemented port; nothing in this
 reference documents it beyond this note. Every third-party dependency (`lancedb`, `pyarrow`,
@@ -1149,7 +1150,7 @@ at the port with an identical message whichever driver is configured.
 
 The default `VectorIndex` driver: LanceDB, a real embedded vector database with true ANN indexing,
 on-disk columnar storage with versioning, metadata filtering, and hybrid search, all in-process with
-no server. `lancedb`, `pyarrow`, and `numpy` are imported lazily, inside this module only, so the
+no server. `lancedb` and `pyarrow` are imported lazily, inside this module only (vectors are plain Python lists, so no numpy), so the
 core import path never pulls them. LanceDB's cosine metric returns a *distance* (`0` identical, `2`
 opposite); the port promises a higher-is-better score toward `[0, 1]`, so `_distance_to_score`
 converts it here.

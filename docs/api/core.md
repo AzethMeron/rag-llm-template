@@ -1078,13 +1078,9 @@ The extra chat-completion payload fields this endpoint kind understands (e.g. ll
 server that would reject them.
 
 **Args:**
-- `messages` (`Sequence[Message]`): the conversation so far.
-- `model` (`str`): the served model id to route to.
-- `schema` (`Mapping[str, Any] | None`): a JSON Schema the reply should conform to, or `None` for free text.
-- `temperature` (`float`): decode temperature.
-- `max_tokens` (`int`): output token budget.
+- `enable_reasoning` (`bool`, keyword-only): whether a reasoning model's chain-of-thought is being kept on. When `False` and the provider honours it, the reasoning-suppression field is emitted.
 
-**Returns:** `str` — the model's reply text.
+**Returns:** `Mapping[str, Any]` — the extra payload fields (e.g. `{"chat_template_kwargs": {"enable_thinking": False}}` for a llama.cpp provider when reasoning is suppressed), or an empty mapping.
 
 **Raises:** implementation-defined.
 

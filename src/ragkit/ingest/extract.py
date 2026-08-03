@@ -1,9 +1,9 @@
 """Extractors: turn a raw source into :class:`~ragkit.core.ports.Document` objects ready to chunk.
 
-Shipped are the light, dependency-free extractors the three recipes need — plain text, JSON Lines,
-SQL rows, and structure-aware HTML/Markdown (via the standard library's ``html.parser``, no binary
-parsers). PDF/DOCX/email extraction is documented as a plugin: register a component under the
-``EXTRACTOR`` port and select it by dotted path, no framework change.
+Shipped are the light, dependency-free extractors the recipes need — plain text, JSON Lines, and
+structure-aware HTML/Markdown (via the standard library's ``html.parser``, no binary parsers).
+PDF/DOCX/email extraction is documented as a plugin: register a component under the ``EXTRACTOR``
+port and select it by dotted path, no framework change.
 """
 from __future__ import annotations
 

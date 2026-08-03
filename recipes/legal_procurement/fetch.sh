@@ -3,7 +3,7 @@
 # held-out set of questions with gold relevance judgments:
 #   * the MEMORY -- the polqa passage corpus (IPIPAN, CC BY-SA): Polish Wikipedia passages used as a
 #     stand-in legal/encyclopaedic corpus. The full passages.jsonl is ~3.3 GB, so --max-passages
-#     bounds how many of its first lines are loaded (default 200000). Each kept passage is written to
+#     bounds how many of its first lines are loaded (default: 0 = all). Each kept passage is written to
 #     data/passages.jsonl as {id, text} with a stable id "ref-<line>", which is the id a citation
 #     refers to and the id the retrieval eval scores against.
 #   * the QUESTIONS + GOLD -- polqa's test.csv: each row pairs a question with a relevant passage.

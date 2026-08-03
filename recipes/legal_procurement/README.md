@@ -46,7 +46,7 @@ recipes/legal_procurement/fetch.sh [--max-passages N] [--limit N]
 ```
 
 - **Memory** — the **polqa** passage corpus (IPIPAN, **CC BY-SA**): Polish Wikipedia passages used as
-  a stand-in legal/encyclopaedic corpus. The full `passages.jsonl` is **~2.8 GB / ~7.1M passages**.
+  a stand-in legal/encyclopaedic corpus. The full `passages.jsonl` is **~3.3 GB / ~7.1M passages**.
   `--max-passages` (default **0 = load the whole corpus**) bounds how many of its first lines are
   loaded; it streams the file line by line, so the corpus is never held whole in memory. Loading all
   passages guarantees every question's gold passage is present, so all questions are scorable. Each

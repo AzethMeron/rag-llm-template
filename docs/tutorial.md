@@ -845,7 +845,7 @@ The complete list of ports, and where each is selected:
 | `OutputSchema` | `recipe.toml output_schema` | `json_field`, `form` |
 | `Backend` | `models.toml backend` | `auto`, `generic`, `bielik`, `eurollm`, `gemma` |
 | `Source` / `Sink` | code | `PairingSink` (write-back) |
-| `Provider` | `models.toml provider` | **unimplemented** — see the note below |
+| `Provider` | `models.toml [endpoint.<name>].provider` | `llamacpp-router`, `ollama`, `openai-compatible`; register your own — see the note below |
 
 ### Validator — `validate(record, output, context) -> list[Violation]`
 Code-decided acceptance checks. Shown in [§5](#5-add-a-mechanical-validator-a-plugin).
