@@ -14,5 +14,10 @@ than a deleted one.
 - `2026-07-28-cross-cutting-sweep.md` — a cross-cutting sweep of the codebase.
 - `2026-08-02-deep-audit.md` — whole-codebase deep audit (7 subsystems): bugs, OOM/perf,
   concurrency/durability, contract violations, docs/staleness, SSOT, and interface swappability.
-  1 critical (broken `fetch_models.sh` repos), 2 high (silent rerank drop; batch poison pill),
-  16 medium, 20 low; with a per-port swappability verdict.
+  1 critical, 3 high, 16 medium, 20 low, with a per-port swappability verdict — **all resolved**
+  (each finding's status recorded in place in the file itself).
+- `2026-08-03-doc-pass-findings.md` — findings surfaced while writing the exhaustive `docs/api/`
+  reference (not a dedicated audit): 5 worth fixing (a `ZeroDivisionError` footgun in two eval
+  metrics, an unwrapped error path in `reader_eval.py`, a `:memory:` introspector blind spot, an
+  unenforced `Persona` invariant, a resource-ordering nit) plus several intentional/informational
+  notes. Not yet fixed.
